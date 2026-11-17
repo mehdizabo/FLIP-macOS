@@ -1,4 +1,5 @@
 pub mod core;
+pub mod engines;
 
 pub fn run() {
     tauri::Builder::default()
