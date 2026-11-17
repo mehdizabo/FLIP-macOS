@@ -11,6 +11,7 @@ SDK_PATH="$(xcrun --show-sdk-path)"
 
 /usr/bin/swiftc \
   -O \
+  -target arm64-apple-macosx15.0 \
   -swift-version 5 \
   -sdk "$SDK_PATH" \
   -framework Foundation \

@@ -50,8 +50,34 @@ enum MediaAndDocs {
         ]
     }
 
+    private static let maxImagePixels: Int64 = 40_000_000
+    private static let maxContainerBytes: Int = 256 * 1024 * 1024
+    private static let maxHtmlInputBytes: Int = 20 * 1024 * 1024
+
+    private static func inspectImagePropertiesPreDecode(
+        _ src: CGImageSource,
+        path: String
+    ) throws -> (orientation: UInt32, props: [CFString: Any]?) {
+        let srcProps = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
+        if let pw = (srcProps?[kCGImagePropertyPixelWidth] as? NSNumber)?.int64Value,
+           let ph = (srcProps?[kCGImagePropertyPixelHeight] as? NSNumber)?.int64Value {
+            if pw <= 0 || ph <= 0 {
+                throw BridgeError.operationFailed("Image has invalid zero dimensions: \(path)")
+            }
+            let (pixels, overflow) = pw.multipliedReportingOverflow(by: ph)
+            if overflow || pixels > maxImagePixels {
+                throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit (\(pw)x\(ph))")
+            }
+        }
+        let orientation = (srcProps?[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
+        return (orientation, srcProps)
+    }
+
     // MARK: - Vision OCR
-    static func recognizeText(cgImage: CGImage) throws -> String {
+    static func recognizeText(
+        cgImage: CGImage,
+        orientation: CGImagePropertyOrientation = .up
+    ) throws -> String {
         var recognizedLines: [String] = []
         var visionError: Error?
 
@@ -89,7 +115,7 @@ enum MediaAndDocs {
             request.usesCPUOnly = true
         }
 
-        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
         try handler.perform([request])
         if let err = visionError {
             throw err
@@ -99,11 +125,24 @@ enum MediaAndDocs {
 
     static func ocrImageFile(path: String, outTxtPath: String?) throws -> [String: Any] {
         let url = URL(fileURLWithPath: path)
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw BridgeError.operationFailed("Could not open image for OCR: \(path)")
+        }
+        let (rawOrientation, _) = try inspectImagePropertiesPreDecode(src, path: path)
+        guard let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
             throw BridgeError.operationFailed("Could not decode image for OCR: \(path)")
         }
-        let text = try recognizeText(cgImage: cgImg)
+        let (pixels, overflow) = Int64(cgImg.width).multipliedReportingOverflow(by: Int64(cgImg.height))
+        if cgImg.width <= 0 || cgImg.height <= 0 || overflow || pixels > maxImagePixels {
+            throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size")
+        }
+
+        let cgOrientation = CGImagePropertyOrientation(rawValue: rawOrientation) ?? .up
+        let text = try recognizeText(cgImage: cgImg, orientation: cgOrientation)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw BridgeError.operationFailed("Vision OCR found no readable text in image")
+        }
         if let outTxtPath = outTxtPath {
             try Data(text.utf8).write(to: URL(fileURLWithPath: outTxtPath), options: .atomic)
         }
@@ -207,6 +246,9 @@ enum MediaAndDocs {
             throw BridgeError.operationFailed("PDF is password-protected or encrypted")
         }
         let pageCount = doc.pageCount
+        guard pageCount > 0 else {
+            throw BridgeError.operationFailed("PDF has 0 pages")
+        }
         if pageCount > 200 {
             throw BridgeError.operationFailed("PDF exceeds 200-page safety limit")
         }
@@ -223,7 +265,7 @@ enum MediaAndDocs {
                 // Scanned page -> Vision OCR fallback (with full rotation & MediaBox origin handling)
                 if let cgImg = try? renderPageToCGImage(page, dpi: 200.0) {
                     let ocr = try recognizeText(cgImage: cgImg)
-                    if !ocr.isEmpty {
+                    if !ocr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         parts.append(ocr)
                         ocrPages += 1
                     }
@@ -232,22 +274,87 @@ enum MediaAndDocs {
         }
 
         let combined = parts.joined(separator: "\n\n")
+        guard !combined.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BridgeError.operationFailed("PDF contains no extractable text; Vision OCR found no readable text")
+        }
         try Data(combined.utf8).write(to: URL(fileURLWithPath: outTxtPath), options: .atomic)
         return ["ok": true, "pages": pageCount, "ocrPages": ocrPages, "characters": combined.count]
     }
 
     static func imagesToPDF(outPdfPath: String, imagePaths: [String]) throws -> [String: Any] {
-        let pdf = PDFDocument()
-        for (idx, path) in imagePaths.enumerated() {
-            guard let img = NSImage(contentsOfFile: path), let page = PDFPage(image: img) else {
-                throw BridgeError.operationFailed("Could not read image for PDF: \(path)")
+        guard !imagePaths.isEmpty && imagePaths.count <= 128 else {
+            throw BridgeError.invalidArguments("Select between 1 and 128 images for PDF")
+        }
+        guard !FileManager.default.fileExists(atPath: outPdfPath) else {
+            throw BridgeError.operationFailed("Refusing to overwrite existing output PDF: \(outPdfPath)")
+        }
+
+        var loadedImages: [CGImage] = []
+        loadedImages.reserveCapacity(imagePaths.count)
+        for path in imagePaths {
+            let url = URL(fileURLWithPath: path)
+            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                throw BridgeError.operationFailed("Could not open image for PDF: \(path)")
             }
-            pdf.insert(page, at: idx)
+            let (orientation, _) = try inspectImagePropertiesPreDecode(src, path: path)
+            guard let rawImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+                throw BridgeError.operationFailed("Could not decode image for PDF: \(path)")
+            }
+            let (pixels, overflow) = Int64(rawImg.width).multipliedReportingOverflow(by: Int64(rawImg.height))
+            if rawImg.width <= 0 || rawImg.height <= 0 || overflow || pixels > maxImagePixels {
+                throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size: \(path)")
+            }
+            let oriented: CGImage
+            if orientation != 1 {
+                oriented = normalizeOrientedImage(rawImg, orientation: orientation, flattenAlpha: false) ?? rawImg
+            } else {
+                oriented = rawImg
+            }
+            loadedImages.append(oriented)
         }
-        guard pdf.write(toFile: outPdfPath) else {
-            throw BridgeError.operationFailed("Failed to write PDF: \(outPdfPath)")
+
+        // A4 595 x 842 pt with 30 pt margins aspect-fit (matching FLIP-windows ImagePdf)
+        let pdfData = NSMutableData()
+        guard let consumer = CGDataConsumer(data: pdfData as CFMutableData) else {
+            throw BridgeError.operationFailed("Failed to allocate PDF data consumer")
         }
-        return ["ok": true, "pages": pdf.pageCount, "output": outPdfPath]
+        var mediaBox = CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let pdfCtx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw BridgeError.operationFailed("Failed to create PDF CGContext")
+        }
+
+        let margin: CGFloat = 30
+        let availW = mediaBox.width - 2 * margin
+        let availH = mediaBox.height - 2 * margin
+
+        for cgImg in loadedImages {
+            pdfCtx.beginPDFPage(nil)
+            pdfCtx.setFillColor(CGColor.white)
+            pdfCtx.fill(mediaBox)
+
+            let imgW = CGFloat(cgImg.width)
+            let imgH = CGFloat(cgImg.height)
+            let scale = min(availW / imgW, availH / imgH)
+            let drawW = imgW * scale
+            let drawH = imgH * scale
+            let drawRect = CGRect(
+                x: (mediaBox.width - drawW) / 2.0,
+                y: (mediaBox.height - drawH) / 2.0,
+                width: drawW,
+                height: drawH
+            )
+            pdfCtx.interpolationQuality = .high
+            pdfCtx.draw(cgImg, in: drawRect)
+            pdfCtx.endPDFPage()
+        }
+        pdfCtx.closePDF()
+
+        let bytes = pdfData as Data
+        guard !bytes.isEmpty else {
+            throw BridgeError.operationFailed("Failed to generate PDF from images")
+        }
+        try bytes.write(to: URL(fileURLWithPath: outPdfPath), options: .withoutOverwriting)
+        return ["ok": true, "pages": loadedImages.count, "output": outPdfPath]
     }
 
     static func mergePDFs(outPdfPath: String, pdfPaths: [String]) throws -> [String: Any] {
@@ -270,6 +377,70 @@ enum MediaAndDocs {
         return ["ok": true, "pages": outDoc.pageCount, "output": outPdfPath]
     }
 
+    private static func sanitizeHTMLForOfflineImport(_ html: String) -> String {
+        var out = html
+        let stripBlockPatterns = [
+            "<script\\b[^>]*>[\\s\\S]*?</script>",
+            "<iframe\\b[^>]*>[\\s\\S]*?</iframe>",
+            "<iframe\\b[^>]*>",
+            "<object\\b[^>]*>[\\s\\S]*?</object>",
+            "<embed\\b[^>]*>",
+            "<frame\\b[^>]*>",
+            "<frameset\\b[^>]*>[\\s\\S]*?</frameset>",
+            "<link\\b[^>]*>",
+            "<base\\b[^>]*>",
+            "<meta\\b[^>]*http-equiv\\s*=\\s*[\"']?refresh[^>]*>"
+        ]
+        for pattern in stripBlockPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                out = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "")
+            }
+        }
+
+        let srcDoubleQuoted = "(\\b(?:src|background|poster|data)\\s*=\\s*\")(?!\\s*data:image/)([^\"]*)(\")"
+        let srcSingleQuoted = "(\\b(?:src|background|poster|data)\\s*=\\s*')(?!\\s*data:image/)([^']*)(')"
+        let srcUnquoted = "(\\b(?:src|background|poster|data)\\s*=\\s*)(?!\"|'|\\s*data:image/)([^\\s>]+)"
+        for (idx, pattern) in [srcDoubleQuoted, srcSingleQuoted, srcUnquoted].enumerated() {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let template = idx == 2 ? "$1\"#blocked\"" : "$1#blocked$3"
+                out = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: template)
+            }
+        }
+
+        let hrefFileDouble = "(\\bhref\\s*=\\s*\")\\s*file:[^\"]*(\")"
+        let hrefFileSingle = "(\\bhref\\s*=\\s*')\\s*file:[^']*(')"
+        let hrefFileUnquoted = "(\\bhref\\s*=\\s*)file:[^\\s>]+"
+        for (idx, pattern) in [hrefFileDouble, hrefFileSingle, hrefFileUnquoted].enumerated() {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let template = idx == 2 ? "$1\"#blocked\"" : "$1#blocked$2"
+                out = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: template)
+            }
+        }
+
+        if let cssImportRegex = try? NSRegularExpression(pattern: "@import\\b[^;\\n]*[;\\n]?", options: [.caseInsensitive]) {
+            out = cssImportRegex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "")
+        }
+        if let cssUrlRegex = try? NSRegularExpression(pattern: "url\\(\\s*(?![\"']?data:image/)[^)]*\\)", options: [.caseInsensitive]) {
+            out = cssUrlRegex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "url()")
+        }
+        return out
+    }
+
+    private static func withAquaAppearance<T>(_ body: () throws -> T) throws -> T {
+        guard let aqua = NSAppearance(named: .aqua) else {
+            return try body()
+        }
+        var result: Result<T, Error>!
+        aqua.performAsCurrentDrawingAppearance {
+            do {
+                result = .success(try body())
+            } catch {
+                result = .failure(error)
+            }
+        }
+        return try result.get()
+    }
+
     // MARK: - Native Documents (NSAttributedString + A4 PDF + Apple iWork)
     static func convertDocument(inputPath: String, format: String, outputPath: String, pageSize: String = "a4") throws -> [String: Any] {
         let inURL = URL(fileURLWithPath: inputPath)
@@ -281,29 +452,40 @@ enum MediaAndDocs {
             return try convertIWork(inputPath: inputPath, inExt: inExt, format: fmtUpper, outputPath: outputPath)
         }
 
-        let attrString: NSAttributedString
-        do {
-            var docOpts: [NSAttributedString.DocumentReadingOptionKey: Any] = [:]
-            if inExt == "txt" || inExt == "md" || inExt == "markdown" {
-                docOpts[.documentType] = NSAttributedString.DocumentType.plain
-                docOpts[.characterEncoding] = String.Encoding.utf8.rawValue
-            } else if inExt == "html" || inExt == "htm" {
-                docOpts[.documentType] = NSAttributedString.DocumentType.html
-                if let rawData = try? Data(contentsOf: inURL),
-                   let utf8Str = String(data: rawData, encoding: .utf8) {
-                    let lower = utf8Str.lowercased()
-                    let hasNonUtf8Meta = lower.contains("charset=")
-                        && !lower.contains("charset=utf-8")
-                        && !lower.contains("charset=\"utf-8\"")
-                        && !lower.contains("charset='utf-8'")
-                    if !hasNonUtf8Meta {
+        let attrString: NSAttributedString = try withAquaAppearance {
+            do {
+                if inExt == "html" || inExt == "htm" {
+                    let rawData = try Data(contentsOf: inURL)
+                    if rawData.count > maxHtmlInputBytes {
+                        throw BridgeError.operationFailed("HTML document exceeds 20 MiB safety limit")
+                    }
+                    let rawStr: String
+                    if let utf8 = String(data: rawData, encoding: .utf8) {
+                        rawStr = utf8
+                    } else if let latin1 = String(data: rawData, encoding: .isoLatin1) {
+                        rawStr = latin1
+                    } else {
+                        throw BridgeError.operationFailed("Could not decode HTML text encoding")
+                    }
+                    let sanitized = sanitizeHTMLForOfflineImport(rawStr)
+                    let docOpts: [NSAttributedString.DocumentReadingOptionKey: Any] = [
+                        .documentType: NSAttributedString.DocumentType.html,
+                        .characterEncoding: String.Encoding.utf8.rawValue
+                    ]
+                    return try NSAttributedString(data: Data(sanitized.utf8), options: docOpts, documentAttributes: nil)
+                } else {
+                    var docOpts: [NSAttributedString.DocumentReadingOptionKey: Any] = [:]
+                    if inExt == "txt" || inExt == "md" || inExt == "markdown" {
+                        docOpts[.documentType] = NSAttributedString.DocumentType.plain
                         docOpts[.characterEncoding] = String.Encoding.utf8.rawValue
                     }
+                    return try NSAttributedString(url: inURL, options: docOpts, documentAttributes: nil)
                 }
+            } catch let bridgeErr as BridgeError {
+                throw bridgeErr
+            } catch {
+                throw BridgeError.operationFailed("Failed to parse document \(inputPath): \(error.localizedDescription)")
             }
-            attrString = try NSAttributedString(url: inURL, options: docOpts, documentAttributes: nil)
-        } catch {
-            throw BridgeError.operationFailed("Failed to parse document \(inputPath): \(error.localizedDescription)")
         }
 
         if fmtUpper == "PDF" {
@@ -343,14 +525,18 @@ enum MediaAndDocs {
 
         let mutable = NSMutableAttributedString(attributedString: attr)
         let fullRange = NSRange(location: 0, length: mutable.length)
-        mutable.enumerateAttribute(.font, in: fullRange) { val, range, _ in
-            if val == nil {
-                mutable.addAttribute(.font, value: NSFont.systemFont(ofSize: 11.5), range: range)
+        try withAquaAppearance {
+            mutable.enumerateAttribute(.font, in: fullRange) { val, range, _ in
+                if val == nil {
+                    mutable.addAttribute(.font, value: NSFont.systemFont(ofSize: 11.5), range: range)
+                }
             }
-        }
-        mutable.enumerateAttribute(.foregroundColor, in: fullRange) { val, range, _ in
-            if val == nil {
-                mutable.addAttribute(.foregroundColor, value: NSColor.black, range: range)
+            mutable.enumerateAttribute(.foregroundColor, in: fullRange) { val, range, _ in
+                if val == nil {
+                    mutable.addAttribute(.foregroundColor, value: NSColor.black, range: range)
+                } else if let c = val as? NSColor, let resolved = c.usingColorSpace(.sRGB) {
+                    mutable.addAttribute(.foregroundColor, value: resolved, range: range)
+                }
             }
         }
 
@@ -406,6 +592,104 @@ enum MediaAndDocs {
         return ["ok": true, "output": outputPath, "pages": pageCount]
     }
 
+    private static func runProcessWithLimit(
+        executablePath: String,
+        arguments: [String],
+        timeoutSeconds: TimeInterval,
+        maxOutputBytes: Int
+    ) throws -> (exitCode: Int32, data: Data) {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: executablePath)
+        proc.arguments = arguments
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = FileHandle.nullDevice
+
+        var outputData = Data()
+        var exceededLimit = false
+        let readLock = NSLock()
+        let readGroup = DispatchGroup()
+        readGroup.enter()
+
+        let readHandle = outPipe.fileHandleForReading
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { readGroup.leave() }
+            while true {
+                let chunk = readHandle.availableData
+                if chunk.isEmpty {
+                    break
+                }
+                readLock.lock()
+                if outputData.count + chunk.count > maxOutputBytes {
+                    exceededLimit = true
+                    readLock.unlock()
+                    if proc.isRunning {
+                        proc.terminate()
+                    }
+                    break
+                }
+                outputData.append(chunk)
+                readLock.unlock()
+            }
+        }
+
+        let exitSem = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in
+            exitSem.signal()
+        }
+
+        try proc.run()
+
+        if exitSem.wait(timeout: .now() + timeoutSeconds) == .timedOut {
+            if proc.isRunning {
+                proc.terminate()
+            }
+            _ = exitSem.wait(timeout: .now() + 1.0)
+            if proc.isRunning {
+                kill(proc.processIdentifier, SIGKILL)
+            }
+            _ = readGroup.wait(timeout: .now() + 1.0)
+            throw BridgeError.operationFailed("\(executablePath) timed out after \(Int(timeoutSeconds))s")
+        }
+
+        _ = readGroup.wait(timeout: .now() + 2.0)
+        readLock.lock()
+        let over = exceededLimit
+        let finalData = outputData
+        readLock.unlock()
+        if over {
+            throw BridgeError.operationFailed("Extracted entry exceeds 256 MiB safety limit")
+        }
+        return (proc.terminationStatus, finalData)
+    }
+
+    private static func verifyZipPreviewWithinLimit(_ zipPath: String) throws {
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: zipPath),
+           let ftype = attrs[.type] as? FileAttributeType,
+           ftype == .typeSymbolicLink {
+            throw BridgeError.operationFailed("Refusing symlinked iWork archive")
+        }
+        let (code, listData) = try runProcessWithLimit(
+            executablePath: "/usr/bin/unzip",
+            arguments: ["-l", zipPath],
+            timeoutSeconds: 10.0,
+            maxOutputBytes: 4 * 1024 * 1024
+        )
+        guard code == 0, let listing = String(data: listData, encoding: .utf8) else {
+            throw BridgeError.operationFailed("Failed to inspect iWork archive")
+        }
+        var totalDeclared: Int64 = 0
+        for line in listing.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let parts = trimmed.split(whereSeparator: { $0.isWhitespace })
+            guard parts.count >= 4, let sizeVal = Int64(parts[0]) else { continue }
+            totalDeclared = totalDeclared.addingReportingOverflow(sizeVal).partialValue
+            if sizeVal > Int64(maxContainerBytes) || totalDeclared > Int64(maxContainerBytes) {
+                throw BridgeError.operationFailed("iWork container exceeds 256 MiB safety limit")
+            }
+        }
+    }
+
     private static func convertIWork(inputPath: String, inExt: String, format: String, outputPath: String) throws -> [String: Any] {
         let appName: String
         let appleFormat: String
@@ -448,13 +732,15 @@ enum MediaAndDocs {
                 .replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "\"", with: "\\\"")
             let script = """
-            tell application "\(appName)"
-                set doc to open POSIX file "\(escapedIn)"
-                export doc to POSIX file "\(escapedOut)" as \(appleFormat)
-                close doc saving no
-            end tell
+            with timeout of 25 seconds
+                tell application "\(appName)"
+                    set doc to open POSIX file "\(escapedIn)"
+                    export doc to POSIX file "\(escapedOut)" as \(appleFormat)
+                    close doc saving no
+                end tell
+            end timeout
             """
-            let (_, err) = FinderBridge.runAppleScript(script)
+            let (_, err) = FinderBridge.runAppleScript(script, timeoutSeconds: 26.0)
             if err == nil && FileManager.default.fileExists(atPath: outputPath) {
                 return ["ok": true, "engine": appName, "output": outputPath]
             }
@@ -464,20 +750,31 @@ enum MediaAndDocs {
         if format == "PDF" {
             let previewInsidePkg = (inputPath as NSString).appendingPathComponent("QuickLook/Preview.pdf")
             if FileManager.default.fileExists(atPath: previewInsidePkg) {
-                try FileManager.default.copyItem(atPath: previewInsidePkg, toPath: outputPath)
+                let attrs = try FileManager.default.attributesOfItem(atPath: previewInsidePkg)
+                if let ftype = attrs[.type] as? FileAttributeType, ftype == .typeSymbolicLink {
+                    throw BridgeError.operationFailed("Refusing symlinked iWork Preview.pdf")
+                }
+                let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+                if size <= 0 || size > maxContainerBytes {
+                    throw BridgeError.operationFailed("iWork Preview.pdf exceeds 256 MiB safety limit")
+                }
+                let data = try Data(contentsOf: URL(fileURLWithPath: previewInsidePkg))
+                guard data.starts(with: Data("%PDF-".utf8)) else {
+                    throw BridgeError.operationFailed("iWork Preview.pdf is not a valid PDF")
+                }
+                try data.write(to: URL(fileURLWithPath: outputPath), options: .withoutOverwriting)
                 return ["ok": true, "engine": "iwork-preview", "output": outputPath]
             }
-            let unzip = Process()
-            unzip.executableURL = URL(fileURLWithPath: "/usr/bin/unzip")
-            unzip.arguments = ["-p", inputPath, "QuickLook/Preview.pdf"]
-            let pipe = Pipe()
-            unzip.standardOutput = pipe
-            unzip.standardError = FileHandle.nullDevice
-            try? unzip.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            unzip.waitUntilExit()
-            if unzip.terminationStatus == 0 && !data.isEmpty {
-                try data.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+
+            try verifyZipPreviewWithinLimit(inputPath)
+            let (code, data) = try runProcessWithLimit(
+                executablePath: "/usr/bin/unzip",
+                arguments: ["-p", inputPath, "QuickLook/Preview.pdf"],
+                timeoutSeconds: 15.0,
+                maxOutputBytes: maxContainerBytes
+            )
+            if code == 0 && !data.isEmpty && data.starts(with: Data("%PDF-".utf8)) {
+                try data.write(to: URL(fileURLWithPath: outputPath), options: .withoutOverwriting)
                 return ["ok": true, "engine": "iwork-preview", "output": outputPath]
             }
         }
@@ -503,13 +800,15 @@ enum MediaAndDocs {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
         let script = """
-        tell application "\(appName)"
-            set newDoc to make new document
-            save newDoc in POSIX file "\(escapedOut)"
-            close newDoc saving no
-        end tell
+        with timeout of 25 seconds
+            tell application "\(appName)"
+                set newDoc to make new document
+                save newDoc in POSIX file "\(escapedOut)"
+                close newDoc saving no
+            end tell
+        end timeout
         """
-        let (_, err) = FinderBridge.runAppleScript(script)
+        let (_, err) = FinderBridge.runAppleScript(script, timeoutSeconds: 26.0)
         if let err = err {
             throw BridgeError.operationFailed("\(appName) failed to create document: \(err)")
         }
@@ -583,16 +882,17 @@ enum MediaAndDocs {
         stripGps: Bool = false
     ) throws -> [String: Any] {
         let inURL = URL(fileURLWithPath: inputPath)
-        guard let src = CGImageSourceCreateWithURL(inURL as CFURL, nil),
-              let rawImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+        guard let src = CGImageSourceCreateWithURL(inURL as CFURL, nil) else {
+            throw BridgeError.operationFailed("Could not open image: \(inputPath)")
+        }
+        let (orientation, srcProps) = try inspectImagePropertiesPreDecode(src, path: inputPath)
+        guard let rawImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
             throw BridgeError.operationFailed("Could not decode image: \(inputPath)")
         }
-        if Int64(rawImage.width) * Int64(rawImage.height) > 40_000_000 {
+        let (pixels, overflow) = Int64(rawImage.width).multipliedReportingOverflow(by: Int64(rawImage.height))
+        if rawImage.width <= 0 || rawImage.height <= 0 || overflow || pixels > maxImagePixels {
             throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit")
         }
-
-        let srcProps = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
-        let orientation = (srcProps?[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
 
         let fmtUpper = format.uppercased()
         let utType: UTType

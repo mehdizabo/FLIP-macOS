@@ -63,6 +63,9 @@ final class MonitorController {
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var fallbackMonitor: Any?
+    private var currentAxTrusted = false
+    private var axPollTick = 0
     private var dragTimer: Timer?
     private var feedback = FeedbackPlayer()
 
@@ -150,6 +153,8 @@ final class MonitorController {
                         if let kind = json["kind"] as? String {
                             self.feedback.play(kind: kind)
                         }
+                    case "recheck_permissions":
+                        self.refreshAccessibilityMonitor(emitChange: true)
                     case "quit":
                         exit(0)
                     default:
@@ -166,7 +171,13 @@ final class MonitorController {
         // Lightweight timer + event-driven drag detection.
         // When no mouse button is pressed and drag is inactive, checks changeCount in O(1).
         dragTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
-            self?.checkDragState()
+            guard let self = self else { return }
+            self.checkDragState()
+            self.axPollTick += 1
+            if self.axPollTick >= 50 {
+                self.axPollTick = 0
+                self.refreshAccessibilityMonitor(emitChange: true)
+            }
         }
         RunLoop.main.add(dragTimer!, forMode: .common)
 
@@ -188,17 +199,56 @@ final class MonitorController {
     }
 
     private func readDragFileURLs() -> [String] {
+        var candidateURLs: [URL] = []
         let options: [NSPasteboard.ReadingOptionKey: Any] = [
             .urlReadingFileURLsOnly: true
         ]
         if let urls = dragPasteboard.readObjects(forClasses: [NSURL.self], options: options) as? [URL], !urls.isEmpty {
-            return urls.map { $0.path }
+            candidateURLs = urls
+        } else if let names = dragPasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String], !names.isEmpty {
+            candidateURLs = names.map { URL(fileURLWithPath: $0) }
         }
-        // Also inspect legacy filenames pasteboard type if present
-        if let names = dragPasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String], !names.isEmpty {
-            return names
+
+        if candidateURLs.isEmpty || candidateURLs.count > 128 {
+            return []
         }
-        return []
+
+        var seen = Set<String>()
+        var result: [String] = []
+        result.reserveCapacity(candidateURLs.count)
+
+        for url in candidateURLs {
+            guard url.isFileURL else { continue }
+            let path = url.path
+            guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { continue }
+
+            let rv = try? url.resourceValues(forKeys: [
+                .isDirectoryKey,
+                .isPackageKey,
+                .isSymbolicLinkKey,
+                .volumeIsLocalKey
+            ])
+            if rv?.isSymbolicLink == true {
+                continue
+            }
+            if rv?.volumeIsLocal == false {
+                continue
+            }
+            let isDir = rv?.isDirectory ?? false
+            let isPkg = (rv?.isPackage ?? false) || NSWorkspace.shared.isFilePackage(atPath: path)
+            let ext = url.pathExtension.lowercased()
+            if isDir && !(isPkg && ["pages", "numbers", "key"].contains(ext)) {
+                continue
+            }
+            let stdPath = (path as NSString).standardizingPath
+            if seen.insert(stdPath).inserted {
+                result.append(stdPath)
+            }
+            if result.count > 128 {
+                return []
+            }
+        }
+        return result
     }
 
     private func checkDragState(forceEndIfUp: Bool = false) {
@@ -222,6 +272,7 @@ final class MonitorController {
                         "screen": pos.screen.toDict()
                     ])
                     if dragKeyHeld {
+                        dragKeyConsumed = true
                         writeJSON([
                             "event": "trigger_drag_wheel",
                             "files": files,
@@ -247,6 +298,7 @@ final class MonitorController {
                     "screen": pos.screen.toDict()
                 ])
                 if dragKeyHeld {
+                    dragKeyConsumed = true
                     writeJSON([
                         "event": "trigger_drag_wheel",
                         "files": files,
@@ -270,7 +322,38 @@ final class MonitorController {
         }
     }
 
+    private func tearDownMonitors() {
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            runLoopSource = nil
+        }
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            CFMachPortInvalidate(tap)
+            eventTap = nil
+        }
+        if let fm = fallbackMonitor {
+            NSEvent.removeMonitor(fm)
+            fallbackMonitor = nil
+        }
+    }
+
+    private func refreshAccessibilityMonitor(emitChange: Bool) {
+        let nowTrusted = AXIsProcessTrusted()
+        if nowTrusted == currentAxTrusted {
+            return
+        }
+        setupInputMonitors(axTrusted: nowTrusted)
+        if emitChange {
+            writeJSON([
+                "event": "ax_status",
+                "axTrusted": currentAxTrusted
+            ])
+        }
+    }
+
     private func setupInputMonitors(axTrusted: Bool) {
+        tearDownMonitors()
         if axTrusted {
             let mask = (1 << CGEventType.keyDown.rawValue)
                 | (1 << CGEventType.keyUp.rawValue)
@@ -295,12 +378,14 @@ final class MonitorController {
                 self.runLoopSource = source
                 CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
                 CGEvent.tapEnable(tap: tap, enable: true)
+                self.currentAxTrusted = true
                 return
             }
         }
 
+        self.currentAxTrusted = false
         // Zero-permission fallback monitor (observes events without consuming drag key)
-        NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged, .otherMouseDown, .otherMouseUp]) { [weak self] event in
+        self.fallbackMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged, .otherMouseDown, .otherMouseUp]) { [weak self] event in
             self?.handleFallbackNSEvent(event)
         }
     }
@@ -366,8 +451,15 @@ final class MonitorController {
 
         // 2) Drag Trigger Key (consumed ONLY when dragActive or already consumed for this press)
         if dragModifierOnly == nil && keyCode == dragKeyCode {
+            let disallowedMods: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl, .maskShift]
+            let hasDisallowedMod = !flags.intersection(disallowedMods).isEmpty
             if type == .keyDown {
                 if !isRepeat {
+                    if hasDisallowedMod {
+                        dragKeyHeld = false
+                        dragKeyConsumed = false
+                        return Unmanaged.passUnretained(event)
+                    }
                     dragKeyHeld = true
                     if dragActive {
                         dragKeyConsumed = true
@@ -461,7 +553,13 @@ final class MonitorController {
         }
 
         if dragModifierOnly == nil && event.keyCode == dragKeyCode {
+            let modFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            let hasDisallowedMod = !modFlags.intersection([.command, .option, .control, .shift]).isEmpty
             if event.type == .keyDown && !event.isARepeat {
+                if hasDisallowedMod {
+                    dragKeyHeld = false
+                    return
+                }
                 dragKeyHeld = true
                 if dragActive {
                     let pos = currentCursorAndScreen()

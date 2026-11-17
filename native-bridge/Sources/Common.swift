@@ -184,7 +184,7 @@ struct ParsedShortcut {
             case "opt", "option", "alt": opt = true
             case "ctrl", "control": ctrl = true
             case "shift": shf = true
-            default: break
+            default: return nil
             }
         }
         return ParsedShortcut(keyCode: code, command: cmd, option: opt, control: ctrl, shift: shf)

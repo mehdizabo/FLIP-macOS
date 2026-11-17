@@ -844,3 +844,204 @@ print("exif=\(p[kCGImagePropertyExifDictionary] != nil) tiff=\(p[kCGImagePropert
     let tmpl_err = create_new_item(&format!("template:{}", link_tmpl.display()), Some(dir.path()), &prefs, false);
     assert!(tmpl_err.is_err(), "symlinked template must be refused");
 }
+
+#[test]
+fn deep_audit_regressions_a4_pagination_predecode_40mp_ocr_exif_empty_ocr_images_pdf_and_html_lfi() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // 1. Multi-page A4 & Letter PDF pagination (>= 3 pages for 180 lines, real A4/Letter page sizes)
+    let txt_180 = dir.path().join("lines180.txt");
+    let mut lines_body = String::new();
+    for i in 1..=180 {
+        lines_body.push_str(&format!("Line {i:03} — local macOS CoreText A4 pagination check.\n"));
+    }
+    fs::write(&txt_180, &lines_body).unwrap();
+
+    let a4_pdf = dir.path().join("lines180_a4.pdf");
+    let a4_info = bridge::convert_doc(&txt_180, "PDF", &a4_pdf, "a4", None).unwrap();
+    let a4_pages = a4_info.get("pages").and_then(|v| v.as_u64()).unwrap_or(0);
+    assert!(a4_pages >= 3, "expected >= 3 A4 pages for 180 lines, got {a4_pages}");
+
+    let letter_pdf = dir.path().join("lines180_letter.pdf");
+    let letter_info = bridge::convert_doc(&txt_180, "PDF", &letter_pdf, "letter", None).unwrap();
+    let letter_pages = letter_info.get("pages").and_then(|v| v.as_u64()).unwrap_or(0);
+    assert!(letter_pages >= 3, "expected >= 3 Letter pages for 180 lines, got {letter_pages}");
+
+    // 2. Pre-decode > 40 MP guard in convertImage and imagesToPDF (7001x6000 = 42,006,000 px)
+    let big_png = dir.path().join("over40mp.png");
+    {
+        // Minimal 1-bit grayscale 7001x6000 PNG via raw image encoder (fast & tiny on disk/RAM)
+        let img = image::ImageBuffer::<image::Luma<u8>, Vec<u8>>::new(7001, 6000);
+        img.save_with_format(&big_png, ImageFormat::Png).unwrap();
+    }
+    let big_out = dir.path().join("over40mp_out.jpg");
+    let big_img_err = bridge::convert_image(&big_png, "JPG", &big_out, 0.9, true, false, None).unwrap_err();
+    assert!(
+        big_img_err.to_string().contains("40 megapixel"),
+        "expected 40 megapixel pre-decode error, got: {big_img_err}"
+    );
+    assert!(!big_out.exists());
+
+    let big_pdf_out = dir.path().join("over40mp.pdf");
+    let big_pdf_err = bridge::convert_pdf_from_images(&big_pdf_out, &[big_png], None).unwrap_err();
+    assert!(
+        big_pdf_err.to_string().contains("40 megapixel"),
+        "expected 40 megapixel error in imagesToPDF, got: {big_pdf_err}"
+    );
+    assert!(!big_pdf_out.exists());
+
+    // 3. OCR EXIF orientation (Orientation 6) + refuse 0-byte TXT on empty OCR (both image and PDF)
+    let rotated_ocr_jpg = dir.path().join("ocr_exif6.jpg");
+    let rotated_img_400x200 = dir.path().join("ocr_plain_upright.png");
+    let swift_ocr_fixture = dir.path().join("mk_ocr_exif.swift");
+    fs::write(
+        &swift_ocr_fixture,
+        format!(
+            r#"import Foundation
+import AppKit
+import CoreGraphics
+import CoreText
+import ImageIO
+import UniformTypeIdentifiers
+
+// Draw crisp upright text into 420x140 context
+let w = 420, h = 140
+let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+ctx.setFillColor(CGColor.white)
+ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+let str = NSAttributedString(string: "FLIP OCR ORIENTED", attributes: [
+    .font: NSFont.boldSystemFont(ofSize: 32),
+    .foregroundColor: NSColor.black
+])
+let line = CTLineCreateWithAttributedString(str)
+ctx.textPosition = CGPoint(x: 24, y: 56)
+CTLineDraw(line, ctx)
+let upright = ctx.makeImage()!
+
+let uprightDest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "{}") as CFURL, UTType.png.identifier as CFString, 1, nil)!
+CGImageDestinationAddImage(uprightDest, upright, nil)
+CGImageDestinationFinalize(uprightDest)
+
+// Store rotated pixels (90 deg CCW = 140x420) with EXIF Orientation = 6 (90 deg CW to display upright)
+let rotCtx = CGContext(data: nil, width: h, height: w, bitsPerComponent: 8, bytesPerRow: 0, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+rotCtx.translateBy(x: CGFloat(h), y: 0)
+rotCtx.rotate(by: .pi / 2)
+rotCtx.draw(upright, in: CGRect(x: 0, y: 0, width: w, height: h))
+let storedRotated = rotCtx.makeImage()!
+
+let jpgDest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "{}") as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
+CGImageDestinationAddImage(jpgDest, storedRotated, [kCGImagePropertyOrientation: 6] as CFDictionary)
+CGImageDestinationFinalize(jpgDest)
+"#,
+            rotated_img_400x200.display(),
+            rotated_ocr_jpg.display()
+        ),
+    )
+    .unwrap();
+    assert!(Command::new("/usr/bin/swift").arg(&swift_ocr_fixture).status().unwrap().success());
+
+    let ocr_out_txt = dir.path().join("ocr_exif6.txt");
+    let ocr_res = bridge::ocr(&rotated_ocr_jpg, Some(&ocr_out_txt), None).unwrap();
+    let ocr_text = ocr_res.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        ocr_text.contains("FLIP") && ocr_text.contains("ORIENTED"),
+        "OCR missed EXIF-oriented text: {ocr_text}"
+    );
+    assert!(fs::metadata(&ocr_out_txt).unwrap().len() > 0);
+
+    // Empty OCR must fail and refuse writing a 0-byte TXT file
+    let blank_img = dir.path().join("blank_shape.png");
+    make_transparent_test_png(&blank_img);
+    let blank_ocr_txt = dir.path().join("blank_ocr.txt");
+    let blank_ocr_err = bridge::ocr(&blank_img, Some(&blank_ocr_txt), None).unwrap_err();
+    assert!(blank_ocr_err.to_string().contains("OCR"));
+    assert!(!blank_ocr_txt.exists(), "0-byte TXT must NOT be written on empty OCR");
+
+    let blank_pdf = dir.path().join("blank_shape.pdf");
+    bridge::convert_pdf_from_images(&blank_pdf, &[blank_img.clone()], None).unwrap();
+    let blank_pdf_txt = dir.path().join("blank_pdf.txt");
+    let blank_pdf_err = bridge::convert_pdf_extract_text(&blank_pdf, &blank_pdf_txt, None).unwrap_err();
+    assert!(blank_pdf_err.to_string().contains("OCR"));
+    assert!(!blank_pdf_txt.exists(), "0-byte TXT must NOT be written on empty PDF OCR");
+
+    // 4. imagesToPDF A4 595x842 layout, >128 guard, and no-overwrite guard
+    let combined_a4 = dir.path().join("combined_a4.pdf");
+    bridge::convert_pdf_from_images(&combined_a4, &[rotated_ocr_jpg, blank_img.clone()], None).unwrap();
+    // Overwrite refusal
+    assert!(bridge::convert_pdf_from_images(&combined_a4, &[blank_img.clone()], None).is_err());
+    // >128 file refusal
+    let too_many_imgs: Vec<PathBuf> = vec![blank_img; 129];
+    assert!(bridge::convert_pdf_from_images(&dir.path().join("too_many.pdf"), &too_many_imgs, None).is_err());
+
+    // Inspect PDFKit bounds of a4_pdf, letter_pdf, and combined_a4
+    let inspect_pdfs = dir.path().join("inspect_pdfs.swift");
+    fs::write(
+        &inspect_pdfs,
+        format!(
+            r#"import Foundation
+import PDFKit
+func check(_ path: String, _ expectW: CGFloat, _ expectH: CGFloat, _ minPages: Int) {{
+    let doc = PDFDocument(url: URL(fileURLWithPath: path))!
+    assert(doc.pageCount >= minPages, "pageCount \(doc.pageCount) < \(minPages) for \(path)")
+    for i in 0..<doc.pageCount {{
+        let b = doc.page(at: i)!.bounds(for: .mediaBox)
+        assert(abs(b.width - expectW) < 1.0 && abs(b.height - expectH) < 1.0, "bad mediaBox \(b) for \(path)")
+    }}
+}}
+check("{}", 595.28, 841.89, 3)
+check("{}", 612.0, 792.0, 3)
+check("{}", 595.0, 842.0, 2)
+print("PDF_LAYOUT_OK")
+"#,
+            a4_pdf.display(),
+            letter_pdf.display(),
+            combined_a4.display()
+        ),
+    )
+    .unwrap();
+    let pdf_inspect_out = Command::new("/usr/bin/swift").arg(&inspect_pdfs).output().unwrap();
+    assert!(
+        pdf_inspect_out.status.success() && String::from_utf8_lossy(&pdf_inspect_out.stdout).contains("PDF_LAYOUT_OK"),
+        "PDF layout check failed: stderr={}",
+        String::from_utf8_lossy(&pdf_inspect_out.stderr)
+    );
+
+    // 5. HTML local file inclusion (LFI) blocked during import
+    let secret_file = dir.path().join("local_secret.txt");
+    fs::write(&secret_file, "SECRET_LOCAL_TOKEN_9911").unwrap();
+    let lfi_html = dir.path().join("lfi_probe.html");
+    fs::write(
+        &lfi_html,
+        format!(
+            "<!doctype html><html><head><link rel=\"stylesheet\" href=\"file://{}\"></head>\
+             <body><h1>Safe Title</h1><iframe src=\"file://{}\"></iframe>\
+             <img src=\"file://{}\"><p>Clean paragraph.</p></body></html>",
+            secret_file.display(),
+            secret_file.display(),
+            secret_file.display()
+        ),
+    )
+    .unwrap();
+    let lfi_res = convert_files(&[lfi_html], &["TXT".into(), "PDF".into()], &prefs, &cancel, None).unwrap();
+    for r in &lfi_res {
+        assert!(r.error.is_none(), "HTML sanitize failed for {}: {:?}", r.format, r.error);
+    }
+    let lfi_txt = fs::read_to_string(&lfi_res.iter().find(|r| r.format == "TXT").unwrap().outputs[0]).unwrap();
+    assert!(lfi_txt.contains("Safe Title") && lfi_txt.contains("Clean paragraph."));
+    assert!(!lfi_txt.contains("SECRET_LOCAL_TOKEN_9911"), "HTML LFI leaked local file: {lfi_txt}");
+
+    // 6. Permissions & iWork package bundle policy check
+    let perms = bridge::permissions(false, false, false).unwrap();
+    assert!(!perms.automation_finder.is_empty());
+
+    let pkg_pages = dir.path().join("bundle.pages");
+    fs::create_dir_all(pkg_pages.join("QuickLook")).unwrap();
+    // Copy valid PDF as Preview.pdf inside package-format .pages bundle
+    fs::copy(&combined_a4, pkg_pages.join("QuickLook/Preview.pdf")).unwrap();
+    let pkg_res = convert_files(&[pkg_pages], &["PDF".into()], &prefs, &cancel, None).unwrap();
+    assert!(pkg_res[0].error.is_none(), "package .pages -> PDF failed: {:?}", pkg_res[0].error);
+    assert!(fs::read(&pkg_res[0].outputs[0]).unwrap().starts_with(b"%PDF-"));
+}

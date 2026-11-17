@@ -1,19 +1,48 @@
 import Foundation
 import AppKit
+import CoreGraphics
 import ApplicationServices
 
 enum FinderBridge {
-    static func runAppleScript(_ source: String) -> (descriptor: NSAppleEventDescriptor?, error: String?) {
-        guard let script = NSAppleScript(source: source) else {
-            return (nil, "Failed to compile AppleScript")
+    private static let appleScriptQueue = DispatchQueue(label: "com.thetinyfoundry.flip.applescript")
+
+    static func runAppleScript(_ source: String, timeoutSeconds: TimeInterval = 5.0) -> (descriptor: NSAppleEventDescriptor?, error: String?) {
+        let sem = DispatchSemaphore(value: 0)
+        var outDesc: NSAppleEventDescriptor?
+        var outErr: String?
+
+        appleScriptQueue.async {
+            guard let script = NSAppleScript(source: source) else {
+                outErr = "Failed to compile AppleScript"
+                sem.signal()
+                return
+            }
+            var errInfo: NSDictionary?
+            let result = script.executeAndReturnError(&errInfo)
+            if let errInfo = errInfo {
+                outErr = (errInfo[NSAppleScript.errorMessage] as? String) ?? "AppleScript error"
+            } else {
+                outDesc = result
+            }
+            sem.signal()
         }
-        var errInfo: NSDictionary?
-        let result = script.executeAndReturnError(&errInfo)
-        if let errInfo = errInfo {
-            let msg = (errInfo[NSAppleScript.errorMessage] as? String) ?? "AppleScript error"
-            return (nil, msg)
+
+        if sem.wait(timeout: .now() + timeoutSeconds) == .timedOut {
+            return (nil, "AppleScript timed out after \(Int(timeoutSeconds))s")
         }
-        return (result, nil)
+        return (outDesc, outErr)
+    }
+
+    private static func isTrashFolder(_ path: String) -> Bool {
+        let standardized = (path as NSString).standardizingPath
+        let trashPath = ((FileManager.default.urls(for: .trashDirectory, in: .userDomainMask).first?.path
+            ?? (NSHomeDirectory() + "/.Trash")) as NSString).standardizingPath
+        if standardized == trashPath || standardized.hasPrefix(trashPath + "/") {
+            return true
+        }
+        return standardized == "/.Trashes"
+            || standardized.hasPrefix("/.Trashes/")
+            || standardized.contains("/.Trashes/")
     }
 
     static func getFinderContext() -> [String: Any] {
@@ -33,30 +62,32 @@ enum FinderBridge {
         }
 
         let script = """
-        tell application "Finder"
-            set selPaths to {}
-            try
-                set selList to selection as alias list
-                repeat with itemRef in selList
-                    set itemPath to POSIX path of itemRef
-                    set end of selPaths to itemPath
-                end repeat
-            on error
+        with timeout of 3 seconds
+            tell application "Finder"
+                set selPaths to {}
                 try
-                    set singleItem to (selection as alias)
-                    set end of selPaths to POSIX path of singleItem
+                    set selList to selection as alias list
+                    repeat with itemRef in selList
+                        set itemPath to POSIX path of itemRef
+                        set end of selPaths to itemPath
+                    end repeat
+                on error
+                    try
+                        set singleItem to (selection as alias)
+                        set end of selPaths to POSIX path of singleItem
+                    end try
                 end try
-            end try
-            set targetPath to ""
-            try
-                set insLoc to (insertion location as alias)
-                set targetPath to POSIX path of insLoc
-            end try
-            return {targetPath, selPaths}
-        end tell
+                set targetPath to ""
+                try
+                    set insLoc to (insertion location as alias)
+                    set targetPath to POSIX path of insLoc
+                end try
+                return {targetPath, selPaths}
+            end tell
+        end timeout
         """
 
-        let (desc, err) = runAppleScript(script)
+        let (desc, err) = runAppleScript(script, timeoutSeconds: 4.0)
         if let err = err {
             return [
                 "frontmostBundleId": frontmostId,
@@ -74,7 +105,10 @@ enum FinderBridge {
             if let folderStr = desc.atIndex(1)?.stringValue, !folderStr.isEmpty {
                 let normalized = (folderStr as NSString).standardizingPath
                 var isDir: ObjCBool = false
-                if FileManager.default.fileExists(atPath: normalized, isDirectory: &isDir), isDir.boolValue {
+                if FileManager.default.fileExists(atPath: normalized, isDirectory: &isDir),
+                   isDir.boolValue,
+                   !isTrashFolder(normalized),
+                   !NSWorkspace.shared.isFilePackage(atPath: normalized) {
                     targetFolder = normalized
                 }
             }
@@ -83,7 +117,9 @@ enum FinderBridge {
                     if let rawPath = listDesc.atIndex(i)?.stringValue, !rawPath.isEmpty {
                         let cleaned = rawPath.hasSuffix("/") && rawPath.count > 1 ? String(rawPath.dropLast()) : rawPath
                         var isDir: ObjCBool = false
-                        if FileManager.default.fileExists(atPath: cleaned, isDirectory: &isDir), !isDir.boolValue {
+                        let exists = FileManager.default.fileExists(atPath: cleaned, isDirectory: &isDir)
+                        let isPackage = exists && NSWorkspace.shared.isFilePackage(atPath: cleaned)
+                        if exists && (!isDir.boolValue || isPackage) {
                             selectedFiles.append(cleaned)
                         }
                     }
@@ -115,16 +151,41 @@ enum FinderBridge {
             if AXIsProcessTrusted() {
                 if let finderApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
                     finderApp.activate(options: [])
-                    Thread.sleep(forTimeInterval: 0.16)
-                    let pid = finderApp.processIdentifier
-                    if let src = CGEventSource(stateID: .hidSystemState),
-                       let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 36, keyDown: true),
-                       let keyUp = CGEvent(keyboardEventSource: src, virtualKey: 36, keyDown: false) {
-                        keyDown.postToPid(pid)
-                        keyUp.postToPid(pid)
-                        renameTriggered = true
+                    let targetStd = urls[0].standardizedFileURL.path
+                    var selectionConfirmed = false
+                    var automationBlocked = false
+                    for _ in 0..<8 {
+                        Thread.sleep(forTimeInterval: 0.04)
+                        let ctx = getFinderContext()
+                        if (ctx["automationGranted"] as? Bool) == false {
+                            automationBlocked = true
+                            break
+                        }
+                        let sel = (ctx["selectedFiles"] as? [String]) ?? []
+                        if sel.contains(where: { URL(fileURLWithPath: $0).standardizedFileURL.path == targetStd }) {
+                            selectionConfirmed = true
+                            break
+                        }
+                    }
+                    if automationBlocked {
+                        Thread.sleep(forTimeInterval: 0.14)
+                    }
+
+                    if selectionConfirmed || automationBlocked {
+                        let pid = finderApp.processIdentifier
+                        if let src = CGEventSource(stateID: .privateState) ?? CGEventSource(stateID: .hidSystemState),
+                           let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 36, keyDown: true),
+                           let keyUp = CGEvent(keyboardEventSource: src, virtualKey: 36, keyDown: false) {
+                            keyDown.flags = []
+                            keyUp.flags = []
+                            keyDown.postToPid(pid)
+                            keyUp.postToPid(pid)
+                            renameTriggered = true
+                        } else {
+                            renameError = "Could not create CGEvent for Return key"
+                        }
                     } else {
-                        renameError = "Could not create CGEvent for Return key"
+                        renameError = "Skipped inline rename because Finder selection did not match created item"
                     }
                 } else {
                     renameError = "Finder process not found"
@@ -195,6 +256,9 @@ enum FinderBridge {
     }
 
     static func saveClipboard(to targetPath: String) -> [String: Any] {
+        if FileManager.default.fileExists(atPath: targetPath) {
+            return ["ok": false, "error": "Target file already exists: \(targetPath)"]
+        }
         let pb = NSPasteboard.general
         let types = (pb.types ?? []).map { $0.rawValue }
         let outURL = URL(fileURLWithPath: targetPath)
@@ -202,7 +266,7 @@ enum FinderBridge {
         if clipboardHasTrueImage(pb, types: types) {
             if let pngData = pb.data(forType: .png) {
                 do {
-                    try pngData.write(to: outURL, options: .atomic)
+                    try pngData.write(to: outURL, options: .withoutOverwriting)
                     return ["ok": true, "kind": "image", "path": targetPath]
                 } catch {
                     return ["ok": false, "error": error.localizedDescription]
@@ -213,7 +277,7 @@ enum FinderBridge {
                let rep = NSBitmapImageRep(data: tiff),
                let pngData = rep.representation(using: .png, properties: [:]) {
                 do {
-                    try pngData.write(to: outURL, options: .atomic)
+                    try pngData.write(to: outURL, options: .withoutOverwriting)
                     return ["ok": true, "kind": "image", "path": targetPath]
                 } catch {
                     return ["ok": false, "error": error.localizedDescription]
@@ -222,7 +286,7 @@ enum FinderBridge {
         }
         if let pdfData = pb.data(forType: .pdf) {
             do {
-                try pdfData.write(to: outURL, options: .atomic)
+                try pdfData.write(to: outURL, options: .withoutOverwriting)
                 return ["ok": true, "kind": "pdf", "path": targetPath]
             } catch {
                 return ["ok": false, "error": error.localizedDescription]
@@ -230,7 +294,7 @@ enum FinderBridge {
         }
         if let rtfData = pb.data(forType: .rtf) {
             do {
-                try rtfData.write(to: outURL, options: .atomic)
+                try rtfData.write(to: outURL, options: .withoutOverwriting)
                 return ["ok": true, "kind": "rtf", "path": targetPath]
             } catch {
                 return ["ok": false, "error": error.localizedDescription]
@@ -240,7 +304,7 @@ enum FinderBridge {
             let plain = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines)
             if (plain == nil || plain == urlStr), let plistData = weblocData(for: urlStr) {
                 do {
-                    try plistData.write(to: outURL, options: .atomic)
+                    try plistData.write(to: outURL, options: .withoutOverwriting)
                     return ["ok": true, "kind": "webloc", "path": targetPath]
                 } catch {
                     return ["ok": false, "error": error.localizedDescription]
@@ -249,7 +313,7 @@ enum FinderBridge {
         }
         if let str = pb.string(forType: .string), !str.isEmpty {
             do {
-                try Data(str.utf8).write(to: outURL, options: .atomic)
+                try Data(str.utf8).write(to: outURL, options: .withoutOverwriting)
                 return ["ok": true, "kind": "text", "path": targetPath]
             } catch {
                 return ["ok": false, "error": error.localizedDescription]
@@ -258,9 +322,15 @@ enum FinderBridge {
         return ["ok": false, "error": "Clipboard does not contain supported image, PDF, RTF, URL, or text data"]
     }
 
-    static func checkPermissions(promptAx: Bool, openAx: Bool, openAutomation: Bool) -> [String: Any] {
+    static func checkPermissions(
+        promptAx: Bool,
+        openAx: Bool,
+        openAutomation: Bool,
+        openInputMonitoring: Bool = false
+    ) -> [String: Any] {
         let options = ["AXTrustedCheckOptionPrompt": promptAx] as CFDictionary
         let axTrusted = AXIsProcessTrustedWithOptions(options)
+        let inputMonitoring = CGPreflightListenEventAccess()
 
         var automationStatus = "unknown"
         let finderTarget = NSAppleEventDescriptor(bundleIdentifier: "com.apple.finder")
@@ -281,11 +351,14 @@ enum FinderBridge {
         if openAutomation, let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation") {
             NSWorkspace.shared.open(url)
         }
+        if openInputMonitoring, let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+            NSWorkspace.shared.open(url)
+        }
 
         return [
             "accessibility": axTrusted,
             "automationFinder": automationStatus,
-            "inputMonitoring": axTrusted
+            "inputMonitoring": inputMonitoring
         ]
     }
 }

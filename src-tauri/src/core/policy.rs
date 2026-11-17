@@ -452,10 +452,13 @@ pub fn validate_input_files<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<PathBuf>,
         if meta.file_type().is_symlink() {
             return Err(PolicyError::SymlinkRefused(p.display().to_string()));
         }
+        let ext = ext_lower(p);
+        let is_iwork_package = matches!(ext.as_str(), "pages" | "numbers" | "key");
         if meta.is_dir() {
-            return Err(PolicyError::DirectoryNotAllowed(p.display().to_string()));
-        }
-        if !meta.is_file() {
+            if !is_iwork_package {
+                return Err(PolicyError::DirectoryNotAllowed(p.display().to_string()));
+            }
+        } else if !meta.is_file() {
             return Err(PolicyError::InvalidPath(p.display().to_string()));
         }
         if is_finder_alias(p) {
@@ -468,13 +471,12 @@ pub fn validate_input_files<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<PathBuf>,
             return Err(PolicyError::NetworkVolumeRefused(p.display().to_string()));
         }
 
-        let ext = ext_lower(p);
         let max_bytes = if is_media_ext(&ext) {
             MAX_MEDIA_FILE_BYTES
         } else {
             MAX_REGULAR_FILE_BYTES
         };
-        if meta.len() > max_bytes {
+        if !meta.is_dir() && meta.len() > max_bytes {
             return Err(PolicyError::FileTooLarge(p.display().to_string()));
         }
 

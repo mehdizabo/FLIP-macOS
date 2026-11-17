@@ -9,7 +9,7 @@ func printUsage() {
       finder-reveal [--rename] <path...>
       clipboard-inspect
       clipboard-save <output-path>
-      permissions [--prompt-ax] [--open-ax] [--open-automation]
+      permissions [--prompt-ax] [--open-ax] [--open-automation] [--open-input-monitoring]
       thumbnail <path> [size]
       ocr <image-path> [out-txt-path]
       convert-pdf render <pdf> <out-dir> <format> [dpi]
@@ -81,7 +81,13 @@ func runCLI() {
         let promptAx = args.contains("--prompt-ax")
         let openAx = args.contains("--open-ax")
         let openAuto = args.contains("--open-automation")
-        writeJSON(FinderBridge.checkPermissions(promptAx: promptAx, openAx: openAx, openAutomation: openAuto))
+        let openInput = args.contains("--open-input-monitoring")
+        writeJSON(FinderBridge.checkPermissions(
+            promptAx: promptAx,
+            openAx: openAx,
+            openAutomation: openAuto,
+            openInputMonitoring: openInput
+        ))
 
     case "thumbnail":
         guard args.count >= 2 else { failExit("thumbnail requires <path> [size]") }
