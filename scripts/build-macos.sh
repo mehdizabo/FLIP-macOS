@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_PATH="$ROOT_DIR/src-tauri/target/release/bundle/macos/FLIP.app"
+
+export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path)}"
+export CC="${CC:-/usr/bin/clang}"
+export CXX="${CXX:-/usr/bin/clang++}"
+
+if [ ! -d "$ROOT_DIR/node_modules" ]; then
+  echo "==> Installing frontend dependencies"
+  (cd "$ROOT_DIR" && npm install)
+fi
+
+echo "==> [1/4] Building native Swift/AppKit bridge"
+"$ROOT_DIR/native-bridge/build.sh"
+
+echo "==> [2/4] Building TypeScript + Vite frontend"
+(cd "$ROOT_DIR" && npm run build)
+
+echo "==> [3/4] Building Tauri release .app bundle"
+(cd "$ROOT_DIR/src-tauri" && cargo tauri build --bundles app)
+
+if [ ! -d "$APP_PATH" ]; then
+  echo "Error: Expected bundle not found at $APP_PATH" >&2
+  exit 1
+fi
+
+BRIDGE_IN_APP="$APP_PATH/Contents/Resources/flip-macos-bridge"
+if [ ! -f "$BRIDGE_IN_APP" ]; then
+  echo "Error: flip-macos-bridge missing in bundle at $BRIDGE_IN_APP" >&2
+  exit 1
+fi
+chmod +x "$BRIDGE_IN_APP"
+
+if [ ! -f "$APP_PATH/Contents/Resources/resources/flip-tick.wav" ] && [ ! -f "$APP_PATH/Contents/Resources/flip-tick.wav" ]; then
+  echo "Error: flip-tick.wav missing from bundle Resources" >&2
+  exit 1
+fi
+
+echo "==> [4/4] Signing and verifying .app bundle"
+"$ROOT_DIR/scripts/sign-local.sh" "$APP_PATH"
+
+echo ""
+echo "Build complete:"
+echo "  Bundle: $APP_PATH"
+echo "  Bridge: $BRIDGE_IN_APP ($(ls -l "$BRIDGE_IN_APP" | awk '{print $1, $5 " bytes"}'))"
