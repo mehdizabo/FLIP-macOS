@@ -1,6 +1,8 @@
 use crate::core::input_gate::{DragTriggerShortcut, IdleShortcut};
 use crate::core::naming::conversion_stem;
 use crate::core::preferences::{AppPreferences, RecentConversion};
+use crate::core::quick_actions::{self, QuickActionsStatus};
+use crate::core::startup;
 use crate::engines::bridge::{
     self, ClipboardInspect, PermissionsStatus, ThumbnailResult,
 };
@@ -9,7 +11,7 @@ use crate::engines::create_new::{
     CreateNewResult, NewFileKindInfo, UserTemplateInfo,
 };
 use crate::engines::{convert_files, detect_tools, ConversionResult, DetectedTools, EngineError};
-use crate::host::tray::{open_templates_folder_in_finder, reveal_logs_in_finder};
+use crate::host::tray::{open_templates_folder_in_finder, refresh_tray_menu, reveal_logs_in_finder};
 use crate::host::{
     hide_wheel, inspect_paths_with_prefs, present_wheel_at, query_finder_context_or_fallback,
     show_standard_window, HostState, InspectFilesResult, WheelStatePayload,
@@ -233,32 +235,7 @@ pub async fn execute_conversion(
 
     let payload = match outcome {
         Ok(results) => {
-            // Record recent conversions in preferences
-            if let Ok(mut prefs_guard) = state_arc.prefs.lock() {
-                let now = Utc::now().to_rfc3339();
-                let mut added = false;
-                for r in &results {
-                    if r.error.is_none() {
-                        let source_name = Path::new(&r.source)
-                            .file_name()
-                            .and_then(|s| s.to_str())
-                            .map(String::from)
-                            .unwrap_or_else(|| conversion_stem(Path::new(&r.source)));
-                        for out in &r.outputs {
-                            prefs_guard.push_recent(RecentConversion {
-                                source_name: source_name.clone(),
-                                target_format: r.format.clone(),
-                                output_path: out.clone(),
-                                timestamp_utc: now.clone(),
-                            });
-                            added = true;
-                        }
-                    }
-                }
-                if added {
-                    let _ = prefs_guard.save();
-                }
-            }
+            record_recent_conversion(&app, &state_arc, &results);
 
             let first_err = results.iter().find_map(|r| r.error.clone());
             let all_ok = first_err.is_none();
@@ -345,13 +322,55 @@ pub async fn get_new_file_kinds(_state: State<'_, Arc<HostState>>) -> Result<New
     .map_err(|e| e.to_string())
 }
 
+pub fn record_recent_conversion(
+    app: &AppHandle,
+    state: &HostState,
+    results: &[ConversionResult],
+) {
+    let updated_recent = if let Ok(mut prefs_guard) = state.prefs.lock() {
+        let now = Utc::now().to_rfc3339();
+        let mut added = false;
+        for r in results {
+            if r.error.is_none() {
+                let source_name = Path::new(&r.source)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(String::from)
+                    .unwrap_or_else(|| conversion_stem(Path::new(&r.source)));
+                for out in &r.outputs {
+                    prefs_guard.push_recent(RecentConversion {
+                        source_name: source_name.clone(),
+                        target_format: r.format.clone(),
+                        output_path: out.clone(),
+                        timestamp_utc: now.clone(),
+                    });
+                    added = true;
+                }
+            }
+        }
+        if added {
+            let _ = prefs_guard.save();
+            Some(prefs_guard.recent_conversions.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    if let Some(recent) = updated_recent {
+        refresh_tray_menu(app, &recent);
+    }
+}
+
 #[tauri::command]
 pub fn get_preferences(state: State<'_, Arc<HostState>>) -> Result<AppPreferences, String> {
-    state
+    let mut guard = state
         .prefs
         .lock()
-        .map(|g| g.clone())
-        .map_err(|_| "Preferences lock poisoned".to_string())
+        .map_err(|_| "Preferences lock poisoned".to_string())?;
+    startup::sync_preferences_with_launch_agent(&mut guard);
+    Ok(guard.clone())
 }
 
 pub fn merge_and_validate_preferences(
@@ -379,6 +398,11 @@ pub fn save_preferences(
             .lock()
             .map_err(|_| "Preferences lock poisoned".to_string())?;
         let merged = merge_and_validate_preferences(prefs, &guard)?;
+        let desired_login = merged.launch_at_login;
+        let actual_login = startup::is_launch_at_login_enabled();
+        if desired_login != guard.launch_at_login || desired_login != actual_login {
+            startup::set_launch_at_login(desired_login)?;
+        }
         merged.save().map_err(|e| e.to_string())?;
         *guard = merged.clone();
         merged
@@ -583,4 +607,21 @@ pub fn get_recent_conversions(
         .lock()
         .map(|g| g.recent_conversions.clone())
         .map_err(|_| "Preferences lock poisoned".to_string())
+}
+
+#[tauri::command]
+pub async fn get_quick_actions_status() -> Result<QuickActionsStatus, String> {
+    tokio::task::spawn_blocking(|| Ok(quick_actions::get_quick_actions_status()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn install_finder_quick_actions(
+    install_cli: Option<bool>,
+) -> Result<QuickActionsStatus, String> {
+    let with_cli = install_cli.unwrap_or(false);
+    tokio::task::spawn_blocking(move || quick_actions::install_quick_actions(with_cli))
+        .await
+        .map_err(|e| e.to_string())?
 }

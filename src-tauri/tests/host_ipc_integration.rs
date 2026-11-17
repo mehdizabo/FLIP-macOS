@@ -1,5 +1,6 @@
 use flip_lib::core::policy::FormatFamily;
 use flip_lib::core::preferences::{expand_tilde_path, AppPreferences, RecentConversion};
+use flip_lib::core::quick_actions::QuickActionsStatus;
 use flip_lib::engines::bridge::{
     resolve_bridge_binary_from, ClipboardInspect, PermissionsStatus, ThumbnailResult,
 };
@@ -186,6 +187,28 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
     assert!(pv.get("automationFinder").is_some());
     assert!(pv.get("inputMonitoring").is_some());
 
+    let qa = QuickActionsStatus {
+        services_dir: "/Users/demo/Library/Services".into(),
+        convert_installed: true,
+        new_file_installed: true,
+        convert_path: "/Users/demo/Library/Services/Convert with FLIP.workflow".into(),
+        new_file_path: "/Users/demo/Library/Services/New File with FLIP.workflow".into(),
+        cli_executable: Some("/Applications/FLIP.app/Contents/MacOS/flip".into()),
+        cli_symlink_path: Some("/Users/demo/.local/bin/flip".into()),
+    };
+    let qav = serde_json::to_value(&qa).unwrap();
+    for key in [
+        "servicesDir",
+        "convertInstalled",
+        "newFileInstalled",
+        "convertPath",
+        "newFilePath",
+        "cliExecutable",
+        "cliSymlinkPath",
+    ] {
+        assert!(qav.get(key).is_some(), "QuickActionsStatus missing `{key}`");
+    }
+
     let thumb = ThumbnailResult {
         ok: true,
         png_base64: Some("abc".into()),
@@ -346,7 +369,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
             }
         }
     }
-    assert_eq!(rust_cmds.len(), 21);
+    assert_eq!(rust_cmds.len(), 23);
 
     // Extract every invoke<...>("cmd_name") in src/ipc.ts
     let mut ts_cmds = BTreeSet::new();
@@ -426,7 +449,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         rust_param_map.insert(name, keys);
         rem = &after_fn[close_p..];
     }
-    assert_eq!(rust_param_map.len(), 21);
+    assert_eq!(rust_param_map.len(), 23);
 
     let mut ts_search = ipc_ts.as_str();
     while let Some(idx) = ts_search.find("invoke<") {
@@ -511,4 +534,20 @@ fn fallback_folder_tilde_expansion_and_save_preferences_history_preservation() {
     let mut bad_prefs = AppPreferences::default();
     bad_prefs.drag_trigger = "Return".into();
     assert!(merge_and_validate_preferences(bad_prefs, &server_prefs).is_err());
+}
+
+#[test]
+fn info_plist_registers_flip_url_scheme() {
+    let plist_raw = fs::read_to_string(manifest_dir().join("Info.plist")).unwrap();
+    assert!(plist_raw.contains("CFBundleURLTypes"));
+    assert!(plist_raw.contains("CFBundleURLSchemes"));
+    assert!(plist_raw.contains("<string>flip</string>"));
+    if Path::new("/usr/bin/plutil").is_file() {
+        let status = std::process::Command::new("/usr/bin/plutil")
+            .arg("-lint")
+            .arg(manifest_dir().join("Info.plist"))
+            .status()
+            .unwrap();
+        assert!(status.success(), "src-tauri/Info.plist must pass plutil -lint");
+    }
 }

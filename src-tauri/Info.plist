@@ -6,5 +6,18 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>FLIP uses Finder Automation to inspect selected files, determine your active Finder folder for New File creation, and trigger inline rename.</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.thetinyfoundry.flip.mac</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>flip</string>
+			</array>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+		</dict>
+	</array>
 </dict>
 </plist>

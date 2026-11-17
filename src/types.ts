@@ -89,6 +89,16 @@ export interface PermissionsStatus {
   inputMonitoring: boolean;
 }
 
+export interface QuickActionsStatus {
+  servicesDir: string;
+  convertInstalled: boolean;
+  newFileInstalled: boolean;
+  convertPath: string;
+  newFilePath: string;
+  cliExecutable: string | null;
+  cliSymlinkPath: string | null;
+}
+
 export interface NewFileKindInfo {
   id: string;
   name: string;

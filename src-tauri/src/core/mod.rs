@@ -3,4 +3,6 @@ pub mod logging;
 pub mod naming;
 pub mod policy;
 pub mod preferences;
+pub mod quick_actions;
 pub mod staging;
+pub mod startup;

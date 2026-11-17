@@ -16,6 +16,7 @@ import type {
   NewFileKindsResponse,
   PermissionRequestKind,
   PermissionsStatus,
+  QuickActionsStatus,
   RecentConversion,
   ThumbnailResult,
   UserTemplateInfo,
@@ -234,6 +235,16 @@ let mockPermissions: PermissionsStatus = {
   accessibility: true,
   automationFinder: "granted",
   inputMonitoring: true,
+};
+
+let mockQuickActions: QuickActionsStatus = {
+  servicesDir: "/Users/demo/Library/Services",
+  convertInstalled: false,
+  newFileInstalled: false,
+  convertPath: "/Users/demo/Library/Services/Convert with FLIP.workflow",
+  newFilePath: "/Users/demo/Library/Services/New File with FLIP.workflow",
+  cliExecutable: "/Applications/FLIP.app/Contents/MacOS/flip",
+  cliSymlinkPath: null,
 };
 
 let mockCancelRequested = false;
@@ -762,6 +773,30 @@ export async function getRecentConversions(): Promise<RecentConversion[]> {
     return loadMockPrefs().recentConversions;
   }
   return invoke<RecentConversion[]>("get_recent_conversions");
+}
+
+export async function getQuickActionsStatus(): Promise<QuickActionsStatus> {
+  if (!isTauriRuntime()) {
+    return { ...mockQuickActions };
+  }
+  return invoke<QuickActionsStatus>("get_quick_actions_status");
+}
+
+export async function installFinderQuickActions(
+  installCli = false,
+): Promise<QuickActionsStatus> {
+  if (!isTauriRuntime()) {
+    mockQuickActions = {
+      ...mockQuickActions,
+      convertInstalled: true,
+      newFileInstalled: true,
+      cliSymlinkPath: installCli
+        ? "/Users/demo/.local/bin/flip"
+        : mockQuickActions.cliSymlinkPath,
+    };
+    return { ...mockQuickActions };
+  }
+  return invoke<QuickActionsStatus>("install_finder_quick_actions", { installCli });
 }
 
 // ---------- Batch Handoff Helpers ----------

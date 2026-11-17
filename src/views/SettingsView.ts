@@ -7,7 +7,9 @@ import {
   getNewFileKinds,
   getPermissionsStatus,
   getPreferences,
+  getQuickActionsStatus,
   getRecentConversions,
+  installFinderQuickActions,
   openTemplatesFolder,
   openWindow,
   requestPermission,
@@ -23,6 +25,7 @@ import type {
   NewFileKindInfo,
   NewFileKindsResponse,
   PermissionsStatus,
+  QuickActionsStatus,
   RecentConversion,
   UserTemplateInfo,
 } from "../types";
@@ -61,6 +64,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
   let prefs: AppPreferences = defaultPreferences();
   let engines: EngineStatus | null = null;
   let permissions: PermissionsStatus | null = null;
+  let quickActions: QuickActionsStatus | null = null;
   let newFileKinds: NewFileKindInfo[] = [];
   let templates: UserTemplateInfo[] = [];
   let clipboardInfo: ClipboardStatusInfo | undefined;
@@ -581,6 +585,17 @@ export function mountSettingsView(root: HTMLElement): () => void {
     const axOk = permissions?.accessibility ?? false;
     const autoState = permissions?.automationFinder ?? "unknown";
     const autoOk = autoState === "granted";
+    const qaConvert = quickActions?.convertInstalled ?? false;
+    const qaNew = quickActions?.newFileInstalled ?? false;
+    const qaAllInstalled = qaConvert && qaNew;
+    const qaAnyInstalled = qaConvert || qaNew;
+    const qaLabel = qaAllInstalled
+      ? "Installed"
+      : qaAnyInstalled
+        ? "Partial"
+        : "Not Installed";
+    const cliLinked = Boolean(quickActions?.cliSymlinkPath);
+    const cliExe = quickActions?.cliExecutable ?? "/Applications/FLIP.app/Contents/MacOS/flip";
 
     return `
       <section class="glass-card">
@@ -676,6 +691,49 @@ export function mountSettingsView(root: HTMLElement): () => void {
           <input type="text" class="mac-input" id="pref-pandocPath" placeholder="Auto-detect" value="${escapeHtml(prefs.pandocPath ?? "")}" />
         </div>
       </section>
+
+      <section class="glass-card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Finder Quick Actions, URL Scheme &amp; CLI</h2>
+            <p class="card-subtitle">Integrate FLIP with Finder context Quick Actions, <code>flip://</code> URLs, and Terminal</p>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Finder Quick Actions</div>
+            <div class="setting-desc">Installs <code>Convert with FLIP.workflow</code> &amp; <code>New File with FLIP.workflow</code> into <code>~/Library/Services</code>.</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="status-pill ${qaAllInstalled ? "is-ok" : "is-warn"}">
+              <span class="status-dot"></span>${qaLabel}
+            </span>
+            <button type="button" class="btn btn-primary btn-sm" id="btn-install-quick-actions">
+              ${qaAllInstalled ? "Reinstall Quick Actions" : "Install Quick Actions"}
+            </button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Terminal CLI &amp; <code>flip://</code> Scheme</div>
+            <div class="setting-desc">
+              ${
+                cliLinked
+                  ? `Linked at <code>${escapeHtml(quickActions?.cliSymlinkPath ?? "")}</code>. Supports <code>flip convert … --to …</code> and <code>flip new …</code>.`
+                  : `Link <code>~/.local/bin/flip</code> → <code>${escapeHtml(cliExe)}</code> for Terminal &amp; Raycast.`
+              }
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="status-pill ${cliLinked ? "is-ok" : "is-warn"}">
+              <span class="status-dot"></span>${cliLinked ? "Linked" : "Not Linked"}
+            </span>
+            <button type="button" class="btn btn-sm" id="btn-install-cli-symlink">
+              ${cliLinked ? "Relink CLI" : "Install CLI Symlink"}
+            </button>
+          </div>
+        </div>
+      </section>
     `;
   }
 
@@ -736,7 +794,9 @@ export function mountSettingsView(root: HTMLElement): () => void {
     // General
     mainEl.querySelector<HTMLInputElement>("#pref-launchAtLogin")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.launchAtLogin = checked; });
+      void persistPrefs((d) => { d.launchAtLogin = checked; }).then((ok) => {
+        if (!ok && !disposed) renderMain();
+      });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-soundEnabled")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
@@ -912,6 +972,28 @@ export function mountSettingsView(root: HTMLElement): () => void {
       const val = (e.target as HTMLInputElement).value.trim();
       void persistPrefs((d) => { d.pandocPath = val || null; }).then(refreshDiagnostics);
     });
+    mainEl.querySelector("#btn-install-quick-actions")?.addEventListener("click", async () => {
+      try {
+        quickActions = await installFinderQuickActions(false);
+        if (!disposed) {
+          renderMain();
+          showSavedToast("Quick Actions installed");
+        }
+      } catch (err) {
+        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+      }
+    });
+    mainEl.querySelector("#btn-install-cli-symlink")?.addEventListener("click", async () => {
+      try {
+        quickActions = await installFinderQuickActions(true);
+        if (!disposed) {
+          renderMain();
+          showSavedToast("CLI symlink & Quick Actions ready");
+        }
+      } catch (err) {
+        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+      }
+    });
 
     // About
     mainEl.querySelector("#btn-about-wheel")?.addEventListener("click", () => void openWindow("wheel"));
@@ -1030,9 +1112,10 @@ export function mountSettingsView(root: HTMLElement): () => void {
   root.querySelector("#nav-open-onboarding")?.addEventListener("click", () => void openWindow("onboarding"));
 
   async function refreshDiagnostics(): Promise<void> {
-    const [eng, perms, kindsResp, rec] = await Promise.all([
+    const [eng, perms, qa, kindsResp, rec] = await Promise.all([
       getEngineStatus().catch(() => null),
       getPermissionsStatus().catch(() => null),
+      getQuickActionsStatus().catch(() => null),
       getNewFileKinds().catch(
         (): NewFileKindsResponse => ({ kinds: [], templates: [] }),
       ),
@@ -1041,6 +1124,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
     if (disposed) return;
     if (eng) engines = eng;
     if (perms) permissions = perms;
+    if (qa) quickActions = qa;
     newFileKinds = kindsResp.kinds;
     templates = kindsResp.templates;
     clipboardInfo = kindsResp.clipboard;

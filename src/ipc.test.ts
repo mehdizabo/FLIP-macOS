@@ -11,9 +11,11 @@ import {
   getNewFileKinds,
   getPermissionsStatus,
   getPreferences,
+  getQuickActionsStatus,
   getRecentConversions,
   getWheelState,
   inspectFiles,
+  installFinderQuickActions,
   openBatchWithFiles,
   openWheelMode,
   requestPermission,
@@ -119,6 +121,14 @@ describe("Frontend IPC surface & contract alignment", () => {
       expect(typeof p0.accessibility).toBe("boolean");
       const p1 = await requestPermission("open_input_monitoring");
       expect(p1.inputMonitoring).toBe(true);
+
+      const qa0 = await getQuickActionsStatus();
+      expect(qa0.convertInstalled).toBe(false);
+      expect(qa0.newFileInstalled).toBe(false);
+      const qa1 = await installFinderQuickActions(true);
+      expect(qa1.convertInstalled).toBe(true);
+      expect(qa1.newFileInstalled).toBe(true);
+      expect(qa1.cliSymlinkPath).toBe("/Users/demo/.local/bin/flip");
 
       const prefs = await getPreferences();
       prefs.dragTrigger = "Space";
