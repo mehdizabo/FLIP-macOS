@@ -30,6 +30,13 @@ pub const NEW_FILE_TRAY_ITEMS: &[(&str, &str)] = &[
     ("clipboard", "From Clipboard"),
 ];
 
+pub const TRAY_UTILITY_ITEMS: &[(&str, &str)] = &[
+    ("settings", "Settings & Shortcuts…"),
+    ("check_updates", "Check for Updates…"),
+    ("templates", "Open Templates Folder"),
+    ("logs", "Reveal Diagnostic Logs"),
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecentMenuEntry {
     pub id: String,
@@ -203,6 +210,13 @@ pub fn build_tray_menu(app: &AppHandle, recent: &[RecentConversion]) -> tauri::R
         true,
         None::<&str>,
     )?;
+    let check_updates = MenuItem::with_id(
+        app,
+        "check_updates",
+        "Check for Updates…",
+        true,
+        None::<&str>,
+    )?;
     let templates = MenuItem::with_id(
         app,
         "templates",
@@ -222,6 +236,7 @@ pub fn build_tray_menu(app: &AppHandle, recent: &[RecentConversion]) -> tauri::R
             &batch,
             &sep1,
             &settings,
+            &check_updates,
             &templates,
             &logs,
             &sep2,
@@ -376,6 +391,23 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                 "settings" => {
                     let _ = show_standard_window(app, &state, "settings");
                 }
+                "check_updates" => {
+                    let had_window = app.get_webview_window("settings").is_some();
+                    let _ = show_standard_window(app, &state, "settings");
+                    let payload = json!({ "tab": "about", "checkUpdates": true });
+                    if let Some(win) = app.get_webview_window("settings") {
+                        let _ = win.emit("settings:navigate", &payload);
+                    }
+                    if !had_window {
+                        let app_h = app.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(300));
+                            if let Some(win) = app_h.get_webview_window("settings") {
+                                let _ = win.emit("settings:navigate", &payload);
+                            }
+                        });
+                    }
+                }
                 "templates" => {
                     let _ = open_templates_folder_in_finder();
                 }
@@ -488,5 +520,8 @@ mod tests {
             },
         ];
         assert_eq!(recent_menu_entries(&dup_items).len(), 1);
+        assert!(TRAY_UTILITY_ITEMS
+            .iter()
+            .any(|(id, label)| *id == "check_updates" && *label == "Check for Updates…"));
     }
 }

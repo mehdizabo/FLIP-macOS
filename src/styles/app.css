@@ -355,6 +355,29 @@ html[data-route="onboarding"] body {
   color: var(--text-secondary);
 }
 
+.diag-pre {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border-hairline);
+  background: var(--bg-inset);
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  max-height: 150px;
+  overflow-y: auto;
+  color: var(--text-secondary);
+}
+
+.diag-textarea {
+  width: 100%;
+  resize: vertical;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
 /* Settings Shell */
 .settings-shell {
   display: grid;

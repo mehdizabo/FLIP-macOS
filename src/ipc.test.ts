@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   cancelConversion,
+  checkForUpdates,
   consumeBatchHandoff,
+  copyDiagnosticsToClipboard,
   defaultPreferences,
   dismissWheel,
   events,
   executeConversion,
   executeCreateNew,
+  getDiagnosticsReport,
   getEngineStatus,
   getNewFileKinds,
   getPermissionsStatus,
@@ -158,6 +161,48 @@ describe("Frontend IPC surface & contract alignment", () => {
       const handoffCleared = consumeBatchHandoff();
       expect(handoffCleared.files).toEqual(["/tmp/y.png"]);
       expect(handoffCleared.results).toBeNull();
+
+      const navEvents: Array<{ tab?: string; checkUpdates?: boolean }> = [];
+      const uNav = await events.onSettingsNavigate((p) => navEvents.push(p));
+      expect(typeof uNav).toBe("function");
+      uNav();
+
+      const upd = await checkForUpdates();
+      expect(upd.currentVersion).toBe("0.1.0");
+      expect(upd.latestTag.startsWith("v")).toBe(true);
+      expect(upd.htmlUrl.startsWith("https://github.com/")).toBe(true);
+      expect(typeof upd.updateAvailable).toBe("boolean");
+
+      const diag = await getDiagnosticsReport();
+      expect(diag).toContain("# FLIP Diagnostics Report");
+      expect(diag).toContain("~/Desktop/sample.heic");
+
+      const prevNav = g.navigator;
+      let copiedPayload = "";
+      g.navigator = {
+        clipboard: {
+          writeText: async (text: string) => {
+            copiedPayload = text;
+          },
+        },
+      };
+      const copyOk = await copyDiagnosticsToClipboard();
+      expect(copyOk.ok).toBe(true);
+      expect(copyOk.method).toBe("clipboard");
+      expect(copiedPayload).toContain("# FLIP Diagnostics Report");
+
+      g.navigator = {
+        clipboard: {
+          writeText: async () => {
+            throw new Error("denied");
+          },
+        },
+      };
+      const copyFallback = await copyDiagnosticsToClipboard();
+      expect(copyFallback.ok).toBe(false);
+      expect(copyFallback.method).toBe("manual");
+      expect(copyFallback.report).toContain("# FLIP Diagnostics Report");
+      g.navigator = prevNav;
     } finally {
       g.localStorage = prevStorage;
       g.window = prevWindow;

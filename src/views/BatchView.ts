@@ -3,6 +3,7 @@ import {
   basename,
   cancelConversion,
   consumeBatchHandoff,
+  copyDiagnosticsToClipboard,
   dirname,
   escapeHtml,
   events,
@@ -35,6 +36,9 @@ export function mountBatchView(root: HTMLElement): () => void {
   let progressPct = 0;
   let progressLabel = "Select files and one or more output formats.";
   let results: ConversionResult[] = [];
+  let lastBatchError: string | null = null;
+  let diagState: "idle" | "copied" | "manual" = "idle";
+  let diagFallbackText = "";
 
   root.innerHTML = `
     <div class="batch-shell">
@@ -100,12 +104,14 @@ export function mountBatchView(root: HTMLElement): () => void {
           <div style="display:flex;gap:8px;align-items:center">
             <button type="button" class="btn btn-primary" id="batch-run-btn" disabled>Convert Selected</button>
             <button type="button" class="btn btn-danger" id="batch-cancel-btn" disabled>Cancel</button>
+            <button type="button" class="btn btn-sm" id="batch-progress-copy-diag" style="display:none">Copy Diagnostics</button>
           </div>
           <div class="setting-desc" id="batch-progress-label">${escapeHtml(progressLabel)}</div>
         </div>
         <div class="progress-bar-wrap" style="margin-top:12px">
           <div class="progress-bar-fill" id="batch-progress-fill" style="width:0%"></div>
         </div>
+        <div id="batch-progress-diag-fallback" style="display:none;margin-top:10px"></div>
       </section>
 
       <section class="glass-card" id="batch-results-card" style="display:none">
@@ -114,7 +120,9 @@ export function mountBatchView(root: HTMLElement): () => void {
             <h2 class="card-title">Conversion Results</h2>
             <p class="card-subtitle" id="batch-results-summary"></p>
           </div>
+          <button type="button" class="btn btn-sm" id="batch-results-copy-diag" style="display:none">Copy Diagnostics</button>
         </div>
+        <div id="batch-results-diag-fallback" style="display:none;margin-bottom:10px"></div>
         <div class="batch-results-list" id="batch-results-list"></div>
       </section>
     </div>
@@ -130,10 +138,14 @@ export function mountBatchView(root: HTMLElement): () => void {
   const compatSubtitleEl = root.querySelector<HTMLElement>("#batch-compat-subtitle")!;
   const runBtn = root.querySelector<HTMLButtonElement>("#batch-run-btn")!;
   const cancelBtn = root.querySelector<HTMLButtonElement>("#batch-cancel-btn")!;
+  const progressCopyDiagBtn = root.querySelector<HTMLButtonElement>("#batch-progress-copy-diag")!;
+  const progressDiagFallbackEl = root.querySelector<HTMLElement>("#batch-progress-diag-fallback")!;
   const progressLabelEl = root.querySelector<HTMLElement>("#batch-progress-label")!;
   const progressFillEl = root.querySelector<HTMLElement>("#batch-progress-fill")!;
   const resultsCardEl = root.querySelector<HTMLElement>("#batch-results-card")!;
   const resultsSummaryEl = root.querySelector<HTMLElement>("#batch-results-summary")!;
+  const resultsCopyDiagBtn = root.querySelector<HTMLButtonElement>("#batch-results-copy-diag")!;
+  const resultsDiagFallbackEl = root.querySelector<HTMLElement>("#batch-results-diag-fallback")!;
   const resultsListEl = root.querySelector<HTMLElement>("#batch-results-list")!;
 
   function render(): void {
@@ -210,11 +222,33 @@ export function mountBatchView(root: HTMLElement): () => void {
     progressLabelEl.textContent = progressLabel;
     progressFillEl.style.width = `${Math.max(0, Math.min(100, progressPct))}%`;
 
+    const errCount = results.filter((r) => Boolean(r.error)).length;
+    const hasTopLevelErr = Boolean(lastBatchError) && errCount === 0;
+    const diagBtnText = diagState === "copied" ? "Copied!" : "Copy Diagnostics";
+
+    progressCopyDiagBtn.style.display = hasTopLevelErr ? "inline-flex" : "none";
+    progressCopyDiagBtn.textContent = diagBtnText;
+    if (hasTopLevelErr && diagState === "manual" && diagFallbackText) {
+      progressDiagFallbackEl.style.display = "block";
+      progressDiagFallbackEl.innerHTML = `<div class="setting-desc" style="margin-bottom:4px">Clipboard access is restricted. Copy redacted diagnostics below:</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
+    } else {
+      progressDiagFallbackEl.style.display = "none";
+      progressDiagFallbackEl.innerHTML = "";
+    }
+
     if (results.length > 0) {
       resultsCardEl.style.display = "block";
       const okOutputs = results.flatMap((r) => r.outputs);
-      const errCount = results.filter((r) => Boolean(r.error)).length;
       resultsSummaryEl.textContent = `${okOutputs.length} output(s) created, ${errCount} error(s).`;
+      resultsCopyDiagBtn.style.display = errCount > 0 ? "inline-flex" : "none";
+      resultsCopyDiagBtn.textContent = diagBtnText;
+      if (errCount > 0 && diagState === "manual" && diagFallbackText) {
+        resultsDiagFallbackEl.style.display = "block";
+        resultsDiagFallbackEl.innerHTML = `<div class="setting-desc" style="margin-bottom:4px">Clipboard access is restricted. Copy redacted diagnostics below:</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
+      } else {
+        resultsDiagFallbackEl.style.display = "none";
+        resultsDiagFallbackEl.innerHTML = "";
+      }
       resultsListEl.innerHTML = results
         .map((r, idx) => {
           const hasErr = Boolean(r.error);
@@ -249,6 +283,9 @@ export function mountBatchView(root: HTMLElement): () => void {
         .join("");
     } else {
       resultsCardEl.style.display = "none";
+      resultsCopyDiagBtn.style.display = "none";
+      resultsDiagFallbackEl.style.display = "none";
+      resultsDiagFallbackEl.innerHTML = "";
     }
 
     bindDynamicEvents();
@@ -338,6 +375,9 @@ export function mountBatchView(root: HTMLElement): () => void {
 
   root.querySelector("#batch-clear-files")?.addEventListener("click", () => {
     results = [];
+    lastBatchError = null;
+    diagState = "idle";
+    diagFallbackText = "";
     void setFiles([]);
   });
 
@@ -398,11 +438,43 @@ export function mountBatchView(root: HTMLElement): () => void {
     }
   });
 
+  async function triggerBatchCopyDiagnostics(): Promise<void> {
+    try {
+      const res = await copyDiagnosticsToClipboard();
+      if (disposed) return;
+      if (res.ok) {
+        diagState = "copied";
+        diagFallbackText = "";
+        render();
+        window.setTimeout(() => {
+          if (!disposed && diagState === "copied") {
+            diagState = "idle";
+            render();
+          }
+        }, 2200);
+      } else {
+        diagState = "manual";
+        diagFallbackText = res.report;
+        render();
+      }
+    } catch (err) {
+      if (!disposed) {
+        progressLabel = `Diagnostics export failed: ${formatError(err)}`;
+        render();
+      }
+    }
+  }
+
+  progressCopyDiagBtn.addEventListener("click", () => void triggerBatchCopyDiagnostics());
+  resultsCopyDiagBtn.addEventListener("click", () => void triggerBatchCopyDiagnostics());
+
   function finishBatchRun(res: { success: boolean; results?: ConversionResult[]; error: string | null }): void {
     if (!busy || disposed) return;
     results = res.results ?? [];
     busy = false;
     const createdCount = results.flatMap((r) => r.outputs).length;
+    const firstErr = res.error || results.find((r) => Boolean(r.error))?.error || null;
+    lastBatchError = !res.success || firstErr ? firstErr || "Conversion failed." : null;
     progressPct = res.error && createdCount === 0 ? 0 : 100;
     progressLabel = res.error
       ? `Finished with error: ${res.error}`
@@ -414,6 +486,9 @@ export function mountBatchView(root: HTMLElement): () => void {
     if (busy || files.length === 0 || selectedFormats.size === 0) return;
     busy = true;
     results = [];
+    lastBatchError = null;
+    diagState = "idle";
+    diagFallbackText = "";
     progressPct = 4;
     progressLabel = "Starting conversion…";
     render();
@@ -425,8 +500,10 @@ export function mountBatchView(root: HTMLElement): () => void {
     } catch (err) {
       if (disposed || !busy) return;
       busy = false;
+      const errMsg = formatError(err);
+      lastBatchError = errMsg;
       progressPct = 0;
-      progressLabel = `Failed: ${formatError(err)}`;
+      progressLabel = `Failed: ${errMsg}`;
       render();
     }
   });

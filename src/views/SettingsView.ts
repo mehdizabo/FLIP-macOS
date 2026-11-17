@@ -1,7 +1,11 @@
 import { UI_ICONS } from "../icons";
 import {
+  checkForUpdates,
+  copyDiagnosticsToClipboard,
+  copyTextWithFallback,
   defaultPreferences,
   escapeHtml,
+  events,
   formatError,
   getEngineStatus,
   getNewFileKinds,
@@ -27,6 +31,7 @@ import type {
   PermissionsStatus,
   QuickActionsStatus,
   RecentConversion,
+  UpdateCheckResult,
   UserTemplateInfo,
 } from "../types";
 
@@ -74,6 +79,13 @@ export function mountSettingsView(root: HTMLElement): () => void {
   let recorderFeedback = "";
   let recorderFeedbackTarget: "drag" | "idle" | null = null;
   let saveToastTimer: number | null = null;
+
+  let updateChecking = false;
+  let updateResult: UpdateCheckResult | null = null;
+  let updateError: string | null = null;
+  let lastUpdateTriggerMs = 0;
+  let diagCopiedState: "idle" | "copied" | "manual" = "idle";
+  let diagFallbackText = "";
 
   root.innerHTML = `
     <div class="settings-shell">
@@ -738,6 +750,69 @@ export function mountSettingsView(root: HTMLElement): () => void {
   }
 
   function renderAboutTab(): string {
+    let updateBodyHtml = `
+      <div class="setting-desc">
+        Current version: <code>0.1.0</code>. Click <strong>Check for Updates…</strong> to query GitHub Releases, or <strong>Copy Diagnostics</strong> to export a redacted Markdown report (home paths replaced with <code>~</code>).
+      </div>
+    `;
+
+    if (updateChecking) {
+      updateBodyHtml = `
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="status-pill is-warn"><span class="status-dot"></span>Checking…</span>
+          <span class="setting-desc" style="margin:0">Querying GitHub Releases (8s timeout)…</span>
+        </div>
+      `;
+    } else if (updateError) {
+      updateBodyHtml = `
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="status-pill is-warn"><span class="status-dot"></span>Check Failed</span>
+          <span class="setting-desc" style="margin:0">${escapeHtml(updateError)}</span>
+        </div>
+      `;
+    } else if (updateResult) {
+      const pubDate = updateResult.publishedAt
+        ? ` · Published ${escapeHtml(updateResult.publishedAt.slice(0, 10))}`
+        : "";
+      if (updateResult.updateAvailable) {
+        updateBodyHtml = `
+          <div style="display:flex;flex-direction:column;gap:8px">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span class="status-pill is-ok"><span class="status-dot"></span>Update Available: ${escapeHtml(updateResult.latestTag)}</span>
+              <span class="setting-desc" style="margin:0">Installed: ${escapeHtml(updateResult.currentVersion)}${pubDate}</span>
+            </div>
+            ${
+              updateResult.body
+                ? `<pre class="diag-pre">${escapeHtml(updateResult.body)}</pre>`
+                : ""
+            }
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <a class="btn btn-primary btn-sm" href="${escapeHtml(updateResult.htmlUrl)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none">Open Release on GitHub</a>
+              <button type="button" class="btn btn-sm" id="btn-copy-release-url">Copy Release URL</button>
+            </div>
+          </div>
+        `;
+      } else {
+        updateBodyHtml = `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span class="status-pill is-ok"><span class="status-dot"></span>Up to Date</span>
+              <span class="setting-desc" style="margin:0">FLIP ${escapeHtml(updateResult.currentVersion)} is current (latest GitHub tag: <code>${escapeHtml(updateResult.latestTag)}</code>${pubDate}).</span>
+            </div>
+            <a class="btn btn-sm" href="${escapeHtml(updateResult.htmlUrl)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none">Releases Page</a>
+          </div>
+        `;
+      }
+    }
+
+    const diagFallbackHtml =
+      diagCopiedState === "manual" && diagFallbackText
+        ? `<div style="margin-top:10px">
+             <div class="setting-desc" style="margin-bottom:4px">Clipboard access is restricted. Copy the redacted diagnostics bundle below:</div>
+             <textarea class="mac-input diag-textarea" id="about-diag-fallback" readonly rows="7">${escapeHtml(diagFallbackText)}</textarea>
+           </div>`
+        : "";
+
     return `
       <section class="glass-card">
         <div class="card-header">
@@ -757,6 +832,25 @@ export function mountSettingsView(root: HTMLElement): () => void {
           <button type="button" class="btn btn-sm" id="btn-about-tour">Welcome Tour</button>
           <button type="button" class="btn btn-sm" id="btn-about-logs">Reveal Logs</button>
         </div>
+      </section>
+
+      <section class="glass-card">
+        <div class="card-header">
+          <div>
+            <h2 class="card-title">Updates &amp; Redacted Diagnostics</h2>
+            <p class="card-subtitle">Optional GitHub Release check and privacy-safe troubleshooting bundle</p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button type="button" class="btn btn-primary btn-sm" id="btn-check-updates" ${updateChecking ? "disabled" : ""}>
+              ${updateChecking ? "Checking…" : "Check for Updates…"}
+            </button>
+            <button type="button" class="btn btn-sm" id="btn-copy-diagnostics">
+              ${diagCopiedState === "copied" ? "Copied!" : "Copy Diagnostics"}
+            </button>
+          </div>
+        </div>
+        <div id="update-status-panel">${updateBodyHtml}</div>
+        ${diagFallbackHtml}
       </section>
 
       <section class="glass-card">
@@ -1000,6 +1094,15 @@ export function mountSettingsView(root: HTMLElement): () => void {
     mainEl.querySelector("#btn-about-batch")?.addEventListener("click", () => void openWindow("batch"));
     mainEl.querySelector("#btn-about-tour")?.addEventListener("click", () => void openWindow("onboarding"));
     mainEl.querySelector("#btn-about-logs")?.addEventListener("click", () => void revealLogs());
+    mainEl.querySelector("#btn-check-updates")?.addEventListener("click", () => void runUpdateCheck());
+    mainEl.querySelector("#btn-copy-diagnostics")?.addEventListener("click", () => void runCopyDiagnostics());
+    mainEl.querySelector("#btn-copy-release-url")?.addEventListener("click", async () => {
+      if (!updateResult?.htmlUrl) return;
+      const copyRes = await copyTextWithFallback(updateResult.htmlUrl);
+      if (!disposed) {
+        showSavedToast(copyRes.ok ? "Release URL copied" : "Copy failed");
+      }
+    });
     mainEl.querySelector("#btn-refresh-recent")?.addEventListener("click", async () => {
       recent = await getRecentConversions().catch(() => recent);
       if (!disposed) renderMain();
@@ -1111,6 +1214,53 @@ export function mountSettingsView(root: HTMLElement): () => void {
   root.querySelector("#nav-open-batch")?.addEventListener("click", () => void openWindow("batch"));
   root.querySelector("#nav-open-onboarding")?.addEventListener("click", () => void openWindow("onboarding"));
 
+  async function runUpdateCheck(): Promise<void> {
+    if (updateChecking || disposed) return;
+    lastUpdateTriggerMs = Date.now();
+    updateChecking = true;
+    updateError = null;
+    if (activeTab === "about") renderMain();
+    try {
+      const res = await checkForUpdates();
+      if (disposed) return;
+      updateResult = res;
+      updateError = null;
+    } catch (err) {
+      if (disposed) return;
+      updateResult = null;
+      updateError = formatError(err);
+    } finally {
+      updateChecking = false;
+      if (!disposed && activeTab === "about") renderMain();
+    }
+  }
+
+  async function runCopyDiagnostics(): Promise<void> {
+    try {
+      const res = await copyDiagnosticsToClipboard();
+      if (disposed) return;
+      if (res.ok) {
+        diagCopiedState = "copied";
+        diagFallbackText = "";
+        showSavedToast("Redacted diagnostics copied");
+        if (activeTab === "about") renderMain();
+        window.setTimeout(() => {
+          if (!disposed && diagCopiedState === "copied") {
+            diagCopiedState = "idle";
+            if (activeTab === "about") renderMain();
+          }
+        }, 2200);
+      } else {
+        diagCopiedState = "manual";
+        diagFallbackText = res.report;
+        showSavedToast("Clipboard unavailable — copy below");
+        if (activeTab === "about") renderMain();
+      }
+    } catch (err) {
+      if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+    }
+  }
+
   async function refreshDiagnostics(): Promise<void> {
     const [eng, perms, qa, kindsResp, rec] = await Promise.all([
       getEngineStatus().catch(() => null),
@@ -1134,16 +1284,51 @@ export function mountSettingsView(root: HTMLElement): () => void {
     }
   }
 
+  let unlistenNavigate: (() => void) | null = null;
+  void events.onSettingsNavigate((payload) => {
+    if (disposed) return;
+    if (payload.tab) {
+      activeTab = payload.tab;
+      recordingTarget = null;
+      recorderFeedback = "";
+      recorderFeedbackTarget = null;
+    }
+    renderMain();
+    if (activeTab === "engines" || activeTab === "newfile" || activeTab === "about") {
+      void refreshDiagnostics();
+    }
+    if (payload.checkUpdates && Date.now() - lastUpdateTriggerMs > 600) {
+      void runUpdateCheck();
+    }
+  }).then((fn) => {
+    if (disposed) fn();
+    else unlistenNavigate = fn;
+  });
+
+  const hashQuery = window.location.hash.split("?")[1] ?? "";
+  const hashParams = new URLSearchParams(hashQuery);
+  const initialTab = hashParams.get("tab") as SettingsTab | null;
+  if (
+    initialTab &&
+    ["general", "shortcuts", "formats", "newfile", "engines", "about"].includes(initialTab)
+  ) {
+    activeTab = initialTab;
+  }
+
   void (async () => {
     prefs = await getPreferences().catch(() => defaultPreferences());
     if (disposed) return;
     renderMain();
     await refreshDiagnostics();
+    if (hashParams.get("checkUpdates") === "1" && activeTab === "about") {
+      void runUpdateCheck();
+    }
   })();
 
   return () => {
     disposed = true;
     if (saveToastTimer !== null) window.clearTimeout(saveToastTimer);
+    if (unlistenNavigate) unlistenNavigate();
     window.removeEventListener("keydown", onRecorderKeyDown, true);
   };
 }

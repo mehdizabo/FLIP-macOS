@@ -192,3 +192,19 @@ export interface ConversionCompletePayload {
   results: ConversionResult[];
   error: string | null;
 }
+
+export interface UpdateCheckResult {
+  currentVersion: string;
+  latestTag: string;
+  releaseName: string;
+  htmlUrl: string;
+  publishedAt: string | null;
+  body: string;
+  updateAvailable: boolean;
+  checkedAtUtc: string;
+}
+
+export interface SettingsNavigatePayload {
+  tab?: "general" | "shortcuts" | "formats" | "newfile" | "engines" | "about";
+  checkUpdates?: boolean;
+}

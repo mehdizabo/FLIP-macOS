@@ -3,6 +3,38 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_PATH="$ROOT_DIR/src-tauri/target/release/bundle/macos/FLIP.app"
+CREATE_DMG=0
+
+usage() {
+  cat <<'EOF'
+Build FLIP for macOS (Swift bridge, Vite frontend, Tauri .app, and local signing).
+
+Usage:
+  ./scripts/build-macos.sh [options]
+
+Options:
+  --dmg       Also package signed FLIP.app + /Applications symlink into a .dmg
+  -h, --help  Show this help message
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dmg)
+      CREATE_DMG=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+done
 
 export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path)}"
 export CC="${CC:-/usr/bin/clang}"
@@ -41,6 +73,11 @@ fi
 
 echo "==> [4/4] Signing and verifying .app bundle"
 "$ROOT_DIR/scripts/sign-local.sh" "$APP_PATH"
+
+if [[ "$CREATE_DMG" -eq 1 ]]; then
+  echo "==> [5/5] Packaging compressed .dmg image"
+  "$ROOT_DIR/scripts/package-dmg.sh" "$APP_PATH"
+fi
 
 echo ""
 echo "Build complete:"

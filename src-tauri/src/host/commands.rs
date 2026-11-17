@@ -1,8 +1,13 @@
 use crate::core::input_gate::{DragTriggerShortcut, IdleShortcut};
+use crate::core::logging::{
+    collect_macos_sw_vers, format_diagnostics_markdown, global_logger, DiagnosticsReportInput,
+    DIAGNOSTICS_TAIL_LINES,
+};
 use crate::core::naming::conversion_stem;
 use crate::core::preferences::{AppPreferences, RecentConversion};
 use crate::core::quick_actions::{self, QuickActionsStatus};
 use crate::core::startup;
+use crate::core::updater::{self, UpdateCheckResult};
 use crate::engines::bridge::{
     self, ClipboardInspect, PermissionsStatus, ThumbnailResult,
 };
@@ -624,4 +629,34 @@ pub async fn install_finder_quick_actions(
     tokio::task::spawn_blocking(move || quick_actions::install_quick_actions(with_cli))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn check_for_updates(repo_url: Option<String>) -> Result<UpdateCheckResult, String> {
+    tokio::task::spawn_blocking(move || updater::check_github_updates(repo_url.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn get_diagnostics_report(state: State<'_, Arc<HostState>>) -> Result<String, String> {
+    let prefs = state.prefs.lock().map(|g| g.clone()).unwrap_or_default();
+    tokio::task::spawn_blocking(move || {
+        let macos_version = collect_macos_sw_vers();
+        let tools = detect_tools(Some(&prefs));
+        let perms_res = bridge::permissions(false, false, false).map_err(|e| e.to_string());
+        let log_lines = global_logger().tail_events(DIAGNOSTICS_TAIL_LINES);
+        let home = dirs::home_dir();
+        format_diagnostics_markdown(&DiagnosticsReportInput {
+            app_version: updater::current_version(),
+            macos_version: &macos_version,
+            tools: &tools,
+            permissions: perms_res.as_ref().map_err(|e| e.as_str()),
+            prefs: &prefs,
+            log_lines: &log_lines,
+            home_dir: home.as_deref(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())
 }

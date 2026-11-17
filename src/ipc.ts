@@ -18,7 +18,9 @@ import type {
   PermissionsStatus,
   QuickActionsStatus,
   RecentConversion,
+  SettingsNavigatePayload,
   ThumbnailResult,
+  UpdateCheckResult,
   UserTemplateInfo,
   WheelDragFilesPayload,
   WheelMode,
@@ -799,6 +801,106 @@ export async function installFinderQuickActions(
   return invoke<QuickActionsStatus>("install_finder_quick_actions", { installCli });
 }
 
+export async function checkForUpdates(repoUrl?: string): Promise<UpdateCheckResult> {
+  if (!isTauriRuntime()) {
+    return {
+      currentVersion: "0.1.0",
+      latestTag: "v0.1.0",
+      releaseName: "FLIP 0.1.0",
+      htmlUrl: "https://github.com/thetinyfoundry/FLIP/releases",
+      publishedAt: new Date().toISOString(),
+      body: "Browser preview mock release check (you are up to date).",
+      updateAvailable: false,
+      checkedAtUtc: new Date().toISOString(),
+    };
+  }
+  return invoke<UpdateCheckResult>("check_for_updates", { repoUrl: repoUrl ?? null });
+}
+
+export async function getDiagnosticsReport(): Promise<string> {
+  if (!isTauriRuntime()) {
+    return [
+      "# FLIP Diagnostics Report",
+      "",
+      `Generated (UTC): ${new Date().toISOString()}`,
+      "",
+      "## App & System",
+      "- **FLIP Version**: 0.1.0 (`com.thetinyfoundry.flip.mac`, arm64)",
+      "- **macOS**: macOS 27.2.1 (26B131) [Browser Preview]",
+      "",
+      "## Engines & Frameworks",
+      "- **Swift Bridge**: Detected (`/Applications/FLIP.app/Contents/Resources/flip-macos-bridge`)",
+      "- **Native Apple Frameworks**: ImageIO, PDFKit, Vision OCR, AVFoundation (Ready)",
+      "- **FFmpeg**: Detected (`/opt/homebrew/bin/ffmpeg`)",
+      "- **Pandoc**: Not Found",
+      "",
+      "## Recent Events (last 60 lines of `events.jsonl`, redacted)",
+      "```jsonl",
+      '{"utc":"2026-11-17T20:00:00Z","name":"wheel.open","detail":{"mode":"convert","path":"~/Desktop/sample.heic"}}',
+      "```",
+      "",
+    ].join("\n");
+  }
+  return invoke<string>("get_diagnostics_report");
+}
+
+export interface CopyTextResult {
+  ok: boolean;
+  method: "clipboard" | "execCommand" | "manual";
+  error?: string;
+}
+
+export interface CopyDiagnosticsResult extends CopyTextResult {
+  report: string;
+}
+
+export async function copyTextWithFallback(text: string): Promise<CopyTextResult> {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return { ok: true, method: "clipboard" };
+    }
+  } catch {
+    // Fall through to execCommand fallback
+  }
+
+  try {
+    if (
+      typeof document !== "undefined" &&
+      document.body &&
+      typeof document.execCommand === "function"
+    ) {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "true");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      ta.style.top = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      if (ok) {
+        return { ok: true, method: "execCommand" };
+      }
+    }
+  } catch {
+    // Fall through to manual fallback
+  }
+
+  return {
+    ok: false,
+    method: "manual",
+    error: "Clipboard access unavailable; copy diagnostics manually.",
+  };
+}
+
+export async function copyDiagnosticsToClipboard(): Promise<CopyDiagnosticsResult> {
+  const report = await getDiagnosticsReport();
+  const res = await copyTextWithFallback(report);
+  return { ...res, report };
+}
+
 // ---------- Batch Handoff Helpers ----------
 
 export function storeBatchHandoff(
@@ -893,6 +995,8 @@ export const events = {
     subscribeEvent<ConversionCompletePayload>("conversion:complete", cb),
   onBatchFiles: (cb: (p: { files: string[]; results?: ConversionResult[] | null }) => void) =>
     subscribeEvent<{ files: string[]; results?: ConversionResult[] | null }>("batch:files", cb),
+  onSettingsNavigate: (cb: (p: SettingsNavigatePayload) => void) =>
+    subscribeEvent<SettingsNavigatePayload>("settings:navigate", cb),
 };
 
 export interface NativeDragDropCallbacks {

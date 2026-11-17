@@ -1,6 +1,7 @@
 import { getFormatMeta, getNewKindMeta, UI_ICONS } from "../icons";
 import {
   cancelConversion,
+  copyDiagnosticsToClipboard,
   dismissWheel,
   escapeHtml,
   events,
@@ -99,6 +100,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   let activeActionLabel = "";
   let stepLabel = "";
   let lastErrorMsg = "";
+  let diagBtnLabel = "Copy Diagnostics";
   let lastResults: ConversionResult[] = [];
   let progressRaf: number | null = null;
   let autoCloseTimer: number | null = null;
@@ -480,8 +482,9 @@ export function mountWheelView(root: HTMLElement): () => void {
       hubEl.innerHTML = `
         <div class="wheel-hub-title">${failTitle}</div>
         <div class="wheel-hub-subtitle is-error" title="${escapeHtml(lastErrorMsg)}">${escapeHtml(lastErrorMsg || "An error occurred")}</div>
-        <div class="wheel-hub-actions">
-          ${canOpenBatch ? `<button type="button" class="wheel-hub-pill-btn" id="hub-batch-details">Open Batch Details</button>` : ""}
+        <div class="wheel-hub-actions is-error-actions">
+          ${canOpenBatch ? `<button type="button" class="wheel-hub-pill-btn" id="hub-batch-details">Batch Details</button>` : ""}
+          <button type="button" class="wheel-hub-pill-btn" id="hub-copy-diag">${escapeHtml(diagBtnLabel)}</button>
           <button type="button" class="wheel-hub-pill-btn" id="hub-dismiss-btn">Close</button>
         </div>
       `;
@@ -490,6 +493,33 @@ export function mountWheelView(root: HTMLElement): () => void {
         void openBatchWithFiles(state.files, lastResults).then(() => {
           if (isTauriRuntime() && !disposed) requestDismiss("open-batch-details");
         });
+      });
+      hubEl.querySelector("#hub-copy-diag")?.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget as HTMLButtonElement;
+        btn.disabled = true;
+        btn.textContent = "Copying…";
+        try {
+          const res = await copyDiagnosticsToClipboard();
+          if (disposed || phase !== "error") return;
+          diagBtnLabel = res.ok ? "Copied!" : "Copy Failed";
+          if (!res.ok) {
+            lastErrorMsg =
+              res.error || "Clipboard unavailable — use Settings → About → Copy Diagnostics.";
+          }
+          renderHub();
+          window.setTimeout(() => {
+            if (!disposed && phase === "error") {
+              diagBtnLabel = "Copy Diagnostics";
+              renderHub();
+            }
+          }, 2000);
+        } catch (err) {
+          if (disposed || phase !== "error") return;
+          diagBtnLabel = "Copy Failed";
+          lastErrorMsg = formatError(err);
+          renderHub();
+        }
       });
       hubEl.querySelector("#hub-dismiss-btn")?.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -929,6 +959,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     phase = "idle";
     activeActionLabel = "";
     lastErrorMsg = "";
+    diagBtnLabel = "Copy Diagnostics";
     lastResults = [];
     clearDwell();
     clearAutoClose();

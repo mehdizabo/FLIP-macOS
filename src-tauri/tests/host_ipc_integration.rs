@@ -1,6 +1,8 @@
+use flip_lib::core::logging::redact_user_paths;
 use flip_lib::core::policy::FormatFamily;
 use flip_lib::core::preferences::{expand_tilde_path, AppPreferences, RecentConversion};
 use flip_lib::core::quick_actions::QuickActionsStatus;
+use flip_lib::core::updater::{check_github_updates, UpdateCheckResult};
 use flip_lib::engines::bridge::{
     resolve_bridge_binary_from, ClipboardInspect, PermissionsStatus, ThumbnailResult,
 };
@@ -257,6 +259,34 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
     assert!(prv["recentConversions"][0].get("targetFormat").is_some());
     assert!(prv["recentConversions"][0].get("outputPath").is_some());
     assert!(prv["recentConversions"][0].get("timestampUtc").is_some());
+
+    let upd = UpdateCheckResult {
+        current_version: "0.1.0".into(),
+        latest_tag: "v0.5.1".into(),
+        release_name: "FLIP v0.5.1".into(),
+        html_url: "https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1".into(),
+        published_at: Some("2026-10-24T12:00:00Z".into()),
+        body: "Release notes".into(),
+        update_available: true,
+        checked_at_utc: "2026-11-17T22:00:00Z".into(),
+    };
+    let uv = serde_json::to_value(&upd).unwrap();
+    for key in [
+        "currentVersion",
+        "latestTag",
+        "releaseName",
+        "htmlUrl",
+        "publishedAt",
+        "body",
+        "updateAvailable",
+        "checkedAtUtc",
+    ] {
+        assert!(uv.get(key).is_some(), "UpdateCheckResult missing `{key}`");
+    }
+
+    assert!(check_github_updates(Some("http://insecure.example.com")).is_err());
+    let redacted = redact_user_paths("/Users/tester/Desktop/a.png /private/var/folders/12/abcd/T/b.txt");
+    assert_eq!(redacted, "~/Desktop/a.png ~/T/b.txt");
 }
 
 #[test]
@@ -383,7 +413,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
             }
         }
     }
-    assert_eq!(rust_cmds.len(), 23);
+    assert_eq!(rust_cmds.len(), 25);
 
     // Extract every invoke<...>("cmd_name") in src/ipc.ts
     let mut ts_cmds = BTreeSet::new();
@@ -413,6 +443,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         "conversion:progress",
         "conversion:complete",
         "batch:files",
+        "settings:navigate",
     ] {
         assert!(
             ipc_ts.contains(&format!("\"{ev_name}\"")),
@@ -463,7 +494,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         rust_param_map.insert(name, keys);
         rem = &after_fn[close_p..];
     }
-    assert_eq!(rust_param_map.len(), 23);
+    assert_eq!(rust_param_map.len(), 25);
 
     let mut ts_search = ipc_ts.as_str();
     while let Some(idx) = ts_search.find("invoke<") {
