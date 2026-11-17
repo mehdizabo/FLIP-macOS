@@ -327,6 +327,7 @@ export function mountBatchView(root: HTMLElement): () => void {
   root.querySelector("#batch-load-wheel")?.addEventListener("click", async () => {
     const ws = await getWheelState().catch(() => null);
     if (!disposed && ws && ws.files.length > 0) {
+      results = [];
       await setFiles(ws.files);
     }
   });
@@ -485,8 +486,13 @@ export function mountBatchView(root: HTMLElement): () => void {
       }),
       events.onBatchFiles((p) => {
         if (disposed) return;
-        if (p.results) results = p.results;
-        if (p.files.length > 0) void setFiles(p.files);
+        consumeBatchHandoff();
+        results = p.results ?? [];
+        if (p.files.length > 0) {
+          void setFiles(p.files);
+        } else {
+          render();
+        }
       }),
       subscribeNativeDragDrop({
         onEnter: () => dropzoneEl.classList.add("is-drag-over"),

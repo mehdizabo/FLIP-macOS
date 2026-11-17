@@ -22,7 +22,8 @@ export type FeedbackKind =
 export type PermissionRequestKind =
   | "accessibility_prompt"
   | "open_accessibility"
-  | "open_automation";
+  | "open_automation"
+  | "open_input_monitoring";
 
 export interface RecentConversion {
   sourceName: string;
@@ -53,6 +54,7 @@ export interface AppPreferences {
   preferredFormats: Record<string, string[]>;
   newFileVisibleKinds: string[];
   recentConversions: RecentConversion[];
+  onboardingCompleted?: boolean;
 }
 
 export interface ConversionResult {

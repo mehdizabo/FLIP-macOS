@@ -102,6 +102,8 @@ export function mountWheelView(root: HTMLElement): () => void {
   let lastResults: ConversionResult[] = [];
   let progressRaf: number | null = null;
   let autoCloseTimer: number | null = null;
+  let dismissTimer: number | null = null;
+  let openedAtMs = 0;
 
   // QuickLook thumbnail cache for current primary file
   let thumbnailPath = "";
@@ -180,6 +182,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     </div>
   `;
 
+  const stageEl = root.querySelector<HTMLElement>(".wheel-stage")!;
   const shellEl = root.querySelector<HTMLElement>("#wheel-shell")!;
   const svgEl = root.querySelector<SVGSVGElement>("#wheel-svg")!;
   const sectorsLayer = root.querySelector<SVGGElement>("#wheel-sectors-layer")!;
@@ -212,6 +215,13 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (autoCloseTimer !== null) {
       window.clearTimeout(autoCloseTimer);
       autoCloseTimer = null;
+    }
+  }
+
+  function clearDismissTimer(): void {
+    if (dismissTimer !== null) {
+      window.clearTimeout(dismissTimer);
+      dismissTimer = null;
     }
   }
 
@@ -864,10 +874,14 @@ export function mountWheelView(root: HTMLElement): () => void {
     latchedDwellSlot = -1;
     clearDwell();
     clearAutoClose();
+    clearDismissTimer();
     stopProgressLoop();
     shellEl.classList.add("is-closing");
-    window.setTimeout(() => {
-      void dismissWheel(reason);
+    dismissTimer = window.setTimeout(() => {
+      dismissTimer = null;
+      if (!disposed) {
+        void dismissWheel(reason);
+      }
     }, 100);
   }
 
@@ -903,7 +917,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     const epoch = ++stateEpoch;
     const wasClosing = closing;
     closing = false;
+    openedAtMs = performance.now();
     conversionInFlight = false;
+    clearDismissTimer();
     shellEl.classList.remove("is-closing", "is-error-shake");
     if (wasClosing) {
       shellEl.classList.add("is-reopening");
@@ -1052,6 +1068,36 @@ export function mountWheelView(root: HTMLElement): () => void {
   svgEl.addEventListener("pointermove", onPointerMove);
   svgEl.addEventListener("pointerleave", onPointerLeave);
   svgEl.addEventListener("click", onSvgClick);
+
+  const onBackdropClick = (ev: MouseEvent) => {
+    if (phase !== "idle" || state.isDrag || closing) return;
+    const target = ev.target;
+    if (
+      target instanceof Element &&
+      target.closest("#wheel-hub, .wheel-mode-pill, .wheel-page-dots, .wheel-preview-dock, .wheel-sector-group")
+    ) {
+      return;
+    }
+    const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
+    const dist = Math.hypot(pt.x - WHEEL_CENTER, pt.y - WHEEL_CENTER);
+    if (dist > 176) {
+      requestDismiss("backdrop-click");
+    }
+  };
+  stageEl.addEventListener("click", onBackdropClick);
+
+  const onWindowBlur = () => {
+    if (
+      isTauriRuntime() &&
+      phase === "idle" &&
+      !state.isDrag &&
+      !closing &&
+      performance.now() - openedAtMs > 180
+    ) {
+      requestDismiss("window-blur");
+    }
+  };
+  window.addEventListener("blur", onWindowBlur);
 
   // Keyboard Navigation
   const onKeyDown = (ev: KeyboardEvent) => {
@@ -1350,11 +1396,14 @@ export function mountWheelView(root: HTMLElement): () => void {
     disposed = true;
     clearDwell();
     clearAutoClose();
+    clearDismissTimer();
     stopProgressLoop();
     document.body.classList.remove("wheel-browser-preview");
     svgEl.removeEventListener("pointermove", onPointerMove);
     svgEl.removeEventListener("pointerleave", onPointerLeave);
     svgEl.removeEventListener("click", onSvgClick);
+    stageEl.removeEventListener("click", onBackdropClick);
+    window.removeEventListener("blur", onWindowBlur);
     window.removeEventListener("keydown", onKeyDown);
     shellEl.removeEventListener("dragenter", onHtmlDragEnter);
     shellEl.removeEventListener("dragover", onHtmlDragOver);

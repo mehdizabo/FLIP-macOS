@@ -71,14 +71,28 @@ pub struct ThumbnailResult {
 }
 
 pub fn resolve_bridge_binary() -> Result<PathBuf, BridgeError> {
-    if let Ok(explicit) = std::env::var("FLIP_BRIDGE_PATH") {
+    let explicit = std::env::var("FLIP_BRIDGE_PATH").ok();
+    let current_exe = std::env::current_exe().ok();
+    resolve_bridge_binary_from(
+        current_exe.as_deref(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        explicit.as_deref(),
+    )
+}
+
+pub fn resolve_bridge_binary_from(
+    exe_path: Option<&Path>,
+    manifest_dir: &Path,
+    explicit_env: Option<&str>,
+) -> Result<PathBuf, BridgeError> {
+    if let Some(explicit) = explicit_env {
         let p = PathBuf::from(explicit);
         if p.is_file() {
             return Ok(p);
         }
     }
 
-    if let Ok(exe) = std::env::current_exe() {
+    if let Some(exe) = exe_path {
         if let Some(dir) = exe.parent() {
             let sibling = dir.join("flip-macos-bridge");
             if sibling.is_file() {
@@ -103,7 +117,6 @@ pub fn resolve_bridge_binary() -> Result<PathBuf, BridgeError> {
     }
 
     // Development / cargo test path inside repo
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
     if let Some(repo_root) = manifest_dir.parent() {
         let dev_bin = repo_root
             .join("native-bridge")

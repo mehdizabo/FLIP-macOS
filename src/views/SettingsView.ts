@@ -1015,6 +1015,9 @@ export function mountSettingsView(root: HTMLElement): () => void {
     recorderFeedback = "";
     recorderFeedbackTarget = null;
     renderMain();
+    if (activeTab === "engines" || activeTab === "newfile" || activeTab === "about") {
+      void refreshDiagnostics();
+    }
   });
 
   root.querySelector("#nav-open-batch")?.addEventListener("click", () => void openWindow("batch"));
@@ -1036,7 +1039,9 @@ export function mountSettingsView(root: HTMLElement): () => void {
     templates = kindsResp.templates;
     clipboardInfo = kindsResp.clipboard;
     recent = rec;
-    renderMain();
+    if (!recordingTarget) {
+      renderMain();
+    }
   }
 
   void (async () => {

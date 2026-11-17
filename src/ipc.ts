@@ -137,6 +137,7 @@ export function defaultPreferences(): AppPreferences {
     },
     newFileVisibleKinds: ["folder", "txt", "md", "rtf", "docx", "xlsx", "html", "clipboard"],
     recentConversions: [],
+    onboardingCompleted: false,
   };
 }
 
@@ -702,7 +703,11 @@ export async function getPermissionsStatus(): Promise<PermissionsStatus> {
 
 export async function requestPermission(kind: PermissionRequestKind): Promise<PermissionsStatus> {
   if (!isTauriRuntime()) {
-    if (kind === "accessibility_prompt" || kind === "open_accessibility") {
+    if (
+      kind === "accessibility_prompt" ||
+      kind === "open_accessibility" ||
+      kind === "open_input_monitoring"
+    ) {
       mockPermissions = { ...mockPermissions, accessibility: true, inputMonitoring: true };
     } else if (kind === "open_automation") {
       mockPermissions = { ...mockPermissions, automationFinder: "granted" };

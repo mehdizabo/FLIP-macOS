@@ -144,19 +144,46 @@ impl HostState {
 }
 
 pub fn resolve_wav_path(app: &AppHandle) -> Option<PathBuf> {
+    let mut resource_candidates = Vec::new();
     if let Ok(res) = app.path().resolve("resources/flip-tick.wav", BaseDirectory::Resource) {
-        if res.is_file() {
-            return Some(res);
-        }
+        resource_candidates.push(res);
     }
     if let Ok(res) = app.path().resolve("flip-tick.wav", BaseDirectory::Resource) {
-        if res.is_file() {
-            return Some(res);
+        resource_candidates.push(res);
+    }
+    let current_exe = std::env::current_exe().ok();
+    resolve_wav_path_from(
+        &resource_candidates,
+        current_exe.as_deref(),
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+    )
+}
+
+pub fn resolve_wav_path_from(
+    resource_candidates: &[PathBuf],
+    exe_path: Option<&Path>,
+    manifest_dir: &Path,
+) -> Option<PathBuf> {
+    for candidate in resource_candidates {
+        if candidate.is_file() {
+            return Some(candidate.clone());
         }
     }
-    let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("resources")
-        .join("flip-tick.wav");
+    if let Some(exe) = exe_path {
+        if let Some(macos_dir) = exe.parent() {
+            if let Some(contents) = macos_dir.parent() {
+                let res_nested = contents.join("Resources").join("resources").join("flip-tick.wav");
+                if res_nested.is_file() {
+                    return Some(res_nested);
+                }
+                let res_flat = contents.join("Resources").join("flip-tick.wav");
+                if res_flat.is_file() {
+                    return Some(res_flat);
+                }
+            }
+        }
+    }
+    let dev = manifest_dir.join("resources").join("flip-tick.wav");
     if dev.is_file() {
         return Some(dev);
     }
