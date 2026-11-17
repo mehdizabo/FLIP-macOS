@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capabilities for FLIP windows",
-  "windows": ["wheel", "settings", "batch"],
+  "windows": ["wheel", "settings", "batch", "onboarding"],
   "permissions": [
     "core:default"
   ]

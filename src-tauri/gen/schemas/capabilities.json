@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for FLIP windows","local":true,"windows":["wheel","settings","batch"],"permissions":["core:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for FLIP windows","local":true,"windows":["wheel","settings","batch","onboarding"],"permissions":["core:default"]}}

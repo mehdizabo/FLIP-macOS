@@ -89,6 +89,15 @@ pub fn resolve_bridge_binary() -> Result<PathBuf, BridgeError> {
                 if res.is_file() {
                     return Ok(res);
                 }
+                let up_res = contents
+                    .join("Resources")
+                    .join("_up_")
+                    .join("native-bridge")
+                    .join("bin")
+                    .join("flip-macos-bridge");
+                if up_res.is_file() {
+                    return Ok(up_res);
+                }
             }
         }
     }

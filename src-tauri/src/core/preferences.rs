@@ -41,6 +41,8 @@ pub struct AppPreferences {
     pub preferred_formats: HashMap<String, Vec<String>>,
     pub new_file_visible_kinds: Vec<String>,
     pub recent_conversions: Vec<RecentConversion>,
+    #[serde(default)]
+    pub onboarding_completed: bool,
 }
 
 impl Default for AppPreferences {
@@ -67,6 +69,7 @@ impl Default for AppPreferences {
             preferred_formats: default_preferred_formats(),
             new_file_visible_kinds: default_new_file_kinds(),
             recent_conversions: Vec::new(),
+            onboarding_completed: false,
         }
     }
 }

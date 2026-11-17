@@ -11,7 +11,55 @@
   },
   "app": {
     "macOSPrivateApi": true,
-    "windows": [],
+    "windows": [
+      {
+        "label": "wheel",
+        "title": "FLIP",
+        "url": "index.html#wheel",
+        "width": 440,
+        "height": 440,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "resizable": false,
+        "visible": false,
+        "focus": false,
+        "visibleOnAllWorkspaces": true
+      },
+      {
+        "label": "settings",
+        "title": "FLIP Settings",
+        "url": "index.html#settings",
+        "width": 780,
+        "height": 600,
+        "minWidth": 680,
+        "minHeight": 500,
+        "resizable": true,
+        "visible": false
+      },
+      {
+        "label": "batch",
+        "title": "FLIP — Batch Converter",
+        "url": "index.html#batch",
+        "width": 660,
+        "height": 540,
+        "minWidth": 560,
+        "minHeight": 440,
+        "resizable": true,
+        "visible": false
+      },
+      {
+        "label": "onboarding",
+        "title": "Welcome to FLIP",
+        "url": "index.html#onboarding",
+        "width": 620,
+        "height": 480,
+        "resizable": false,
+        "visible": false
+      }
+    ],
     "security": {
       "csp": null
     }
@@ -26,9 +74,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "resources": [
-      "resources/flip-tick.wav"
-    ],
+    "resources": {
+      "resources/flip-tick.wav": "resources/flip-tick.wav",
+      "../native-bridge/bin/flip-macos-bridge": "flip-macos-bridge"
+    },
     "macOS": {
       "minimumSystemVersion": "15.0"
     }
