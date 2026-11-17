@@ -1,6 +1,7 @@
 import { UI_ICONS } from "../icons";
 import {
   checkForUpdates,
+  consumeSettingsNavigation,
   copyDiagnosticsToClipboard,
   copyTextWithFallback,
   defaultPreferences,
@@ -14,6 +15,7 @@ import {
   getQuickActionsStatus,
   getRecentConversions,
   installFinderQuickActions,
+  openReleaseUrl,
   openTemplatesFolder,
   openWindow,
   requestPermission,
@@ -31,6 +33,7 @@ import type {
   PermissionsStatus,
   QuickActionsStatus,
   RecentConversion,
+  SettingsNavigatePayload,
   UpdateCheckResult,
   UserTemplateInfo,
 } from "../types";
@@ -86,6 +89,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
   let lastUpdateTriggerMs = 0;
   let diagCopiedState: "idle" | "copied" | "manual" = "idle";
   let diagFallbackText = "";
+  let diagCopyTimer: number | null = null;
 
   root.innerHTML = `
     <div class="settings-shell">
@@ -787,7 +791,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
                 : ""
             }
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <a class="btn btn-primary btn-sm" href="${escapeHtml(updateResult.htmlUrl)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none">Open Release on GitHub</a>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-open-release-url">Open Release on GitHub</button>
               <button type="button" class="btn btn-sm" id="btn-copy-release-url">Copy Release URL</button>
             </div>
           </div>
@@ -799,7 +803,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
               <span class="status-pill is-ok"><span class="status-dot"></span>Up to Date</span>
               <span class="setting-desc" style="margin:0">FLIP ${escapeHtml(updateResult.currentVersion)} is current (latest GitHub tag: <code>${escapeHtml(updateResult.latestTag)}</code>${pubDate}).</span>
             </div>
-            <a class="btn btn-sm" href="${escapeHtml(updateResult.htmlUrl)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none">Releases Page</a>
+            <button type="button" class="btn btn-sm" id="btn-open-release-url">Releases Page</button>
           </div>
         `;
       }
@@ -1096,6 +1100,16 @@ export function mountSettingsView(root: HTMLElement): () => void {
     mainEl.querySelector("#btn-about-logs")?.addEventListener("click", () => void revealLogs());
     mainEl.querySelector("#btn-check-updates")?.addEventListener("click", () => void runUpdateCheck());
     mainEl.querySelector("#btn-copy-diagnostics")?.addEventListener("click", () => void runCopyDiagnostics());
+    mainEl.querySelector("#btn-open-release-url")?.addEventListener("click", async () => {
+      if (!updateResult?.htmlUrl) return;
+      try {
+        await openReleaseUrl(updateResult.htmlUrl);
+      } catch (err) {
+        if (!disposed) {
+          showSavedToast(`Error: ${formatError(err)}`);
+        }
+      }
+    });
     mainEl.querySelector("#btn-copy-release-url")?.addEventListener("click", async () => {
       if (!updateResult?.htmlUrl) return;
       const copyRes = await copyTextWithFallback(updateResult.htmlUrl);
@@ -1244,7 +1258,9 @@ export function mountSettingsView(root: HTMLElement): () => void {
         diagFallbackText = "";
         showSavedToast("Redacted diagnostics copied");
         if (activeTab === "about") renderMain();
-        window.setTimeout(() => {
+        if (diagCopyTimer !== null) window.clearTimeout(diagCopyTimer);
+        diagCopyTimer = window.setTimeout(() => {
+          diagCopyTimer = null;
           if (!disposed && diagCopiedState === "copied") {
             diagCopiedState = "idle";
             if (activeTab === "about") renderMain();
@@ -1284,8 +1300,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
     }
   }
 
-  let unlistenNavigate: (() => void) | null = null;
-  void events.onSettingsNavigate((payload) => {
+  function handleSettingsNavigate(payload: SettingsNavigatePayload, refreshTab = true): void {
     if (disposed) return;
     if (payload.tab) {
       activeTab = payload.tab;
@@ -1294,16 +1309,13 @@ export function mountSettingsView(root: HTMLElement): () => void {
       recorderFeedbackTarget = null;
     }
     renderMain();
-    if (activeTab === "engines" || activeTab === "newfile" || activeTab === "about") {
+    if (refreshTab && (activeTab === "engines" || activeTab === "newfile" || activeTab === "about")) {
       void refreshDiagnostics();
     }
     if (payload.checkUpdates && Date.now() - lastUpdateTriggerMs > 600) {
       void runUpdateCheck();
     }
-  }).then((fn) => {
-    if (disposed) fn();
-    else unlistenNavigate = fn;
-  });
+  }
 
   const hashQuery = window.location.hash.split("?")[1] ?? "";
   const hashParams = new URLSearchParams(hashQuery);
@@ -1315,12 +1327,26 @@ export function mountSettingsView(root: HTMLElement): () => void {
     activeTab = initialTab;
   }
 
+  let unlistenNavigate: (() => void) | null = null;
   void (async () => {
+    const navFn = await events.onSettingsNavigate((payload) => handleSettingsNavigate(payload, true));
+    if (disposed) {
+      navFn();
+      return;
+    }
+    unlistenNavigate = navFn;
+
+    const pendingNav = await consumeSettingsNavigation().catch(() => null);
+    if (disposed) return;
+    if (pendingNav) {
+      handleSettingsNavigate(pendingNav, false);
+    }
+
     prefs = await getPreferences().catch(() => defaultPreferences());
     if (disposed) return;
     renderMain();
     await refreshDiagnostics();
-    if (hashParams.get("checkUpdates") === "1" && activeTab === "about") {
+    if (hashParams.get("checkUpdates") === "1" && activeTab === "about" && !pendingNav?.checkUpdates) {
       void runUpdateCheck();
     }
   })();
@@ -1328,6 +1354,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
   return () => {
     disposed = true;
     if (saveToastTimer !== null) window.clearTimeout(saveToastTimer);
+    if (diagCopyTimer !== null) window.clearTimeout(diagCopyTimer);
     if (unlistenNavigate) unlistenNavigate();
     window.removeEventListener("keydown", onRecorderKeyDown, true);
   };

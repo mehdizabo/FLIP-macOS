@@ -101,10 +101,12 @@ export function mountWheelView(root: HTMLElement): () => void {
   let stepLabel = "";
   let lastErrorMsg = "";
   let diagBtnLabel = "Copy Diagnostics";
+  let diagBtnTitle = "Copy redacted diagnostics report";
   let lastResults: ConversionResult[] = [];
   let progressRaf: number | null = null;
   let autoCloseTimer: number | null = null;
   let dismissTimer: number | null = null;
+  let diagResetTimer: number | null = null;
   let openedAtMs = 0;
 
   // QuickLook thumbnail cache for current primary file
@@ -224,6 +226,13 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (dismissTimer !== null) {
       window.clearTimeout(dismissTimer);
       dismissTimer = null;
+    }
+  }
+
+  function clearDiagResetTimer(): void {
+    if (diagResetTimer !== null) {
+      window.clearTimeout(diagResetTimer);
+      diagResetTimer = null;
     }
   }
 
@@ -439,6 +448,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   }
 
   function renderHub(): void {
+    hubEl.classList.toggle("is-error-hub", phase === "error");
     const fileCount = state.files.length;
     const primaryName =
       fileCount === 0
@@ -483,9 +493,11 @@ export function mountWheelView(root: HTMLElement): () => void {
         <div class="wheel-hub-title">${failTitle}</div>
         <div class="wheel-hub-subtitle is-error" title="${escapeHtml(lastErrorMsg)}">${escapeHtml(lastErrorMsg || "An error occurred")}</div>
         <div class="wheel-hub-actions is-error-actions">
-          ${canOpenBatch ? `<button type="button" class="wheel-hub-pill-btn" id="hub-batch-details">Batch Details</button>` : ""}
-          <button type="button" class="wheel-hub-pill-btn" id="hub-copy-diag">${escapeHtml(diagBtnLabel)}</button>
-          <button type="button" class="wheel-hub-pill-btn" id="hub-dismiss-btn">Close</button>
+          <button type="button" class="wheel-hub-pill-btn is-diag-btn" id="hub-copy-diag" title="${escapeHtml(diagBtnTitle)}">${escapeHtml(diagBtnLabel)}</button>
+          <div class="wheel-hub-error-row">
+            ${canOpenBatch ? `<button type="button" class="wheel-hub-pill-btn" id="hub-batch-details" title="Open Batch Details">Details</button>` : ""}
+            <button type="button" class="wheel-hub-pill-btn" id="hub-dismiss-btn">Close</button>
+          </div>
         </div>
       `;
       hubEl.querySelector("#hub-batch-details")?.addEventListener("click", (e) => {
@@ -499,26 +511,40 @@ export function mountWheelView(root: HTMLElement): () => void {
         const btn = e.currentTarget as HTMLButtonElement;
         btn.disabled = true;
         btn.textContent = "Copying…";
+        clearDiagResetTimer();
         try {
           const res = await copyDiagnosticsToClipboard();
           if (disposed || phase !== "error") return;
-          diagBtnLabel = res.ok ? "Copied!" : "Copy Failed";
-          if (!res.ok) {
-            lastErrorMsg =
-              res.error || "Clipboard unavailable — use Settings → About → Copy Diagnostics.";
+          if (res.ok) {
+            diagBtnLabel = "Copied!";
+            diagBtnTitle = "Redacted diagnostics copied to clipboard";
+          } else {
+            diagBtnLabel = "Copy Failed";
+            diagBtnTitle =
+              res.error || "Clipboard unavailable — open Settings → About → Copy Diagnostics";
           }
           renderHub();
-          window.setTimeout(() => {
+          diagResetTimer = window.setTimeout(() => {
+            diagResetTimer = null;
             if (!disposed && phase === "error") {
               diagBtnLabel = "Copy Diagnostics";
+              diagBtnTitle = "Copy redacted diagnostics report";
               renderHub();
             }
           }, 2000);
         } catch (err) {
           if (disposed || phase !== "error") return;
           diagBtnLabel = "Copy Failed";
-          lastErrorMsg = formatError(err);
+          diagBtnTitle = formatError(err);
           renderHub();
+          diagResetTimer = window.setTimeout(() => {
+            diagResetTimer = null;
+            if (!disposed && phase === "error") {
+              diagBtnLabel = "Copy Diagnostics";
+              diagBtnTitle = "Copy redacted diagnostics report";
+              renderHub();
+            }
+          }, 2000);
         }
       });
       hubEl.querySelector("#hub-dismiss-btn")?.addEventListener("click", (e) => {
@@ -960,9 +986,11 @@ export function mountWheelView(root: HTMLElement): () => void {
     activeActionLabel = "";
     lastErrorMsg = "";
     diagBtnLabel = "Copy Diagnostics";
+    diagBtnTitle = "Copy redacted diagnostics report";
     lastResults = [];
     clearDwell();
     clearAutoClose();
+    clearDiagResetTimer();
     stopProgressLoop();
     progressLayer.style.display = "none";
 
@@ -1440,6 +1468,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearDwell();
     clearAutoClose();
     clearDismissTimer();
+    clearDiagResetTimer();
     stopProgressLoop();
     document.body.classList.remove("wheel-browser-preview");
     svgEl.removeEventListener("pointermove", onPointerMove);

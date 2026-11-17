@@ -514,14 +514,39 @@ html[data-route="wheel"] body.wheel-browser-preview {
   gap: 4px;
 }
 
+.wheel-hub.is-error-hub {
+  padding: 8px 10px;
+}
+
+.wheel-hub.is-error-hub .wheel-hub-title {
+  max-width: 94px;
+  font-size: 10.5px;
+}
+
+.wheel-hub.is-error-hub .wheel-hub-subtitle.is-error {
+  max-width: 106px;
+  font-size: 9.5px;
+  -webkit-line-clamp: 2;
+}
+
 .wheel-hub-actions.is-error-actions {
+  flex-direction: column;
+  align-items: center;
   gap: 3px;
-  max-width: 110px;
+  max-width: 102px;
+}
+
+.wheel-hub-error-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
 .wheel-hub-actions.is-error-actions .wheel-hub-pill-btn {
-  font-size: 8.8px;
+  font-size: 8.6px;
   padding: 2px 6px;
+  white-space: nowrap;
 }
 
 .wheel-hub-pill-btn {

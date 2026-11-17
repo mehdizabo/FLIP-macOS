@@ -2,7 +2,9 @@ use flip_lib::core::logging::redact_user_paths;
 use flip_lib::core::policy::FormatFamily;
 use flip_lib::core::preferences::{expand_tilde_path, AppPreferences, RecentConversion};
 use flip_lib::core::quick_actions::QuickActionsStatus;
-use flip_lib::core::updater::{check_github_updates, UpdateCheckResult};
+use flip_lib::core::updater::{
+    check_github_updates, is_curl_http_404, validate_release_html_url, UpdateCheckResult,
+};
 use flip_lib::engines::bridge::{
     resolve_bridge_binary_from, ClipboardInspect, PermissionsStatus, ThumbnailResult,
 };
@@ -13,7 +15,10 @@ use flip_lib::host::commands::{
     NativeFrameworksStatus, NewFileKindsResponse,
 };
 use flip_lib::host::monitor::{clamp_to_screen, should_hide_on_drag_end, MonitorScreenGeom};
-use flip_lib::host::{inspect_paths_with_prefs, resolve_wav_path_from, WheelStatePayload};
+use flip_lib::host::{
+    inspect_paths_with_prefs, resolve_wav_path_from, HostState, SettingsNavigatePayload,
+    WheelStatePayload,
+};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
@@ -285,8 +290,41 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
     }
 
     assert!(check_github_updates(Some("http://insecure.example.com")).is_err());
-    let redacted = redact_user_paths("/Users/tester/Desktop/a.png /private/var/folders/12/abcd/T/b.txt");
-    assert_eq!(redacted, "~/Desktop/a.png ~/T/b.txt");
+    assert!(validate_release_html_url("https://github.com/thetinyfoundry/FLIP/releases").is_ok());
+    assert!(validate_release_html_url("https://evil.example/x").is_err());
+    assert!(is_curl_http_404(
+        Some(56),
+        "curl: (56) The requested URL returned error: 404"
+    ));
+
+    let nav = SettingsNavigatePayload {
+        tab: "about".into(),
+        check_updates: true,
+    };
+    let nv = serde_json::to_value(&nav).unwrap();
+    assert_eq!(nv["tab"], "about");
+    assert_eq!(nv["checkUpdates"], true);
+
+    // Cold tray navigation handoff: pending navigation is queued while settings_mounted == false
+    // and consumed once when SettingsView initializes.
+    let state = HostState::new(AppPreferences::default());
+    assert!(!state.settings_mounted.load(std::sync::atomic::Ordering::SeqCst));
+    *state.pending_settings_nav.lock().unwrap() = Some(nav.clone());
+    let consumed = state.pending_settings_nav.lock().unwrap().take();
+    state
+        .settings_mounted
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(consumed, Some(nav));
+    assert!(state.pending_settings_nav.lock().unwrap().is_none());
+    assert!(state.settings_mounted.load(std::sync::atomic::Ordering::SeqCst));
+
+    let redacted = redact_user_paths(
+        "/Users/tester/Desktop/a.png /private/var/folders/12/abcd/T/b.txt flip://convert?file=%2FUsers%2Ftester%2Fc.md",
+    );
+    assert_eq!(
+        redacted,
+        "~/Desktop/a.png ~/T/b.txt flip://convert?file=~%2Fc.md"
+    );
 }
 
 #[test]
@@ -413,7 +451,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
             }
         }
     }
-    assert_eq!(rust_cmds.len(), 25);
+    assert_eq!(rust_cmds.len(), 27);
 
     // Extract every invoke<...>("cmd_name") in src/ipc.ts
     let mut ts_cmds = BTreeSet::new();
@@ -494,7 +532,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         rust_param_map.insert(name, keys);
         rem = &after_fn[close_p..];
     }
-    assert_eq!(rust_param_map.len(), 25);
+    assert_eq!(rust_param_map.len(), 27);
 
     let mut ts_search = ipc_ts.as_str();
     while let Some(idx) = ts_search.find("invoke<") {

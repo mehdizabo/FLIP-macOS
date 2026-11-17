@@ -46,6 +46,13 @@ pub struct InspectFilesResult {
     pub family: Option<FormatFamily>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsNavigatePayload {
+    pub tab: String,
+    pub check_updates: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct WheelRuntimeState {
     pub payload: WheelStatePayload,
@@ -64,6 +71,8 @@ pub struct HostState {
     pub monitor_tx: Mutex<Option<std::sync::mpsc::Sender<String>>>,
     pub shutting_down: AtomicBool,
     pub opened_from_url: AtomicBool,
+    pub settings_mounted: AtomicBool,
+    pub pending_settings_nav: Mutex<Option<SettingsNavigatePayload>>,
     pub wav_path: Mutex<Option<PathBuf>>,
     pub order_gate: Mutex<ShortcutOrderGate>,
     pub press_gate: Mutex<ShortcutPressGate>,
@@ -98,6 +107,8 @@ impl HostState {
             monitor_tx: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
             opened_from_url: AtomicBool::new(false),
+            settings_mounted: AtomicBool::new(false),
+            pending_settings_nav: Mutex::new(None),
             wav_path: Mutex::new(None),
             order_gate: Mutex::new(ShortcutOrderGate::default()),
             press_gate: Mutex::new(ShortcutPressGate::default()),

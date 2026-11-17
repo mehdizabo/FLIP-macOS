@@ -4,6 +4,7 @@ use crate::engines::bridge;
 use crate::engines::create_new::{create_new_item, ensure_templates_dir_initialized};
 use crate::host::{
     present_wheel_at, query_finder_context_or_fallback, show_standard_window, HostState,
+    SettingsNavigatePayload,
 };
 use serde_json::json;
 use std::fs;
@@ -392,20 +393,26 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     let _ = show_standard_window(app, &state, "settings");
                 }
                 "check_updates" => {
-                    let had_window = app.get_webview_window("settings").is_some();
+                    let payload = SettingsNavigatePayload {
+                        tab: "about".to_string(),
+                        check_updates: true,
+                    };
+                    let should_emit = if let Ok(mut pending) = state.pending_settings_nav.lock() {
+                        if state.settings_mounted.load(Ordering::SeqCst) {
+                            *pending = None;
+                            true
+                        } else {
+                            *pending = Some(payload.clone());
+                            false
+                        }
+                    } else {
+                        true
+                    };
                     let _ = show_standard_window(app, &state, "settings");
-                    let payload = json!({ "tab": "about", "checkUpdates": true });
-                    if let Some(win) = app.get_webview_window("settings") {
-                        let _ = win.emit("settings:navigate", &payload);
-                    }
-                    if !had_window {
-                        let app_h = app.clone();
-                        std::thread::spawn(move || {
-                            std::thread::sleep(std::time::Duration::from_millis(300));
-                            if let Some(win) = app_h.get_webview_window("settings") {
-                                let _ = win.emit("settings:navigate", &payload);
-                            }
-                        });
+                    if should_emit {
+                        if let Some(win) = app.get_webview_window("settings") {
+                            let _ = win.emit("settings:navigate", &payload);
+                        }
                     }
                 }
                 "templates" => {

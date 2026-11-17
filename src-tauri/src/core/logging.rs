@@ -200,7 +200,12 @@ fn match_exact_home(tail: &str, home_candidates: &[String]) -> Option<usize> {
 }
 
 fn match_system_user_var(tail: &str) -> Option<usize> {
-    for prefix in ["/private/var/mobile", "/private/var/root"] {
+    for prefix in [
+        "/private/var/mobile",
+        "/private/var/root",
+        "/var/mobile",
+        "/var/root",
+    ] {
         if let Some(after) = tail.strip_prefix(prefix) {
             if after.is_empty() || after.chars().next().is_some_and(is_segment_terminator) {
                 return Some(prefix.len());
@@ -210,8 +215,81 @@ fn match_system_user_var(tail: &str) -> Option<usize> {
     None
 }
 
+fn strip_ascii_ci_prefix<'a>(haystack: &'a str, prefix: &str) -> Option<&'a str> {
+    if haystack.len() < prefix.len() {
+        return None;
+    }
+    if haystack.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes()) {
+        Some(&haystack[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+fn scan_encoded_segment_len(rest: &str) -> usize {
+    let mut i = 0usize;
+    let bytes = rest.as_bytes();
+    while i < bytes.len() {
+        let rem = &bytes[i..];
+        if rem.len() >= 3 && rem[0] == b'%' && rem[1..3].eq_ignore_ascii_case(b"2f") {
+            break;
+        }
+        let ch = rest[i..].chars().next().unwrap();
+        if is_segment_terminator(ch) || matches!(ch, '&' | '#' | '?') {
+            break;
+        }
+        i += ch.len_utf8();
+    }
+    i
+}
+
+fn match_percent_encoded_user_path(tail: &str) -> Option<usize> {
+    for prefix in ["%2Fprivate%2FUsers%2F", "%2FUsers%2F"] {
+        if let Some(after) = strip_ascii_ci_prefix(tail, prefix) {
+            let user_len = scan_encoded_segment_len(after);
+            if user_len > 0 {
+                return Some(prefix.len() + user_len);
+            }
+        }
+    }
+    for prefix in ["%2Fprivate%2Fvar%2Ffolders%2F", "%2Fvar%2Ffolders%2F"] {
+        if let Some(after) = strip_ascii_ci_prefix(tail, prefix) {
+            let seg1 = scan_encoded_segment_len(after);
+            if seg1 > 0 {
+                let rem = &after[seg1..];
+                if let Some(after_slash) = strip_ascii_ci_prefix(rem, "%2F") {
+                    let seg2 = scan_encoded_segment_len(after_slash);
+                    if seg2 > 0 {
+                        return Some(prefix.len() + seg1 + 3 + seg2);
+                    }
+                }
+                return Some(prefix.len() + seg1);
+            }
+        }
+    }
+    None
+}
+
 pub fn redact_user_paths(input: &str) -> String {
     redact_paths_with_home(input, dirs::home_dir().as_deref())
+}
+
+fn is_json_escaped_whitespace_boundary(prefix: &str) -> bool {
+    let bytes = prefix.as_bytes();
+    if bytes.len() < 2 {
+        return false;
+    }
+    let last = bytes[bytes.len() - 1];
+    if !matches!(last, b'n' | b'r' | b't') {
+        return false;
+    }
+    let mut backslashes = 0usize;
+    let mut idx = bytes.len() - 1;
+    while idx > 0 && bytes[idx - 1] == b'\\' {
+        backslashes += 1;
+        idx -= 1;
+    }
+    backslashes % 2 == 1
 }
 
 pub fn redact_paths_with_home(input: &str, home_dir: Option<&Path>) -> String {
@@ -236,7 +314,8 @@ pub fn redact_paths_with_home(input: &str, home_dir: Option<&Path>) -> String {
 
     while i < input.len() {
         let tail = &input[i..];
-        let at_boundary = prev_char.is_none_or(is_left_path_boundary);
+        let at_boundary = prev_char.is_none_or(is_left_path_boundary)
+            || is_json_escaped_whitespace_boundary(&input[..i]);
 
         if at_boundary && tail.starts_with('/') {
             let matched_len = match_exact_home(tail, &home_candidates)
@@ -245,6 +324,15 @@ pub fn redact_paths_with_home(input: &str, home_dir: Option<&Path>) -> String {
                 .or_else(|| match_system_user_var(tail));
 
             if let Some(len) = matched_len {
+                out.push('~');
+                i += len;
+                prev_char = Some('~');
+                continue;
+            }
+        } else if (at_boundary || prev_char == Some('%'))
+            && (tail.starts_with("%2F") || tail.starts_with("%2f"))
+        {
+            if let Some(len) = match_percent_encoded_user_path(tail) {
                 out.push('~');
                 i += len;
                 prev_char = Some('~');
@@ -340,7 +428,8 @@ pub fn format_diagnostics_markdown(input: &DiagnosticsReportInput<'_>) -> String
     let events_section = if input.log_lines.is_empty() {
         "_No events recorded yet in `events.jsonl`._".to_string()
     } else {
-        format!("```jsonl\n{}\n```", input.log_lines.join("\n"))
+        let joined = input.log_lines.join("\n").replace("````", "` ` ` `");
+        format!("````jsonl\n{joined}\n````")
     };
 
     let raw = format!(
@@ -457,6 +546,8 @@ mod tests {
             "priv=/private/Users/charlie/Downloads/pic.heic\n",
             "tmp=/private/var/folders/38/htd8qbz91714b54kc33lt3b80000gn/T/.tmpXYZ/out.png\n",
             "var=/var/folders/ab/cdef1234/C/com.thetinyfoundry.flip.mac/cache.bin\n",
+            "mobile=/var/mobile/Documents/doc.pdf\n",
+            "encoded=flip://convert?file=%2FUsers%2Fdana%2FDesktop%2Fnote.md\n",
             "custom=/Volumes/WorkHome/custom_user/Projects/file.txt\n",
             "exact_home=\"/Users/alice\"\n",
             "brew=/opt/homebrew/bin/ffmpeg\n",
@@ -467,6 +558,7 @@ mod tests {
         assert!(!redacted.contains("/Users/alice"));
         assert!(!redacted.contains("/Users/bob"));
         assert!(!redacted.contains("/private/Users/charlie"));
+        assert!(!redacted.contains("dana"));
         assert!(!redacted.contains("htd8qbz91714b54kc33lt3b80000gn"));
         assert!(!redacted.contains("cdef1234"));
         assert!(!redacted.contains("custom_user"));
@@ -476,6 +568,8 @@ mod tests {
         assert!(redacted.contains("priv=~/Downloads/pic.heic"));
         assert!(redacted.contains("tmp=~/T/.tmpXYZ/out.png"));
         assert!(redacted.contains("var=~/C/com.thetinyfoundry.flip.mac/cache.bin"));
+        assert!(redacted.contains("mobile=~/Documents/doc.pdf"));
+        assert!(redacted.contains("encoded=flip://convert?file=~%2FDesktop%2Fnote.md"));
         assert!(redacted.contains("custom=~/Projects/file.txt"));
         assert!(redacted.contains("exact_home=\"~\""));
         assert!(redacted.contains("brew=/opt/homebrew/bin/ffmpeg"));
@@ -548,5 +642,24 @@ mod tests {
         assert!(md.contains("~/Inbox"));
         assert!(!md.contains("secretuser"), "redacted markdown leaked username:\n{md}");
         assert!(!md.contains("abcxyz"), "redacted markdown leaked var folder hash:\n{md}");
+
+        // Encoded /private/var/folders and embedded quadruple backticks in log lines stay safe
+        let sneaky = vec![r#"{"msg":"````\n/private/var/folders/99/zz11/T/x"}"#.to_string()];
+        let sneaky_md = format_diagnostics_markdown(&DiagnosticsReportInput {
+            app_version: "0.1.0",
+            macos_version: "macOS 27.2.1 (26B131)",
+            tools: &tools,
+            permissions: Ok(&perms),
+            prefs: &prefs,
+            log_lines: &sneaky,
+            home_dir: Some(Path::new("/Users/secretuser")),
+        });
+        assert!(!sneaky_md.contains("zz11"));
+        assert!(sneaky_md.contains("~/T/x"));
+        let enc = redact_paths_with_home(
+            "url=flip://open?p=%2Fprivate%2Fvar%2Ffolders%2F38%2Fxyz987%2FT%2Fa.png",
+            None,
+        );
+        assert_eq!(enc, "url=flip://open?p=~%2FT%2Fa.png");
     }
 }

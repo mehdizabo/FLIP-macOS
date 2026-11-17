@@ -19,7 +19,8 @@ use crate::engines::{convert_files, detect_tools, ConversionResult, DetectedTool
 use crate::host::tray::{open_templates_folder_in_finder, refresh_tray_menu, reveal_logs_in_finder};
 use crate::host::{
     hide_wheel, inspect_paths_with_prefs, present_wheel_at, query_finder_context_or_fallback,
-    show_standard_window, HostState, InspectFilesResult, WheelStatePayload,
+    show_standard_window, HostState, InspectFilesResult, SettingsNavigatePayload,
+    WheelStatePayload,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -636,6 +637,28 @@ pub async fn check_for_updates(repo_url: Option<String>) -> Result<UpdateCheckRe
     tokio::task::spawn_blocking(move || updater::check_github_updates(repo_url.as_deref()))
         .await
         .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub fn open_release_url(url: String) -> Result<(), String> {
+    let validated = updater::validate_release_html_url(&url)?;
+    Command::new("/usr/bin/open")
+        .arg(&validated)
+        .spawn()
+        .map_err(|e| format!("Failed to open GitHub release in browser: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn consume_settings_navigation(
+    state: State<'_, Arc<HostState>>,
+) -> Result<Option<SettingsNavigatePayload>, String> {
+    let mut pending_guard = state
+        .pending_settings_nav
+        .lock()
+        .map_err(|_| "Settings navigation lock poisoned".to_string())?;
+    state.settings_mounted.store(true, Ordering::SeqCst);
+    Ok(pending_guard.take())
 }
 
 #[tauri::command]

@@ -3,12 +3,14 @@ import {
   cancelConversion,
   checkForUpdates,
   consumeBatchHandoff,
+  consumeSettingsNavigation,
   copyDiagnosticsToClipboard,
   defaultPreferences,
   dismissWheel,
   events,
   executeConversion,
   executeCreateNew,
+  formatError,
   getDiagnosticsReport,
   getEngineStatus,
   getNewFileKinds,
@@ -20,6 +22,7 @@ import {
   inspectFiles,
   installFinderQuickActions,
   openBatchWithFiles,
+  openReleaseUrl,
   openWheelMode,
   requestPermission,
   savePreferences,
@@ -172,6 +175,22 @@ describe("Frontend IPC surface & contract alignment", () => {
       expect(upd.latestTag.startsWith("v")).toBe(true);
       expect(upd.htmlUrl.startsWith("https://github.com/")).toBe(true);
       expect(typeof upd.updateAvailable).toBe("boolean");
+
+      expect(await consumeSettingsNavigation()).toBeNull();
+      let rejectedUrl = false;
+      try {
+        await openReleaseUrl("https://evil.example/payload");
+      } catch (err) {
+        rejectedUrl = formatError(err).includes("https://github.com/");
+      }
+      expect(rejectedUrl).toBe(true);
+      let openedReleaseUrl = "";
+      (g.window as Record<string, unknown>).open = (u: string) => {
+        openedReleaseUrl = u;
+        return null;
+      };
+      await openReleaseUrl("https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1");
+      expect(openedReleaseUrl).toBe("https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1");
 
       const diag = await getDiagnosticsReport();
       expect(diag).toContain("# FLIP Diagnostics Report");

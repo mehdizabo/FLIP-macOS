@@ -132,46 +132,71 @@ pub fn normalize_github_releases_api_url(raw: &str) -> Result<String, String> {
         return Err("Update check URL must use https://.".to_string());
     }
 
-    if let Some(rest) = trimmed
+    let gh_rest = lower
         .strip_prefix("https://github.com/")
-        .or_else(|| trimmed.strip_prefix("https://www.github.com/"))
-    {
-        let clean = rest.trim_end_matches('/').trim_end_matches(".git");
+        .map(|_| &trimmed["https://github.com/".len()..])
+        .or_else(|| {
+            lower
+                .strip_prefix("https://www.github.com/")
+                .map(|_| &trimmed["https://www.github.com/".len()..])
+        });
+
+    if let Some(rest) = gh_rest {
+        let without_query = rest.split(['?', '#']).next().unwrap_or(rest);
+        let clean = without_query.trim_end_matches('/');
         let mut segments = clean.split('/').filter(|s| !s.is_empty());
         let owner = segments
             .next()
             .ok_or_else(|| "GitHub repository URL is missing owner.".to_string())?;
-        let repo = segments
+        let raw_repo = segments
             .next()
             .ok_or_else(|| "GitHub repository URL is missing repository name.".to_string())?;
+        let repo = raw_repo.strip_suffix(".git").unwrap_or(raw_repo);
+        if repo.is_empty() {
+            return Err("GitHub repository URL is missing repository name.".to_string());
+        }
         return Ok(format!(
             "https://api.github.com/repos/{owner}/{repo}/releases/latest"
         ));
     }
 
-    if let Some(rest) = trimmed.strip_prefix("https://api.github.com/repos/") {
-        let clean = rest.trim_end_matches('/');
+    if lower.starts_with("https://api.github.com/repos/") {
+        let rest = &trimmed["https://api.github.com/repos/".len()..];
+        let without_query = rest.split(['?', '#']).next().unwrap_or(rest);
+        let clean = without_query.trim_end_matches('/');
         let parts: Vec<&str> = clean.split('/').filter(|s| !s.is_empty()).collect();
         if parts.len() == 2 {
+            let repo = parts[1].strip_suffix(".git").unwrap_or(parts[1]);
             return Ok(format!(
-                "https://api.github.com/repos/{}/{}/releases/latest",
-                parts[0], parts[1]
+                "https://api.github.com/repos/{}/{repo}/releases/latest",
+                parts[0]
             ));
         }
-        return Ok(trimmed.to_string());
+        return Ok(format!("https://api.github.com/repos/{rest}"));
     }
 
     Ok(trimmed.to_string())
 }
 
+pub fn validate_release_html_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('-')
+        || trimmed.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err("Invalid GitHub release URL.".to_string());
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if !lower.starts_with("https://github.com/") {
+        return Err("Release URL must start with https://github.com/.".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
 pub fn sanitize_release_html_url(raw: Option<&str>, fallback: &str) -> String {
     if let Some(candidate) = raw {
-        let trimmed = candidate.trim();
-        let lower = trimmed.to_ascii_lowercase();
-        if lower.starts_with("https://github.com/")
-            && !trimmed.chars().any(|c| c.is_whitespace() || c.is_control())
-        {
-            return trimmed.to_string();
+        if let Ok(valid) = validate_release_html_url(candidate) {
+            return valid;
         }
     }
     fallback.to_string()
@@ -288,8 +313,26 @@ pub fn parse_github_tags_json(
     })
 }
 
+pub fn is_curl_http_error(code: Option<i32>, stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    code == Some(22) || (code == Some(56) && lower.contains("returned error"))
+}
+
+pub fn is_curl_http_404(code: Option<i32>, stderr: &str) -> bool {
+    is_curl_http_error(code, stderr) && stderr.contains("404")
+}
+
 fn format_curl_error(code: Option<i32>, stderr: &str) -> String {
     let lower = stderr.to_ascii_lowercase();
+    if is_curl_http_error(code, stderr) {
+        if lower.contains("403") || lower.contains("429") {
+            return "GitHub API rate limit reached. Please try again in a few minutes.".to_string();
+        } else if lower.contains("404") {
+            return "No published GitHub release was found for this repository.".to_string();
+        } else {
+            return "GitHub returned an HTTP error while checking for updates.".to_string();
+        }
+    }
     match code {
         Some(6) | Some(7) | Some(35) | Some(52) | Some(56) => {
             "Unable to check for updates while offline or unable to reach GitHub.".to_string()
@@ -297,15 +340,6 @@ fn format_curl_error(code: Option<i32>, stderr: &str) -> String {
         Some(28) => format!(
             "Update check timed out after {UPDATE_TIMEOUT_SECS} seconds. Check your internet connection."
         ),
-        Some(22) => {
-            if lower.contains("403") || lower.contains("429") {
-                "GitHub API rate limit reached. Please try again in a few minutes.".to_string()
-            } else if lower.contains("404") {
-                "No published GitHub release was found for this repository.".to_string()
-            } else {
-                "GitHub returned an HTTP error while checking for updates.".to_string()
-            }
-        }
         _ => {
             if lower.contains("could not resolve host") || lower.contains("failed to connect") {
                 "Unable to check for updates while offline or unable to reach GitHub.".to_string()
@@ -374,15 +408,17 @@ pub fn check_github_updates(repo_url: Option<&str>) -> Result<UpdateCheckResult,
             );
             Ok(parsed)
         }
-        Err((Some(22), stderr)) if stderr.contains("404") && api_url.ends_with("/releases/latest") => {
+        Err((code, stderr)) if is_curl_http_404(code, &stderr) && api_url.ends_with("/releases/latest") => {
             // Fallback to tags?per_page=1 if repository has tags without formal GitHub Release objects
             let tags_url = format!(
                 "{}/tags?per_page=1",
                 api_url.trim_end_matches("/releases/latest")
             );
-            let releases_page_base = if let Some(rest) =
-                api_url.strip_prefix("https://api.github.com/repos/")
+            let releases_page_base = if api_url
+                .to_ascii_lowercase()
+                .starts_with("https://api.github.com/repos/")
             {
+                let rest = &api_url["https://api.github.com/repos/".len()..];
                 let slug = rest.trim_end_matches("/releases/latest");
                 format!("https://github.com/{slug}/releases")
             } else {
@@ -463,12 +499,26 @@ mod tests {
             "https://api.github.com/repos/acme/tool/releases/latest"
         );
         assert_eq!(
+            normalize_github_releases_api_url("HTTPS://GitHub.com/acme/tool.git?tab=readme#top")
+                .unwrap(),
+            "https://api.github.com/repos/acme/tool/releases/latest"
+        );
+        assert_eq!(
             normalize_github_releases_api_url("https://api.github.com/repos/acme/tool").unwrap(),
             "https://api.github.com/repos/acme/tool/releases/latest"
         );
         assert!(normalize_github_releases_api_url("http://api.github.com/repos/a/b").is_err());
         assert!(normalize_github_releases_api_url("file:///etc/passwd").is_err());
         assert!(normalize_github_releases_api_url("--insecure").is_err());
+
+        assert_eq!(
+            validate_release_html_url("https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1")
+                .unwrap(),
+            "https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1"
+        );
+        assert!(validate_release_html_url("https://evil.example/payload").is_err());
+        assert!(validate_release_html_url("javascript:alert(1)").is_err());
+        assert!(validate_release_html_url("file:///Applications/Safari.app").is_err());
 
         assert_eq!(
             sanitize_release_html_url(
@@ -536,9 +586,42 @@ mod tests {
     fn curl_error_messages_are_clean_and_user_friendly() {
         let offline = format_curl_error(Some(6), "curl: (6) Could not resolve host: api.github.com");
         assert!(offline.contains("offline"));
+        let recv_drop = format_curl_error(Some(56), "curl: (56) LibreSSL SSL_read: Connection reset by peer");
+        assert!(recv_drop.contains("offline"));
         let timeout = format_curl_error(Some(28), "Operation timed out after 8000 milliseconds");
         assert!(timeout.contains("timed out"));
         let rate = format_curl_error(Some(22), "The requested URL returned error: 403");
         assert!(rate.contains("rate limit"));
+        let rate_h2 = format_curl_error(Some(56), "curl: (56) The requested URL returned error: 429");
+        assert!(rate_h2.contains("rate limit"));
+        let not_found_h2 = format_curl_error(Some(56), "curl: (56) The requested URL returned error: 404");
+        assert!(not_found_h2.contains("No published GitHub release"));
+        assert!(is_curl_http_404(Some(56), "curl: (56) The requested URL returned error: 404"));
+        assert!(is_curl_http_404(Some(22), "curl: (22) The requested URL returned error: 404"));
+        assert!(!is_curl_http_404(Some(56), "curl: (56) Connection reset by peer"));
+    }
+
+    #[test]
+    #[ignore = "hits live github.com over network"]
+    fn live_github_update_check_and_tags_fallback() {
+        let res = check_github_updates(None).expect("live release check should succeed");
+        assert_eq!(res.current_version, current_version());
+        assert!(!res.latest_tag.is_empty());
+        assert!(res.html_url.starts_with("https://github.com/"));
+
+        // git/git uses tags without GitHub Releases, exercising the 404 -> /tags?per_page=1 fallback
+        let tag_res = check_github_updates(Some("https://github.com/git/git"))
+            .expect("tags fallback should succeed for repo without releases");
+        assert!(!tag_res.latest_tag.is_empty());
+        assert!(tag_res
+            .html_url
+            .starts_with("https://github.com/git/git/releases/tag/"));
+
+        let offline_err = check_github_updates(Some("https://nonexistent.invalid/owner/repo"))
+            .expect_err("invalid domain must fail cleanly");
+        assert!(
+            offline_err.contains("offline") || offline_err.contains("unable to reach"),
+            "unexpected error: {offline_err}"
+        );
     }
 }

@@ -58,6 +58,8 @@ done
 
 if [[ -z "$DMG_PATH" ]]; then
   DMG_PATH="$ROOT_DIR/src-tauri/target/release/bundle/dmg/FLIP-${VERSION}-macOS-${ARCH}.dmg"
+elif [[ "$DMG_PATH" != *.dmg && "$DMG_PATH" != *.DMG ]]; then
+  DMG_PATH="${DMG_PATH}.dmg"
 fi
 
 if [[ ! -d "$APP_PATH" ]]; then

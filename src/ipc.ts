@@ -817,6 +817,27 @@ export async function checkForUpdates(repoUrl?: string): Promise<UpdateCheckResu
   return invoke<UpdateCheckResult>("check_for_updates", { repoUrl: repoUrl ?? null });
 }
 
+export async function openReleaseUrl(url: string): Promise<void> {
+  const trimmed = url.trim();
+  if (!trimmed.toLowerCase().startsWith("https://github.com/")) {
+    throw new Error("Release URL must start with https://github.com/.");
+  }
+  if (!isTauriRuntime()) {
+    if (typeof window !== "undefined" && typeof window.open === "function") {
+      window.open(trimmed, "_blank", "noopener,noreferrer");
+    }
+    return;
+  }
+  await invoke<void>("open_release_url", { url: trimmed });
+}
+
+export async function consumeSettingsNavigation(): Promise<SettingsNavigatePayload | null> {
+  if (!isTauriRuntime()) {
+    return null;
+  }
+  return invoke<SettingsNavigatePayload | null>("consume_settings_navigation");
+}
+
 export async function getDiagnosticsReport(): Promise<string> {
   if (!isTauriRuntime()) {
     return [

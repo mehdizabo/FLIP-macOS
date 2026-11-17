@@ -3,7 +3,7 @@
 ## 100% Local Processing & Network Surface
 
 - **Offline by design**: All file inspections, thumbnails, OCR (`Apple Vision`), image/PDF/document/data/media conversions, and `Create New File` actions run **100% locally** on your Mac. FLIP never uploads files, filenames, clipboard contents, or telemetry to any server, and requires no account.
-- **Optional Update Check only**: The only network request FLIP can perform is an explicit, user-triggered **Check for Updates…** action (`About` tab or menu bar item). It invokes `/usr/bin/curl -fsSL --max-time 8 --proto =https` against `https://api.github.com/repos/thetinyfoundry/FLIP/releases/latest` (or a configured `https://` GitHub repository URL), rejects non-`https://` endpoints, and accepts only `https://github.com/...` release links.
+- **Optional Update Check only**: The only network request FLIP can perform is an explicit, user-triggered **Check for Updates…** action (`About` tab or menu bar item). It invokes `/usr/bin/curl -fsSL --max-time 8 --proto =https` against `https://api.github.com/repos/thetinyfoundry/FLIP/releases/latest` (or a configured `https://` GitHub repository URL), rejects non-`https://` endpoints, sanitizes release links to `https://github.com/...`, and validates URLs again in `open_release_url` before launching `/usr/bin/open`.
 
 ---
 
@@ -39,7 +39,7 @@ FLIP treats untrusted files defensively across `src-tauri/src/core/policy.rs`, `
 ## Logs & Redacted Diagnostics
 
 - Runtime events are written to bounded rotating JSONL files in `~/Library/Logs/FLIP/events.jsonl` (rotated to `events.jsonl.previous` at **2 MiB**).
-- Exporting via **Copy Diagnostics** (`Settings → About` or error views in the Wheel / Batch window) automatically redacts `/Users/<username>`, `/private/Users/<username>`, custom home directories, and per-user macOS temporary paths (`/private/var/folders/...`, `/var/folders/...`) to `~`.
+- Exporting via **Copy Diagnostics** (`Settings → About` or error views in the Wheel / Batch window) automatically redacts `/Users/<username>`, `/private/Users/<username>`, custom home directories, per-user macOS temporary/system paths (`/private/var/folders/...`, `/var/folders/...`, `/private/var/mobile`, `/private/var/root`, `/var/mobile`, `/var/root`), JSON-escaped newline/tab path prefixes (`\n/Users/...`), and percent-encoded URL user paths (`%2FUsers%2F...`, `%2Fprivate%2Fvar%2Ffolders%2F...`) to `~`.
 
 ---
 

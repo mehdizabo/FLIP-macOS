@@ -45,13 +45,18 @@ if [ ! -d "$ROOT_DIR/node_modules" ]; then
   (cd "$ROOT_DIR" && npm install)
 fi
 
-echo "==> [1/4] Building native Swift/AppKit bridge"
+TOTAL_STEPS=4
+if [[ "$CREATE_DMG" -eq 1 ]]; then
+  TOTAL_STEPS=5
+fi
+
+echo "==> [1/${TOTAL_STEPS}] Building native Swift/AppKit bridge"
 "$ROOT_DIR/native-bridge/build.sh"
 
-echo "==> [2/4] Building TypeScript + Vite frontend"
+echo "==> [2/${TOTAL_STEPS}] Building TypeScript + Vite frontend"
 (cd "$ROOT_DIR" && npm run build)
 
-echo "==> [3/4] Building Tauri release .app bundle"
+echo "==> [3/${TOTAL_STEPS}] Building Tauri release .app bundle"
 (cd "$ROOT_DIR/src-tauri" && cargo tauri build --bundles app)
 
 if [ ! -d "$APP_PATH" ]; then
@@ -71,11 +76,11 @@ if [ ! -f "$APP_PATH/Contents/Resources/resources/flip-tick.wav" ] && [ ! -f "$A
   exit 1
 fi
 
-echo "==> [4/4] Signing and verifying .app bundle"
+echo "==> [4/${TOTAL_STEPS}] Signing and verifying .app bundle"
 "$ROOT_DIR/scripts/sign-local.sh" "$APP_PATH"
 
 if [[ "$CREATE_DMG" -eq 1 ]]; then
-  echo "==> [5/5] Packaging compressed .dmg image"
+  echo "==> [5/${TOTAL_STEPS}] Packaging compressed .dmg image"
   "$ROOT_DIR/scripts/package-dmg.sh" "$APP_PATH"
 fi
 

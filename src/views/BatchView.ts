@@ -39,6 +39,7 @@ export function mountBatchView(root: HTMLElement): () => void {
   let lastBatchError: string | null = null;
   let diagState: "idle" | "copied" | "manual" = "idle";
   let diagFallbackText = "";
+  let diagResetTimer: number | null = null;
 
   root.innerHTML = `
     <div class="batch-shell">
@@ -320,8 +321,13 @@ export function mountBatchView(root: HTMLElement): () => void {
     });
   }
 
-  async function setFiles(nextPaths: string[], append = false): Promise<void> {
+  async function setFiles(nextPaths: string[], append = false, preserveErrors = false): Promise<void> {
     if (busy) return;
+    if (!preserveErrors) {
+      lastBatchError = null;
+      diagState = "idle";
+      diagFallbackText = "";
+    }
     const merged = append ? [...files, ...nextPaths] : nextPaths;
     const deduped: string[] = [];
     const seen = new Set<string>();
@@ -366,6 +372,9 @@ export function mountBatchView(root: HTMLElement): () => void {
     if (disposed) return;
     if (ws && ws.files.length > 0) {
       results = [];
+      lastBatchError = null;
+      diagState = "idle";
+      diagFallbackText = "";
       await setFiles(ws.files);
     } else {
       progressLabel = "No active Wheel or Finder selection found.";
@@ -439,6 +448,10 @@ export function mountBatchView(root: HTMLElement): () => void {
   });
 
   async function triggerBatchCopyDiagnostics(): Promise<void> {
+    if (diagResetTimer !== null) {
+      window.clearTimeout(diagResetTimer);
+      diagResetTimer = null;
+    }
     try {
       const res = await copyDiagnosticsToClipboard();
       if (disposed) return;
@@ -446,7 +459,8 @@ export function mountBatchView(root: HTMLElement): () => void {
         diagState = "copied";
         diagFallbackText = "";
         render();
-        window.setTimeout(() => {
+        diagResetTimer = window.setTimeout(() => {
+          diagResetTimer = null;
           if (!disposed && diagState === "copied") {
             diagState = "idle";
             render();
@@ -569,8 +583,12 @@ export function mountBatchView(root: HTMLElement): () => void {
         if (disposed) return;
         consumeBatchHandoff();
         results = p.results ?? [];
+        const unitErr = results.find((r) => Boolean(r.error))?.error ?? null;
+        lastBatchError = unitErr;
+        diagState = "idle";
+        diagFallbackText = "";
         if (p.files.length > 0) {
-          void setFiles(p.files);
+          void setFiles(p.files, false, true);
         } else {
           render();
         }
@@ -594,6 +612,7 @@ export function mountBatchView(root: HTMLElement): () => void {
 
   return () => {
     disposed = true;
+    if (diagResetTimer !== null) window.clearTimeout(diagResetTimer);
     dropzoneEl.removeEventListener("dragover", onDragOver);
     dropzoneEl.removeEventListener("dragleave", onDragLeave);
     dropzoneEl.removeEventListener("drop", onDrop);
