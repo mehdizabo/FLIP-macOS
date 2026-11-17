@@ -43,7 +43,7 @@ if [ -z "$IDENTITY" ] || [ "$IDENTITY" = "-" ]; then
 else
   echo "==> Signing $APP_PATH with identity: $IDENTITY"
   SIGN_ARGS=(--force --options runtime --timestamp --sign "$IDENTITY")
-  OUTER_ARGS=(--force --deep --options runtime --timestamp --sign "$IDENTITY")
+  OUTER_ARGS=(--force --options runtime --timestamp --sign "$IDENTITY")
   if [ -n "${APPLE_ENTITLEMENTS:-}" ] && [ -f "${APPLE_ENTITLEMENTS}" ]; then
     OUTER_ARGS+=(--entitlements "${APPLE_ENTITLEMENTS}")
   fi

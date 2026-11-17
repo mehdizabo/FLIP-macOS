@@ -326,9 +326,13 @@ export function mountBatchView(root: HTMLElement): () => void {
 
   root.querySelector("#batch-load-wheel")?.addEventListener("click", async () => {
     const ws = await getWheelState().catch(() => null);
-    if (!disposed && ws && ws.files.length > 0) {
+    if (disposed) return;
+    if (ws && ws.files.length > 0) {
       results = [];
       await setFiles(ws.files);
+    } else {
+      progressLabel = "No active Wheel or Finder selection found.";
+      render();
     }
   });
 

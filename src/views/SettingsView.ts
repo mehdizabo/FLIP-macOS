@@ -125,17 +125,23 @@ export function mountSettingsView(root: HTMLElement): () => void {
     };
   }
 
-  async function persistPrefs(mutator: (draft: AppPreferences) => void): Promise<boolean> {
-    const draft = clonePrefs(prefs);
-    mutator(draft);
-    try {
-      prefs = await savePreferences(draft);
-      if (!disposed) showSavedToast("Saved");
-      return true;
-    } catch (err) {
-      if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
-      return false;
-    }
+  let saveQueue: Promise<boolean> = Promise.resolve(true);
+
+  function persistPrefs(mutator: (draft: AppPreferences) => void): Promise<boolean> {
+    const run = saveQueue.then(async () => {
+      const draft = clonePrefs(prefs);
+      mutator(draft);
+      try {
+        prefs = await savePreferences(draft);
+        if (!disposed) showSavedToast("Saved");
+        return true;
+      } catch (err) {
+        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+        return false;
+      }
+    });
+    saveQueue = run.catch(() => false);
+    return run;
   }
 
   function formatKeycaps(spec: string): string {

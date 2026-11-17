@@ -12,7 +12,7 @@ use crate::core::policy::{
     batch_actions, ext_lower, is_media_ext, outputs, validate_container, validate_input_files,
     EngineCapabilities, IMAGE_EXTS,
 };
-use crate::core::preferences::AppPreferences;
+use crate::core::preferences::{expand_tilde_path, AppPreferences};
 use crate::core::staging::JobStaging;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -106,9 +106,12 @@ pub fn detect_tools(prefs: Option<&AppPreferences>) -> DetectedTools {
 
 fn find_tool(override_path: Option<&str>, binary_name: &str) -> Option<PathBuf> {
     if let Some(custom) = override_path {
-        let p = PathBuf::from(custom.trim());
-        if p.is_file() {
-            return Some(p);
+        let trimmed = custom.trim();
+        if !trimmed.is_empty() {
+            let p = expand_tilde_path(trimmed);
+            if p.is_file() {
+                return Some(p);
+            }
         }
     }
 

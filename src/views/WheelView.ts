@@ -946,6 +946,12 @@ export function mountWheelView(root: HTMLElement): () => void {
       latchedDwellSlot = -1;
     }
 
+    // Render immediately so stale sectors from an earlier mode/selection are cleared before async IPC fetches.
+    updateModePillUI();
+    renderSectors();
+    renderHub();
+    void refreshThumbnail();
+
     if (next.mode === "new") {
       const [latestPrefs, latestKinds] = await Promise.all([
         getPreferences().catch(() => null),
@@ -957,16 +963,19 @@ export function mountWheelView(root: HTMLElement): () => void {
         builtInKinds = latestKinds.kinds;
         userTemplates = latestKinds.templates;
       }
+      updateModePillUI();
+      renderSectors();
+      renderHub();
     } else if (wasClosing || modeOrFilesChanged) {
       const latestPrefs = await getPreferences().catch(() => null);
       if (disposed || epoch !== stateEpoch) return;
-      if (latestPrefs) prefs = latestPrefs;
+      if (latestPrefs) {
+        prefs = latestPrefs;
+        updateModePillUI();
+        renderSectors();
+        renderHub();
+      }
     }
-
-    updateModePillUI();
-    renderSectors();
-    renderHub();
-    void refreshThumbnail();
   }
 
   async function handleIncomingFiles(paths: string[]): Promise<boolean> {
@@ -1005,11 +1014,14 @@ export function mountWheelView(root: HTMLElement): () => void {
       void playWheelFeedback("error");
       return;
     }
+    const epochBefore = stateEpoch;
     try {
       const updated = await switchWheelMode(target);
-      if (!disposed) await applyState(updated);
+      if (!disposed && stateEpoch === epochBefore) {
+        await applyState(updated);
+      }
     } catch {
-      if (!disposed) {
+      if (!disposed && stateEpoch === epochBefore) {
         await applyState({ ...state, mode: target });
       }
     }

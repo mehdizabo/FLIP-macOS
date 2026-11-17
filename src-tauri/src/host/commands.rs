@@ -354,30 +354,38 @@ pub fn get_preferences(state: State<'_, Arc<HostState>>) -> Result<AppPreference
         .map_err(|_| "Preferences lock poisoned".to_string())
 }
 
-#[tauri::command]
-pub fn save_preferences(
+pub fn merge_and_validate_preferences(
     mut prefs: AppPreferences,
-    state: State<'_, Arc<HostState>>,
+    existing: &AppPreferences,
 ) -> Result<AppPreferences, String> {
     DragTriggerShortcut::parse(Some(&prefs.drag_trigger)).map_err(|e| e.to_string())?;
     IdleShortcut::parse(&prefs.idle_shortcut).map_err(|e| e.to_string())?;
     prefs.sanitize();
+    prefs.onboarding_completed = prefs.onboarding_completed || existing.onboarding_completed;
+    if !existing.recent_conversions.is_empty() {
+        prefs.recent_conversions = existing.recent_conversions.clone();
+    }
+    Ok(prefs)
+}
 
-    {
+#[tauri::command]
+pub fn save_preferences(
+    prefs: AppPreferences,
+    state: State<'_, Arc<HostState>>,
+) -> Result<AppPreferences, String> {
+    let saved = {
         let mut guard = state
             .prefs
             .lock()
             .map_err(|_| "Preferences lock poisoned".to_string())?;
-        prefs.onboarding_completed = prefs.onboarding_completed || guard.onboarding_completed;
-        if prefs.recent_conversions.is_empty() && !guard.recent_conversions.is_empty() {
-            prefs.recent_conversions = guard.recent_conversions.clone();
-        }
-        prefs.save().map_err(|e| e.to_string())?;
-        *guard = prefs.clone();
-    }
+        let merged = merge_and_validate_preferences(prefs, &guard)?;
+        merged.save().map_err(|e| e.to_string())?;
+        *guard = merged.clone();
+        merged
+    };
 
     state.sync_monitor_config();
-    Ok(prefs)
+    Ok(saved)
 }
 
 #[tauri::command]

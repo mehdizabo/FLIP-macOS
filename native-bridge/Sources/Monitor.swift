@@ -5,16 +5,19 @@ import AudioToolbox
 
 final class FeedbackPlayer {
     private var tickSound: NSSound?
+    private var loadedWavPath: String?
 
     init(wavPath: String? = nil) {
         if let wavPath = wavPath, FileManager.default.fileExists(atPath: wavPath) {
             tickSound = NSSound(contentsOfFile: wavPath, byReference: true)
+            loadedWavPath = wavPath
         }
     }
 
     func updateWavPath(_ path: String?) {
-        guard let path = path, FileManager.default.fileExists(atPath: path) else { return }
+        guard let path = path, path != loadedWavPath, FileManager.default.fileExists(atPath: path) else { return }
         tickSound = NSSound(contentsOfFile: path, byReference: true)
+        loadedWavPath = path
     }
 
     func play(kind: String) {

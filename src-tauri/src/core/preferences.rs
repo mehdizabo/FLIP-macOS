@@ -143,6 +143,19 @@ pub fn default_new_file_kinds() -> Vec<String> {
     .collect()
 }
 
+pub fn expand_tilde_path(raw: &str) -> PathBuf {
+    let trimmed = raw.trim();
+    if trimmed == "~" {
+        return dirs::home_dir().unwrap_or_else(std::env::temp_dir);
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        return dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(rest);
+    }
+    PathBuf::from(trimmed)
+}
+
 impl AppPreferences {
     pub fn app_support_dir() -> PathBuf {
         dirs::home_dir()
@@ -164,7 +177,7 @@ impl AppPreferences {
         if let Some(custom) = &self.fallback_folder {
             let trimmed = custom.trim();
             if !trimmed.is_empty() {
-                return PathBuf::from(trimmed);
+                return expand_tilde_path(trimmed);
             }
         }
         dirs::desktop_dir().unwrap_or_else(|| {

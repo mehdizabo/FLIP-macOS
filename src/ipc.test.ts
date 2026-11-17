@@ -137,6 +137,17 @@ describe("Frontend IPC surface & contract alignment", () => {
       u1();
       u2();
       u3();
+      await openBatchWithFiles(["/tmp/x.png"], [
+        { source: "/tmp/old.png", format: "JPG", outputs: [], error: "prev" },
+      ]);
+      const handoffWithRes = consumeBatchHandoff();
+      expect(handoffWithRes.files).toEqual(["/tmp/x.png"]);
+      expect(handoffWithRes.results).toHaveLength(1);
+
+      await openBatchWithFiles(["/tmp/y.png"]);
+      const handoffCleared = consumeBatchHandoff();
+      expect(handoffCleared.files).toEqual(["/tmp/y.png"]);
+      expect(handoffCleared.results).toBeNull();
     } finally {
       g.localStorage = prevStorage;
       g.window = prevWindow;

@@ -70,15 +70,13 @@ enum FinderBridge {
 
     static func getFinderContext() -> [String: Any] {
         let frontmostId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
-        let desktopPath = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.path
-            ?? (NSHomeDirectory() + "/Desktop")
 
         let isFinderRunning = !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").isEmpty
         if !isFinderRunning {
             return [
                 "frontmostBundleId": frontmostId,
                 "selectedFiles": [],
-                "targetFolder": desktopPath,
+                "targetFolder": "",
                 "automationGranted": false,
                 "error": "Finder is not running"
             ]
@@ -115,13 +113,13 @@ enum FinderBridge {
             return [
                 "frontmostBundleId": frontmostId,
                 "selectedFiles": [],
-                "targetFolder": desktopPath,
+                "targetFolder": "",
                 "automationGranted": !isAutomationDenied(error: err, errorNumber: errNum),
                 "error": err
             ]
         }
 
-        var targetFolder = desktopPath
+        var targetFolder = ""
         var selectedFiles: [String] = []
 
         if let desc = desc, desc.numberOfItems >= 2 {
@@ -141,8 +139,9 @@ enum FinderBridge {
                         let cleaned = rawPath.hasSuffix("/") && rawPath.count > 1 ? String(rawPath.dropLast()) : rawPath
                         var isDir: ObjCBool = false
                         let exists = FileManager.default.fileExists(atPath: cleaned, isDirectory: &isDir)
-                        let isPackage = exists && NSWorkspace.shared.isFilePackage(atPath: cleaned)
-                        if exists && (!isDir.boolValue || isPackage) {
+                        let ext = URL(fileURLWithPath: cleaned).pathExtension.lowercased()
+                        let isIWorkPackage = exists && NSWorkspace.shared.isFilePackage(atPath: cleaned) && ["pages", "numbers", "key"].contains(ext)
+                        if exists && (!isDir.boolValue || isIWorkPackage) {
                             selectedFiles.append(cleaned)
                         }
                     }
