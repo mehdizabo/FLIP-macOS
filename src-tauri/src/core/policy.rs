@@ -1,0 +1,637 @@
+use crate::core::preferences::{default_preferred_formats, AppPreferences};
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::ffi::CStr;
+use std::fs::{self, File};
+use std::io::Read;
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+use zip::ZipArchive;
+
+pub const MAX_BATCH_FILES: usize = 128;
+pub const MAX_REGULAR_FILE_BYTES: u64 = 100 * 1024 * 1024;
+pub const MAX_MEDIA_FILE_BYTES: u64 = 2048 * 1024 * 1024;
+pub const MAX_CONTAINER_ENTRIES: usize = 4096;
+pub const MAX_CONTAINER_EXPANDED_BYTES: u64 = 256 * 1024 * 1024;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum PolicyError {
+    #[error("Select between 1 and 128 files.")]
+    InvalidBatchCount,
+    #[error("Path is not absolute or local: {0}")]
+    InvalidPath(String),
+    #[error("File does not exist: {0}")]
+    MissingFile(String),
+    #[error("Directories cannot be converted directly: {0}")]
+    DirectoryNotAllowed(String),
+    #[error("Symbolic links and aliases are refused for safety: {0}")]
+    SymlinkRefused(String),
+    #[error("Network volumes are refused for conversions: {0}")]
+    NetworkVolumeRefused(String),
+    #[error("File exceeds size limit: {0}")]
+    FileTooLarge(String),
+    #[error("Container exceeds limit of 4096 internal entries.")]
+    ContainerTooManyEntries,
+    #[error("Expanded document exceeds 256 MiB safety limit.")]
+    ContainerBombDetected,
+    #[error("Invalid zip container: {0}")]
+    InvalidContainer(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FormatFamily {
+    Image,
+    Data,
+    Audio,
+    Video,
+    Pdf,
+    Document,
+    IWork,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct EngineCapabilities {
+    pub ffmpeg: bool,
+    pub pandoc: bool,
+    pub pages: bool,
+    pub numbers: bool,
+    pub keynote: bool,
+}
+
+impl EngineCapabilities {
+    pub fn native_only() -> Self {
+        Self::default()
+    }
+
+    pub fn all() -> Self {
+        Self {
+            ffmpeg: true,
+            pandoc: true,
+            pages: true,
+            numbers: true,
+            keynote: true,
+        }
+    }
+}
+
+pub const IMAGE_EXTS: &[&str] = &[
+    "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns",
+    "ico",
+];
+pub const DATA_EXTS: &[&str] = &["json", "yaml", "yml", "toml", "xml", "csv"];
+pub const AUDIO_NATIVE_EXTS: &[&str] = &["wav", "aiff", "aif", "m4a", "aac", "alac", "caf", "mp3"];
+pub const AUDIO_ALL_EXTS: &[&str] = &[
+    "mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf",
+];
+pub const VIDEO_NATIVE_EXTS: &[&str] = &["mp4", "mov", "m4v"];
+pub const VIDEO_ALL_EXTS: &[&str] = &["mp4", "mkv", "webm", "avi", "mov", "wmv", "m4v"];
+pub const DOC_NATIVE_EXTS: &[&str] = &[
+    "txt", "md", "markdown", "html", "htm", "docx", "odt", "rtf", "doc",
+];
+pub const DOC_PANDOC_ONLY_EXTS: &[&str] = &["epub", "fb2", "rst"];
+pub const IWORK_EXTS: &[&str] = &["pages", "numbers", "key"];
+
+pub fn ext_lower(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+pub fn canonical_format_for_ext(ext: &str) -> String {
+    match ext.to_ascii_lowercase().as_str() {
+        "jpeg" => "JPG".to_string(),
+        "tif" => "TIFF".to_string(),
+        "markdown" => "MD".to_string(),
+        "htm" => "HTML".to_string(),
+        "yml" => "YAML".to_string(),
+        "heif" => "HEIC".to_string(),
+        "aif" => "AIFF".to_string(),
+        other => other.to_ascii_uppercase(),
+    }
+}
+
+pub fn family_for_ext(ext: &str) -> Option<FormatFamily> {
+    let e = ext.to_ascii_lowercase();
+    let es = e.as_str();
+    if IMAGE_EXTS.contains(&es) {
+        Some(FormatFamily::Image)
+    } else if DATA_EXTS.contains(&es) {
+        Some(FormatFamily::Data)
+    } else if AUDIO_ALL_EXTS.contains(&es) {
+        Some(FormatFamily::Audio)
+    } else if VIDEO_ALL_EXTS.contains(&es) {
+        Some(FormatFamily::Video)
+    } else if es == "pdf" {
+        Some(FormatFamily::Pdf)
+    } else if DOC_NATIVE_EXTS.contains(&es) || DOC_PANDOC_ONLY_EXTS.contains(&es) {
+        Some(FormatFamily::Document)
+    } else if IWORK_EXTS.contains(&es) {
+        Some(FormatFamily::IWork)
+    } else {
+        None
+    }
+}
+
+pub fn is_media_ext(ext: &str) -> bool {
+    let e = ext.to_ascii_lowercase();
+    AUDIO_ALL_EXTS.contains(&e.as_str()) || VIDEO_ALL_EXTS.contains(&e.as_str())
+}
+
+fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static str> {
+    match ext {
+        e if IMAGE_EXTS.contains(&e) => {
+            vec!["PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP"]
+        }
+        e if DATA_EXTS.contains(&e) => {
+            vec!["JSON", "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"]
+        }
+        e if AUDIO_ALL_EXTS.contains(&e) => {
+            if caps.ffmpeg {
+                vec!["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "OGG", "OPUS", "AAC"]
+            } else if AUDIO_NATIVE_EXTS.contains(&e) {
+                vec!["M4A", "WAV", "AIFF", "ALAC"]
+            } else {
+                vec![]
+            }
+        }
+        e if VIDEO_ALL_EXTS.contains(&e) => {
+            if caps.ffmpeg {
+                vec!["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"]
+            } else if VIDEO_NATIVE_EXTS.contains(&e) {
+                vec!["MP4", "MOV", "M4V", "M4A", "WAV", "GIF"]
+            } else {
+                vec![]
+            }
+        }
+        "pdf" => {
+            let mut out = vec![
+                "PNG", "JPG", "WEBP", "HEIC", "TIFF", "TXT", "DOCX", "MD", "HTML", "RTF", "ODT",
+            ];
+            if caps.pandoc {
+                out.extend_from_slice(&["EPUB", "FB2", "RST"]);
+            }
+            out
+        }
+        e if DOC_NATIVE_EXTS.contains(&e) => {
+            let mut out = vec![
+                "PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP",
+            ];
+            if caps.pandoc {
+                out.extend_from_slice(&["EPUB", "FB2", "RST"]);
+            }
+            out
+        }
+        e if DOC_PANDOC_ONLY_EXTS.contains(&e) => {
+            if caps.pandoc {
+                vec![
+                    "PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP",
+                    "EPUB", "FB2", "RST",
+                ]
+            } else {
+                vec![]
+            }
+        }
+        "pages" => {
+            let mut out = vec!["PDF"];
+            if caps.pages {
+                out.extend_from_slice(&["DOCX", "RTF", "TXT", "EPUB"]);
+            }
+            out
+        }
+        "numbers" => {
+            let mut out = vec!["PDF"];
+            if caps.numbers {
+                out.extend_from_slice(&["XLSX", "CSV"]);
+            }
+            out
+        }
+        "key" => {
+            let mut out = vec!["PDF"];
+            if caps.keynote {
+                out.push("PPTX");
+            }
+            out
+        }
+        _ => vec![],
+    }
+}
+
+pub fn outputs<P: AsRef<Path>>(paths: &[P], caps: &EngineCapabilities) -> Vec<String> {
+    if paths.is_empty() || paths.len() > MAX_BATCH_FILES {
+        return Vec::new();
+    }
+
+    let mut shared: Option<Vec<String>> = None;
+    for p in paths {
+        let ext = ext_lower(p.as_ref());
+        let same = canonical_format_for_ext(&ext);
+        let filtered: Vec<String> = targets_for_single_ext(&ext, caps)
+            .into_iter()
+            .filter(|t| *t != same)
+            .map(String::from)
+            .collect();
+
+        shared = match shared {
+            None => Some(filtered),
+            Some(prev) => {
+                let set: HashSet<&str> = filtered.iter().map(String::as_str).collect();
+                Some(
+                    prev.into_iter()
+                        .filter(|fmt| set.contains(fmt.as_str()))
+                        .collect(),
+                )
+            }
+        };
+    }
+
+    shared.unwrap_or_default()
+}
+
+pub fn batch_actions<P: AsRef<Path>>(paths: &[P]) -> Vec<String> {
+    if paths.len() < 2 || paths.len() > MAX_BATCH_FILES {
+        return Vec::new();
+    }
+    let exts: Vec<String> = paths.iter().map(|p| ext_lower(p.as_ref())).collect();
+    if exts.iter().all(|e| IMAGE_EXTS.contains(&e.as_str())) {
+        return vec!["COMBINE_PDF".to_string()];
+    }
+    if exts.iter().all(|e| e == "pdf") {
+        return vec!["MERGE_PDF".to_string()];
+    }
+    Vec::new()
+}
+
+pub fn order_formats(
+    outputs: &[String],
+    family: Option<FormatFamily>,
+    prefs: Option<&AppPreferences>,
+) -> Vec<String> {
+    let default_map = default_preferred_formats();
+    let pref_map = prefs
+        .map(|p| &p.preferred_formats)
+        .unwrap_or(&default_map);
+
+    let preferred_list: Vec<&str> = match family {
+        Some(fam) => {
+            let key = match fam {
+                FormatFamily::Image => "image",
+                FormatFamily::Pdf => "pdf",
+                FormatFamily::Document | FormatFamily::IWork => "document",
+                FormatFamily::Data => "data",
+                FormatFamily::Audio => "audio",
+                FormatFamily::Video => "video",
+            };
+            pref_map
+                .get(key)
+                .or_else(|| default_map.get(key))
+                .map(|v| v.iter().map(String::as_str).collect())
+                .unwrap_or_default()
+        }
+        None => vec![
+            "DOCX", "PDF", "HTML", "MD", "TXT", "RTF", "ODT", "EPUB", "FB2", "RST", "JSON",
+            "YAML", "TOML", "XML", "CSV", "PNG", "JPG", "WEBP", "HEIC", "TIFF", "GIF", "BMP",
+            "MP4", "MOV", "M4A", "MP3", "WAV", "FLAC", "AIFF", "ALAC", "OGG", "OPUS", "AAC",
+            "MKV", "WEBM", "AVI", "M4V",
+        ],
+    };
+
+    let available: HashSet<&str> = outputs.iter().map(String::as_str).collect();
+    let mut ordered: Vec<String> = preferred_list
+        .into_iter()
+        .filter(|fmt| available.contains(*fmt))
+        .map(String::from)
+        .collect();
+    for fmt in outputs {
+        if !ordered.contains(fmt) {
+            ordered.push(fmt.clone());
+        }
+    }
+    ordered
+}
+
+pub fn availability_message<P: AsRef<Path>>(paths: &[P], caps: &EngineCapabilities) -> String {
+    if paths.is_empty() {
+        return "Drop local files here".to_string();
+    }
+    if !outputs(paths, caps).is_empty() || !batch_actions(paths).is_empty() {
+        return String::new();
+    }
+
+    let format_ext_label = |p: &Path| -> String {
+        let ext = ext_lower(p).to_ascii_uppercase();
+        if ext.is_empty() {
+            "no extension".to_string()
+        } else if ext.len() > 18 {
+            ext.chars().take(18).collect()
+        } else {
+            ext
+        }
+    };
+
+    let mut unsupported: Vec<String> = Vec::new();
+    let mut listed: Vec<String> = Vec::new();
+
+    for p in paths {
+        let single = [p.as_ref()];
+        let label = format_ext_label(p.as_ref());
+        if outputs(&single, caps).is_empty() && !unsupported.contains(&label) && unsupported.len() < 4 {
+            unsupported.push(label.clone());
+        }
+        if !listed.contains(&label) && listed.len() < 4 {
+            listed.push(label);
+        }
+    }
+
+    let count_line = if paths.len() == 1 {
+        "1 file selected".to_string()
+    } else {
+        format!("{} files selected", paths.len())
+    };
+
+    let detail_line = if !unsupported.is_empty() {
+        format!("\nUnsupported: {}", unsupported.join(", "))
+    } else if !listed.is_empty() {
+        format!("\nIncompatible formats: {}", listed.join(", "))
+    } else {
+        String::new()
+    };
+
+    format!("{count_line}{detail_line}\nNo common output format")
+}
+
+#[cfg(target_os = "macos")]
+fn is_local_filesystem(path: &Path) -> bool {
+    let Ok(cstr) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statfs(cstr.as_ptr(), &mut stat) };
+    if rc != 0 {
+        return false;
+    }
+    // MNT_LOCAL (0x00001000 on macOS) indicates a local mount
+    if (stat.f_flags & libc::MNT_LOCAL as u32) != 0 {
+        return true;
+    }
+    // Check filesystem type string fallback for APFS/HFS in virtualized mounts
+    let fstype = unsafe { CStr::from_ptr(stat.f_fstypename.as_ptr()) }
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    matches!(fstype.as_str(), "apfs" | "hfs" | "tmpfs" | "devfs")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_local_filesystem(_path: &Path) -> bool {
+    true
+}
+
+pub fn validate_input_files<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<PathBuf>, PolicyError> {
+    if paths.is_empty() || paths.len() > MAX_BATCH_FILES {
+        return Err(PolicyError::InvalidBatchCount);
+    }
+
+    let mut seen = HashSet::new();
+    let mut validated = Vec::with_capacity(paths.len());
+
+    for raw in paths {
+        let p = raw.as_ref();
+        if !p.is_absolute() {
+            return Err(PolicyError::InvalidPath(p.display().to_string()));
+        }
+        let meta = fs::symlink_metadata(p).map_err(|_| PolicyError::MissingFile(p.display().to_string()))?;
+        if meta.file_type().is_symlink() {
+            return Err(PolicyError::SymlinkRefused(p.display().to_string()));
+        }
+        if meta.is_dir() {
+            return Err(PolicyError::DirectoryNotAllowed(p.display().to_string()));
+        }
+        if !meta.is_file() {
+            return Err(PolicyError::InvalidPath(p.display().to_string()));
+        }
+        if !is_local_filesystem(p) {
+            return Err(PolicyError::NetworkVolumeRefused(p.display().to_string()));
+        }
+
+        let ext = ext_lower(p);
+        let max_bytes = if is_media_ext(&ext) {
+            MAX_MEDIA_FILE_BYTES
+        } else {
+            MAX_REGULAR_FILE_BYTES
+        };
+        if meta.len() > max_bytes {
+            return Err(PolicyError::FileTooLarge(p.display().to_string()));
+        }
+
+        let canonical = p.to_path_buf();
+        if seen.insert(canonical.clone()) {
+            validated.push(canonical);
+        }
+    }
+
+    Ok(validated)
+}
+
+pub fn validate_container(path: &Path) -> Result<(), PolicyError> {
+    let ext = ext_lower(path);
+    if !matches!(ext.as_str(), "docx" | "epub" | "odt" | "xlsx" | "pptx") {
+        return Ok(());
+    }
+    let file = File::open(path).map_err(|e| PolicyError::InvalidContainer(e.to_string()))?;
+    let mut archive =
+        ZipArchive::new(file).map_err(|e| PolicyError::InvalidContainer(e.to_string()))?;
+
+    if archive.len() > MAX_CONTAINER_ENTRIES {
+        return Err(PolicyError::ContainerTooManyEntries);
+    }
+
+    let mut expanded: u64 = 0;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| PolicyError::InvalidContainer(e.to_string()))?;
+        let declared = entry.size();
+        expanded = expanded
+            .checked_add(declared)
+            .ok_or(PolicyError::ContainerBombDetected)?;
+        if expanded > MAX_CONTAINER_EXPANDED_BYTES {
+            return Err(PolicyError::ContainerBombDetected);
+        }
+        // Also ensure reading actual stream cannot exceed the 256 MiB cap (guards forged zip headers)
+        let mut buf = [0u8; 65536];
+        let mut entry_actual: u64 = 0;
+        loop {
+            let n = entry
+                .read(&mut buf)
+                .map_err(|e| PolicyError::InvalidContainer(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            entry_actual = entry_actual
+                .checked_add(n as u64)
+                .ok_or(PolicyError::ContainerBombDetected)?;
+            if entry_actual > declared.max(1024) && expanded - declared + entry_actual > MAX_CONTAINER_EXPANDED_BYTES {
+                return Err(PolicyError::ContainerBombDetected);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::tempdir;
+    use zip::write::SimpleFileOptions;
+    use zip::CompressionMethod;
+
+    #[test]
+    fn image_and_batch_intersection_rules() {
+        let caps = EngineCapabilities::native_only();
+        let png_out = outputs(&["image.png"], &caps);
+        assert!(png_out.contains(&"JPG".to_string()));
+        assert!(png_out.contains(&"HEIC".to_string()));
+        assert!(!png_out.contains(&"PNG".to_string()));
+
+        // Mixed image + audio shares zero formats and explains blocker
+        assert!(outputs(&["image.png", "audio.mp3"], &EngineCapabilities::all()).is_empty());
+        let msg = availability_message(&["image.png", "audio.mp3"], &EngineCapabilities::all());
+        assert!(msg.contains("MP3"), "msg was: {msg}");
+
+        // Without FFmpeg, unsupported MKV in batch explains MKV blocker
+        assert!(outputs(&["image.png", "video.mkv"], &caps).is_empty());
+        let mkv_msg = availability_message(&["image.png", "video.mkv"], &caps);
+        assert!(mkv_msg.contains("MKV"), "msg was: {mkv_msg}");
+
+        // Pure intersection: image + mp4 shares GIF on macOS
+        assert_eq!(outputs(&["image.png", "video.mp4"], &caps), vec!["GIF".to_string()]);
+
+        // Supported image batch keeps intersection & exposes COMBINE_PDF
+        let batch = outputs(&["image.png", "image.webp"], &caps);
+        assert!(batch.contains(&"JPG".to_string()));
+        assert!(!batch.contains(&"PNG".to_string()));
+        assert!(!batch.contains(&"WEBP".to_string()));
+        assert_eq!(
+            batch_actions(&["a.png", "b.jpg"]),
+            vec!["COMBINE_PDF".to_string()]
+        );
+
+        assert_eq!(availability_message(&["image.png"], &caps), "");
+    }
+
+    #[test]
+    fn txt_and_document_outputs_with_and_without_pandoc() {
+        let native = EngineCapabilities::native_only();
+        let with_pd = EngineCapabilities {
+            pandoc: true,
+            ..Default::default()
+        };
+
+        let txt_native = outputs(&["note.txt"], &native);
+        assert!(txt_native.contains(&"PDF".to_string()));
+        assert!(txt_native.contains(&"DOCX".to_string()));
+        assert!(txt_native.contains(&"PNG".to_string()));
+        assert!(!txt_native.contains(&"EPUB".to_string()));
+        assert!(!txt_native.contains(&"PAGES".to_string()));
+        assert!(!outputs(&["note.html"], &native).contains(&"EPUB".to_string()));
+        assert!(outputs(&["note.html"], &native).contains(&"DOCX".to_string()));
+        assert!(!outputs(&["note.txt"], &with_pd).contains(&"PAGES".to_string()));
+
+        let txt_pd = outputs(&["note.txt"], &with_pd);
+        assert!(txt_pd.contains(&"EPUB".to_string()));
+        assert!(txt_pd.contains(&"FB2".to_string()));
+        assert!(txt_pd.contains(&"RST".to_string()));
+        assert_eq!(txt_pd.len(), 12);
+
+        // Order formats preserves set membership
+        let ordered = order_formats(&txt_pd, Some(FormatFamily::Document), None);
+        let s1: HashSet<_> = ordered.iter().collect();
+        let s2: HashSet<_> = txt_pd.iter().collect();
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn data_and_media_policy_rules() {
+        let native = EngineCapabilities::native_only();
+        let with_ff = EngineCapabilities {
+            ffmpeg: true,
+            ..Default::default()
+        };
+
+        let json_out: HashSet<String> = outputs(&["data.json"], &native).into_iter().collect();
+        let expected: HashSet<String> = ["YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(json_out, expected);
+
+        assert!(outputs(&["table.csv"], &native).contains(&"JSON".to_string()));
+        assert!(outputs(&["audio.mp3"], &with_ff).contains(&"WAV".to_string()));
+        assert!(outputs(&["audio.ogg"], &native).is_empty());
+        assert!(outputs(&["audio.ogg"], &with_ff).contains(&"WAV".to_string()));
+
+        let mp4_ff: HashSet<String> = outputs(&["clip.mp4"], &with_ff).into_iter().collect();
+        for needed in ["MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"] {
+            assert!(mp4_ff.contains(needed), "missing {needed}");
+        }
+        assert!(!mp4_ff.contains("MP4"));
+    }
+
+    #[test]
+    fn batch_bounds_and_symlinks_rejected() {
+        let caps = EngineCapabilities::all();
+        let empty: Vec<&str> = Vec::new();
+        assert!(outputs(&empty, &caps).is_empty());
+        assert!(matches!(
+            validate_input_files(&empty),
+            Err(PolicyError::InvalidBatchCount)
+        ));
+
+        let too_many: Vec<PathBuf> = (0..129)
+            .map(|i| PathBuf::from(format!("/tmp/file_{i}.txt")))
+            .collect();
+        assert!(outputs(&too_many, &caps).is_empty());
+        assert!(matches!(
+            validate_input_files(&too_many),
+            Err(PolicyError::InvalidBatchCount)
+        ));
+
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real.txt");
+        fs::write(&real, b"hello").unwrap();
+        let link = dir.path().join("alias.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        assert!(matches!(
+            validate_input_files(&[&link]),
+            Err(PolicyError::SymlinkRefused(_))
+        ));
+        assert!(matches!(
+            validate_input_files(&[dir.path()]),
+            Err(PolicyError::DirectoryNotAllowed(_))
+        ));
+        assert_eq!(validate_input_files(&[&real]).unwrap(), vec![real]);
+    }
+
+    #[test]
+    fn container_bomb_over_256mib_rejected() {
+        let dir = tempdir().unwrap();
+        let bomb_path = dir.path().join("over-limit.docx");
+        {
+            let file = File::create(&bomb_path).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zip.start_file("word/document.xml", opts).unwrap();
+            let zeros = vec![0u8; 1024 * 1024];
+            for _ in 0..257 {
+                zip.write_all(&zeros).unwrap();
+            }
+            zip.finish().unwrap();
+        }
+        let res = validate_container(&bomb_path);
+        assert_eq!(res, Err(PolicyError::ContainerBombDetected));
+    }
+}

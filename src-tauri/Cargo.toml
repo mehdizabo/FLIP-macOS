@@ -1,0 +1,29 @@
+[package]
+name = "flip"
+version = "0.1.0"
+description = "FLIP for macOS — Liquid Glass radial file converter & Create New utility"
+authors = ["The Tiny Foundry"]
+license = "MIT"
+edition = "2021"
+
+[lib]
+name = "flip_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+dirs = "5"
+tokio = { version = "1", features = ["full"] }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
