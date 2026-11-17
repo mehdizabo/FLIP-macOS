@@ -63,6 +63,7 @@ pub struct HostState {
     pub active_cancel: Mutex<Option<Arc<AtomicBool>>>,
     pub monitor_tx: Mutex<Option<std::sync::mpsc::Sender<String>>>,
     pub shutting_down: AtomicBool,
+    pub opened_from_url: AtomicBool,
     pub wav_path: Mutex<Option<PathBuf>>,
     pub order_gate: Mutex<ShortcutOrderGate>,
     pub press_gate: Mutex<ShortcutPressGate>,
@@ -96,6 +97,7 @@ impl HostState {
             active_cancel: Mutex::new(None),
             monitor_tx: Mutex::new(None),
             shutting_down: AtomicBool::new(false),
+            opened_from_url: AtomicBool::new(false),
             wav_path: Mutex::new(None),
             order_gate: Mutex::new(ShortcutOrderGate::default()),
             press_gate: Mutex::new(ShortcutPressGate::default()),
@@ -159,6 +161,20 @@ pub fn resolve_wav_path(app: &AppHandle) -> Option<PathBuf> {
     )
 }
 
+fn probe_wav_near_exe(exe: &Path) -> Option<PathBuf> {
+    let macos_dir = exe.parent()?;
+    let contents = macos_dir.parent()?;
+    let res_nested = contents.join("Resources").join("resources").join("flip-tick.wav");
+    if res_nested.is_file() {
+        return Some(res_nested);
+    }
+    let res_flat = contents.join("Resources").join("flip-tick.wav");
+    if res_flat.is_file() {
+        return Some(res_flat);
+    }
+    None
+}
+
 pub fn resolve_wav_path_from(
     resource_candidates: &[PathBuf],
     exe_path: Option<&Path>,
@@ -170,15 +186,13 @@ pub fn resolve_wav_path_from(
         }
     }
     if let Some(exe) = exe_path {
-        if let Some(macos_dir) = exe.parent() {
-            if let Some(contents) = macos_dir.parent() {
-                let res_nested = contents.join("Resources").join("resources").join("flip-tick.wav");
-                if res_nested.is_file() {
-                    return Some(res_nested);
-                }
-                let res_flat = contents.join("Resources").join("flip-tick.wav");
-                if res_flat.is_file() {
-                    return Some(res_flat);
+        if let Some(found) = probe_wav_near_exe(exe) {
+            return Some(found);
+        }
+        if let Ok(canon) = std::fs::canonicalize(exe) {
+            if canon != exe {
+                if let Some(found) = probe_wav_near_exe(&canon) {
+                    return Some(found);
                 }
             }
         }

@@ -229,13 +229,27 @@ pub fn default_cli_symlink_dir() -> PathBuf {
         .join("bin")
 }
 
+fn app_bundle_from_exe(exe: &Path) -> Option<PathBuf> {
+    let s = exe.to_string_lossy();
+    if let Some(idx) = s.find(".app/Contents/MacOS/") {
+        let app_bundle = PathBuf::from(&s[..idx + 4]);
+        if app_bundle.is_dir() {
+            return Some(app_bundle);
+        }
+    }
+    None
+}
+
 pub fn resolve_app_bundle_path(current_exe: Option<&Path>) -> Option<PathBuf> {
     if let Some(exe) = current_exe {
-        let s = exe.to_string_lossy();
-        if let Some(idx) = s.find(".app/Contents/MacOS/") {
-            let app_bundle = PathBuf::from(&s[..idx + 4]);
-            if app_bundle.is_dir() {
-                return Some(app_bundle);
+        if let Some(bundle) = app_bundle_from_exe(exe) {
+            return Some(bundle);
+        }
+        if let Ok(canon) = fs::canonicalize(exe) {
+            if canon != exe {
+                if let Some(bundle) = app_bundle_from_exe(&canon) {
+                    return Some(bundle);
+                }
             }
         }
     }
@@ -264,6 +278,11 @@ pub fn resolve_cli_executable(current_exe: Option<&Path>) -> Option<PathBuf> {
         return Some(sys_exe);
     }
     if let Some(exe) = current_exe {
+        if let Ok(canon) = fs::canonicalize(exe) {
+            if canon.is_file() {
+                return Some(canon);
+            }
+        }
         if exe.is_file() {
             return Some(exe.to_path_buf());
         }
@@ -1010,9 +1029,40 @@ mod tests {
             }
         );
 
+        // `tauri::Url::parse` round-trip preserves path + percent escapes for `parse_flip_url`
+        let tauri_parsed =
+            tauri::Url::parse("flip://wheel?mode=convert&file=/tmp/My%20File%2B1.png").unwrap();
+        assert_eq!(
+            parse_flip_url(tauri_parsed.as_str()).unwrap(),
+            FlipUrlAction::OpenWheel {
+                mode: "convert".to_string(),
+                files: vec!["/tmp/My File+1.png".to_string()],
+                folder: None,
+            }
+        );
+
         assert!(parse_flip_url("https://example.com").is_err());
         assert!(parse_flip_url("flip://convert?file=%ZZ").is_err());
         assert!(parse_flip_url("flip://unknown_action").is_err());
+    }
+
+    #[test]
+    fn resolve_app_bundle_and_cli_exe_follow_symlinks() {
+        let dir = tempdir().unwrap();
+        let app_dir = dir.path().join("MyApp/FLIP.app");
+        let exe = app_dir.join("Contents/MacOS/flip");
+        let bin_dir = dir.path().join("local/bin");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(&exe, b"bin").unwrap();
+
+        let symlink = bin_dir.join("flip");
+        std::os::unix::fs::symlink(&exe, &symlink).unwrap();
+
+        let resolved_bundle = resolve_app_bundle_path(Some(&symlink)).unwrap();
+        assert_eq!(resolved_bundle, fs::canonicalize(&app_dir).unwrap());
+        let resolved_cli = resolve_cli_executable(Some(&symlink)).unwrap();
+        assert_eq!(resolved_cli, fs::canonicalize(&exe).unwrap());
     }
 
     #[test]

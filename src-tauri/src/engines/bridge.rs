@@ -80,6 +80,29 @@ pub fn resolve_bridge_binary() -> Result<PathBuf, BridgeError> {
     )
 }
 
+fn probe_bridge_near_exe(exe: &Path) -> Option<PathBuf> {
+    let dir = exe.parent()?;
+    let sibling = dir.join("flip-macos-bridge");
+    if sibling.is_file() {
+        return Some(sibling);
+    }
+    let contents = dir.parent()?;
+    let res = contents.join("Resources").join("flip-macos-bridge");
+    if res.is_file() {
+        return Some(res);
+    }
+    let up_res = contents
+        .join("Resources")
+        .join("_up_")
+        .join("native-bridge")
+        .join("bin")
+        .join("flip-macos-bridge");
+    if up_res.is_file() {
+        return Some(up_res);
+    }
+    None
+}
+
 pub fn resolve_bridge_binary_from(
     exe_path: Option<&Path>,
     manifest_dir: &Path,
@@ -93,24 +116,13 @@ pub fn resolve_bridge_binary_from(
     }
 
     if let Some(exe) = exe_path {
-        if let Some(dir) = exe.parent() {
-            let sibling = dir.join("flip-macos-bridge");
-            if sibling.is_file() {
-                return Ok(sibling);
-            }
-            if let Some(contents) = dir.parent() {
-                let res = contents.join("Resources").join("flip-macos-bridge");
-                if res.is_file() {
-                    return Ok(res);
-                }
-                let up_res = contents
-                    .join("Resources")
-                    .join("_up_")
-                    .join("native-bridge")
-                    .join("bin")
-                    .join("flip-macos-bridge");
-                if up_res.is_file() {
-                    return Ok(up_res);
+        if let Some(found) = probe_bridge_near_exe(exe) {
+            return Ok(found);
+        }
+        if let Ok(canon) = std::fs::canonicalize(exe) {
+            if canon != exe {
+                if let Some(found) = probe_bridge_near_exe(&canon) {
+                    return Ok(found);
                 }
             }
         }

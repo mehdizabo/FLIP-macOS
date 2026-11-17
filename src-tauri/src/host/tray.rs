@@ -58,6 +58,10 @@ pub fn format_recent_menu_label(item: &RecentConversion) -> String {
     truncate_chars(&full, 68)
 }
 
+pub fn escape_menu_mnemonic(raw: &str) -> String {
+    raw.replace('&', "&&")
+}
+
 pub fn recent_menu_entries(recent: &[RecentConversion]) -> Vec<RecentMenuEntry> {
     if recent.is_empty() {
         return vec![RecentMenuEntry {
@@ -66,8 +70,10 @@ pub fn recent_menu_entries(recent: &[RecentConversion]) -> Vec<RecentMenuEntry> 
             enabled: false,
         }];
     }
+    let mut seen = std::collections::HashSet::new();
     recent
         .iter()
+        .filter(|item| seen.insert(item.output_path.as_str()))
         .take(10)
         .map(|item| RecentMenuEntry {
             id: format!("recent_path:{}", item.output_path),
@@ -171,7 +177,13 @@ pub fn build_tray_menu(app: &AppHandle, recent: &[RecentConversion]) -> tauri::R
 
     let mut recent_builder = SubmenuBuilder::with_id(app, "recent_menu", "Recent Conversions");
     for entry in recent_menu_entries(recent) {
-        let item = MenuItem::with_id(app, entry.id, entry.label, entry.enabled, None::<&str>)?;
+        let item = MenuItem::with_id(
+            app,
+            entry.id,
+            escape_menu_mnemonic(&entry.label),
+            entry.enabled,
+            None::<&str>,
+        )?;
         recent_builder = recent_builder.item(&item);
     }
     let recent_submenu = recent_builder.build()?;
@@ -187,7 +199,7 @@ pub fn build_tray_menu(app: &AppHandle, recent: &[RecentConversion]) -> tauri::R
     let settings = MenuItem::with_id(
         app,
         "settings",
-        "Settings & Shortcuts…",
+        escape_menu_mnemonic("Settings & Shortcuts…"),
         true,
         None::<&str>,
     )?;
@@ -288,6 +300,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                                 "tray.recent.reveal_error",
                                 Some(json!({ "path": path_str, "error": err.to_string() })),
                             );
+                            let _ = Command::new("/usr/bin/open").arg("-R").arg(p).spawn();
                         }
                     } else if let Some(parent) = p.parent().filter(|d| d.is_dir()) {
                         let _ = Command::new("/usr/bin/open").arg(parent).spawn();
@@ -450,5 +463,30 @@ mod tests {
         let label = format_recent_menu_label(&long_item);
         assert!(label.ends_with('…'));
         assert!(label.chars().count() <= 68);
+
+        // Ampersands must be escaped for muda macOS mnemonic stripping, and duplicate paths filtered
+        assert_eq!(
+            escape_menu_mnemonic("Settings & Shortcuts…"),
+            "Settings && Shortcuts…"
+        );
+        assert_eq!(
+            escape_menu_mnemonic("R&D.pdf → MD (R&D.md)"),
+            "R&&D.pdf → MD (R&&D.md)"
+        );
+        let dup_items = vec![
+            RecentConversion {
+                source_name: "R&D.pdf".into(),
+                target_format: "MD".into(),
+                output_path: "/tmp/R&D.md".into(),
+                timestamp_utc: "2026-11-17T20:00:00Z".into(),
+            },
+            RecentConversion {
+                source_name: "R&D.pdf".into(),
+                target_format: "MD".into(),
+                output_path: "/tmp/R&D.md".into(),
+                timestamp_utc: "2026-11-17T19:00:00Z".into(),
+            },
+        ];
+        assert_eq!(recent_menu_entries(&dup_items).len(), 1);
     }
 }

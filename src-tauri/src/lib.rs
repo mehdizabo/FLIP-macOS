@@ -34,6 +34,7 @@ impl Drop for UrlConversionBusyGuard {
 }
 
 fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipUrlAction) {
+    state.opened_from_url.store(true, Ordering::Relaxed);
     match action {
         FlipUrlAction::OpenSettings => {
             let _ = show_standard_window(app, state, "settings");
@@ -113,17 +114,36 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
             let state_arc = Arc::clone(state);
             std::thread::spawn(move || {
                 if let Some(kind_id) = kind {
+                    if let Some(ref f) = folder {
+                        if !Path::new(f).is_dir() {
+                            log_event(
+                                "url.create_new.error",
+                                Some(json!({ "kind": kind_id, "error": format!("Target folder does not exist: {f}") })),
+                            );
+                            let _ = bridge::feedback("error", None);
+                            return;
+                        }
+                    }
                     let mut prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
                     if no_rename {
                         prefs.auto_rename_on_create = false;
                     }
                     let dir_opt = folder.as_deref().map(Path::new);
-                    if let Err(err) = create_new_item(&kind_id, dir_opt, &prefs, true) {
-                        log_event(
-                            "url.create_new.error",
-                            Some(json!({ "kind": kind_id, "error": err.to_string() })),
-                        );
-                        let _ = bridge::feedback("error", None);
+                    match create_new_item(&kind_id, dir_opt, &prefs, true) {
+                        Ok(res) => {
+                            if prefs.open_after_creating && !Path::new(&res.path).is_dir() {
+                                let _ = std::process::Command::new("/usr/bin/open")
+                                    .arg(&res.path)
+                                    .spawn();
+                            }
+                        }
+                        Err(err) => {
+                            log_event(
+                                "url.create_new.error",
+                                Some(json!({ "kind": kind_id, "error": err.to_string() })),
+                            );
+                            let _ = bridge::feedback("error", None);
+                        }
                     }
                 } else {
                     let prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
@@ -189,6 +209,9 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
 }
 
 fn handle_opened_urls(app: &AppHandle, state: &Arc<HostState>, urls: &[Url]) {
+    if !urls.is_empty() {
+        state.opened_from_url.store(true, Ordering::Relaxed);
+    }
     let mut file_paths: Vec<String> = Vec::new();
     for url in urls {
         if url.scheme().eq_ignore_ascii_case("flip") {
@@ -314,7 +337,13 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
                     .await
                     .unwrap_or(false);
 
-                    if first_launch || missing_perms {
+                    let opened_url = state_for_onboarding.opened_from_url.load(Ordering::Relaxed);
+                    let wheel_open = state_for_onboarding
+                        .wheel
+                        .lock()
+                        .map(|w| w.is_open)
+                        .unwrap_or(false);
+                    if !opened_url && !wheel_open && (first_launch || missing_perms) {
                         let _ = show_standard_window(&app_handle, &state_for_onboarding, "onboarding");
                     }
                 });

@@ -46,7 +46,13 @@ pub fn resolve_launch_executable(current_exe: Option<&Path>, applications_exe: &
 }
 
 pub fn current_launch_executable() -> PathBuf {
-    let cur = std::env::current_exe().ok();
+    let cur = std::env::current_exe().ok().map(|p| {
+        if p.to_string_lossy().contains(".app/Contents/MacOS/") {
+            p
+        } else {
+            fs::canonicalize(&p).unwrap_or(p)
+        }
+    });
     resolve_launch_executable(cur.as_deref(), Path::new(APPLICATIONS_FLIP_EXE))
 }
 
@@ -134,8 +140,8 @@ fn run_launchctl_bounded(args: &[String]) -> Result<(), String> {
     let mut cmd = Command::new(launchctl);
     cmd.args(args)
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
 
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn launchctl: {e}"))?;
     let start = Instant::now();

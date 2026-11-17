@@ -1,4 +1,4 @@
-use crate::core::preferences::AppPreferences;
+use crate::core::preferences::{expand_tilde_path, AppPreferences};
 use crate::core::quick_actions::{parse_flip_url, FlipUrlAction};
 use crate::core::startup::LOGIN_ITEM_ARG;
 use crate::engines::create_new::create_new_item;
@@ -6,7 +6,7 @@ use crate::engines::{convert_files, ConversionResult};
 use crate::host::commands::ConversionCompletePayload;
 use serde_json::json;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -195,6 +195,9 @@ fn parse_new_args(args: &[String]) -> Result<CliCommand, String> {
             let val = args
                 .get(i + 1)
                 .ok_or_else(|| "Missing folder path after `--in`".to_string())?;
+            if val.trim().is_empty() {
+                return Err("Missing folder path after `--in`".to_string());
+            }
             folder = Some(PathBuf::from(val));
             i += 2;
             continue;
@@ -248,7 +251,63 @@ fn parse_new_args(args: &[String]) -> Result<CliCommand, String> {
     })
 }
 
+pub fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut parts: Vec<Component<'_>> = Vec::new();
+    for comp in path.components() {
+        match comp {
+            Component::CurDir => {
+                if parts.is_empty() {
+                    parts.push(comp);
+                }
+            }
+            Component::ParentDir => {
+                if let Some(Component::Normal(_)) = parts.last() {
+                    parts.pop();
+                } else if !matches!(parts.last(), Some(Component::RootDir | Component::Prefix(_))) {
+                    parts.push(comp);
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    if parts.is_empty() {
+        PathBuf::from(".")
+    } else {
+        parts.iter().collect()
+    }
+}
+
+pub fn resolve_cli_path(raw: &Path, cwd: Option<&Path>) -> PathBuf {
+    let raw_str = raw.to_string_lossy();
+    if raw_str.trim().is_empty() {
+        return raw.to_path_buf();
+    }
+    let expanded = if raw_str == "~" || raw_str.starts_with("~/") {
+        expand_tilde_path(&raw_str)
+    } else {
+        raw.to_path_buf()
+    };
+    let abs = if expanded.is_absolute() {
+        expanded
+    } else if let Some(base) = cwd {
+        base.join(expanded)
+    } else if let Ok(cur) = std::env::current_dir() {
+        cur.join(expanded)
+    } else {
+        expanded
+    };
+    lexical_normalize(&abs)
+}
+
 pub fn execute_cli_command(cmd: CliCommand, prefs: &AppPreferences) -> CliOutcome {
+    execute_cli_command_in(cmd, prefs, None)
+}
+
+pub fn execute_cli_command_in(
+    cmd: CliCommand,
+    prefs: &AppPreferences,
+    cwd: Option<&Path>,
+) -> CliOutcome {
     match cmd {
         CliCommand::Help => CliOutcome {
             exit_code: 0,
@@ -261,8 +320,10 @@ pub fn execute_cli_command(cmd: CliCommand, prefs: &AppPreferences) -> CliOutcom
             stderr: String::new(),
         },
         CliCommand::Convert { files, formats } => {
+            let resolved_files: Vec<PathBuf> =
+                files.iter().map(|p| resolve_cli_path(p, cwd)).collect();
             let cancel = Arc::new(AtomicBool::new(false));
-            match convert_files(&files, &formats, prefs, &cancel, None) {
+            match convert_files(&resolved_files, &formats, prefs, &cancel, None) {
                 Ok(results) => {
                     let first_err = results.iter().find_map(|r| r.error.clone());
                     let success = !results.is_empty() && first_err.is_none();
@@ -302,7 +363,8 @@ pub fn execute_cli_command(cmd: CliCommand, prefs: &AppPreferences) -> CliOutcom
             no_rename,
             no_reveal,
         } => {
-            if let Some(ref explicit) = folder {
+            let resolved_folder = folder.as_ref().map(|p| resolve_cli_path(p, cwd));
+            if let Some(ref explicit) = resolved_folder {
                 if !explicit.is_dir() {
                     let msg = format!(
                         "Target folder does not exist or is not a directory: `{}`",
@@ -321,12 +383,26 @@ pub fn execute_cli_command(cmd: CliCommand, prefs: &AppPreferences) -> CliOutcom
                 }
             }
 
+            let resolved_kind = if let Some(tmpl) = kind.strip_prefix("template:") {
+                format!(
+                    "template:{}",
+                    resolve_cli_path(Path::new(tmpl), cwd).to_string_lossy()
+                )
+            } else {
+                kind
+            };
+
             let mut eff_prefs = prefs.clone();
             if no_rename {
                 eff_prefs.auto_rename_on_create = false;
             }
 
-            match create_new_item(&kind, folder.as_deref(), &eff_prefs, !no_reveal) {
+            match create_new_item(
+                &resolved_kind,
+                resolved_folder.as_deref(),
+                &eff_prefs,
+                !no_reveal,
+            ) {
                 Ok(res) => {
                     let stdout = serde_json::to_string_pretty(&res)
                         .unwrap_or_else(|_| "{}".to_string());
@@ -471,6 +547,8 @@ mod tests {
         assert!(parse_cli_args(["flip", "convert", "a.png", "--unknown"]).is_err());
         assert!(parse_cli_args(["flip", "new"]).is_err());
         assert!(parse_cli_args(["flip", "new", "txt", "--in"]).is_err());
+        assert!(parse_cli_args(["flip", "new", "txt", "--in", ""]).is_err());
+        assert!(parse_cli_args(["flip", "new", "txt", "--in="]).is_err());
         assert!(parse_cli_args(["flip", "bogus"]).is_err());
     }
 
@@ -498,6 +576,29 @@ mod tests {
         assert_eq!(parsed["results"].as_array().unwrap().len(), 2);
         assert!(dir.path().join("sample.yaml").is_file());
         assert!(dir.path().join("sample.toml").is_file());
+
+        // Relative paths (`sample.json` / `./sub/../sample.json`) must resolve against cwd
+        let sub = dir.path().join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        let rel_cmd = parse_cli_args([
+            "flip",
+            "convert",
+            "./sub/../sample.json",
+            "--to",
+            "XML",
+        ])
+        .unwrap();
+        let rel_out = execute_cli_command_in(rel_cmd, &prefs, Some(dir.path()));
+        assert_eq!(rel_out.exit_code, 0, "stderr: {}", rel_out.stderr);
+        assert!(dir.path().join("sample.xml").is_file());
+
+        // Relative symlink must STILL be refused by policy (leaf symlink is not dereferenced)
+        let sym = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&src, &sym).unwrap();
+        let sym_cmd = parse_cli_args(["flip", "convert", "link.json", "--to", "YAML"]).unwrap();
+        let sym_out = execute_cli_command_in(sym_cmd, &prefs, Some(dir.path()));
+        assert_eq!(sym_out.exit_code, 1);
+        assert!(sym_out.stderr.contains("Symbolic links"));
 
         // Missing file -> exit_code 1 with JSON error
         let bad_conv = parse_cli_args([
@@ -530,6 +631,29 @@ mod tests {
         assert_eq!(new_json["kindId"], "md");
         assert_eq!(new_json["renameTriggered"], false);
         assert!(PathBuf::from(new_json["path"].as_str().unwrap()).is_file());
+
+        // `flip new ... --in .` resolves cleanly to an absolute path and expands {{folder}}
+        let work_dir = dir.path().join("MyFolder");
+        fs::create_dir_all(&work_dir).unwrap();
+        let tmpl = dir.path().join("Note.md");
+        fs::write(&tmpl, b"folder={{folder}}\n").unwrap();
+        let dot_cmd = parse_cli_args([
+            "flip",
+            "new",
+            "template:../Note.md",
+            "--in",
+            ".",
+            "--no-rename",
+            "--no-reveal",
+        ])
+        .unwrap();
+        let dot_out = execute_cli_command_in(dot_cmd, &prefs, Some(&work_dir));
+        assert_eq!(dot_out.exit_code, 0, "stderr: {}", dot_out.stderr);
+        let dot_json: serde_json::Value = serde_json::from_str(&dot_out.stdout).unwrap();
+        let created_path = PathBuf::from(dot_json["path"].as_str().unwrap());
+        assert!(created_path.is_absolute());
+        assert_eq!(created_path, work_dir.join("Note.md"));
+        assert_eq!(fs::read_to_string(&created_path).unwrap(), "folder=MyFolder\n");
 
         // `flip new md --in /nonexistent` must fail rather than falling back to Desktop
         let bad_dir_cmd = parse_cli_args([

@@ -304,7 +304,21 @@ fn bridge_and_wav_resolve_in_both_dev_and_app_bundle_layouts() {
         resolve_wav_path_from(&[], Some(&fake_exe), &fake_manifest).unwrap();
     assert_eq!(resolved_wav_exe_fallback, bundled_wav);
 
-    // 3. Sibling MacOS/flip-macos-bridge takes precedence if present
+    // 3. Symlinked CLI invocation (`~/.local/bin/flip -> FLIP.app/Contents/MacOS/flip`) still finds bundled bridge & wav
+    let bin_dir = temp.path().join("local_bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    let cli_symlink = bin_dir.join("flip");
+    std::os::unix::fs::symlink(&fake_exe, &cli_symlink).unwrap();
+    assert_eq!(
+        resolve_bridge_binary_from(Some(&cli_symlink), &fake_manifest, None).unwrap(),
+        fs::canonicalize(&bundled_bridge).unwrap()
+    );
+    assert_eq!(
+        resolve_wav_path_from(&[], Some(&cli_symlink), &fake_manifest).unwrap(),
+        fs::canonicalize(&bundled_wav).unwrap()
+    );
+
+    // 4. Sibling MacOS/flip-macos-bridge takes precedence if present
     let sibling_bridge = macos_dir.join("flip-macos-bridge");
     fs::write(&sibling_bridge, b"sibling").unwrap();
     assert_eq!(
