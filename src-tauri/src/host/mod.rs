@@ -52,6 +52,8 @@ pub struct WheelRuntimeState {
     pub is_open: bool,
     pub window_x: i32,
     pub window_y: i32,
+    pub open_epoch: u64,
+    pub acted_epoch: u64,
 }
 
 pub struct HostState {
@@ -87,6 +89,8 @@ impl HostState {
                 is_open: false,
                 window_x: 0,
                 window_y: 0,
+                open_epoch: 0,
+                acted_epoch: 0,
             }),
             is_converting: AtomicBool::new(false),
             active_cancel: Mutex::new(None),
@@ -296,7 +300,7 @@ fn fallback_screen_center(app: &AppHandle, win: &WebviewWindow) -> (f64, f64, Mo
             visible_x: pos.x,
             visible_y: pos.y + 25.0,
             visible_width: size.width,
-            visible_height: (size.height - 25.0).max(480.0),
+            visible_height: (size.height - 25.0).max(1.0),
             scale,
         };
         let cx = geom.visible_x + geom.visible_width / 2.0;
@@ -377,6 +381,7 @@ pub fn present_wheel_at(
         guard.is_open = true;
         guard.window_x = win_x;
         guard.window_y = win_y;
+        guard.open_epoch = guard.open_epoch.wrapping_add(1);
     }
 
     let _ = win.set_size(Size::Logical(LogicalSize::new(

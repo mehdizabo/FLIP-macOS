@@ -91,6 +91,9 @@ pub async fn open_wheel_mode(
     app: AppHandle,
     state: State<'_, Arc<HostState>>,
 ) -> Result<WheelStatePayload, String> {
+    if !matches!(mode.as_str(), "convert" | "new") {
+        return Err(format!("Invalid wheel mode: {mode}"));
+    }
     let state_arc = Arc::clone(&*state);
     tokio::task::spawn_blocking(move || {
         let prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
@@ -191,6 +194,11 @@ pub async fn execute_conversion(
     let cancel = Arc::new(AtomicBool::new(false));
     if let Ok(mut guard) = state.active_cancel.lock() {
         *guard = Some(Arc::clone(&cancel));
+    }
+    if let Ok(mut wheel_guard) = state.wheel.lock() {
+        if wheel_guard.is_open {
+            wheel_guard.acted_epoch = wheel_guard.open_epoch;
+        }
     }
 
     let state_arc = Arc::clone(&*state);

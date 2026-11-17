@@ -208,6 +208,9 @@ impl AppPreferences {
         if !matches!(self.pdf_page_size.to_lowercase().as_str(), "a4" | "letter") {
             self.pdf_page_size = "a4".to_string();
         }
+        if self.mouse_trigger_button.is_some_and(|b| !(2..=5).contains(&b)) {
+            self.mouse_trigger_button = None;
+        }
         if self.recent_conversions.len() > 10 {
             self.recent_conversions.truncate(10);
         }

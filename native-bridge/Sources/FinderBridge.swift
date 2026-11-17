@@ -6,10 +6,11 @@ import ApplicationServices
 enum FinderBridge {
     private static let appleScriptQueue = DispatchQueue(label: "com.thetinyfoundry.flip.applescript")
 
-    static func runAppleScript(_ source: String, timeoutSeconds: TimeInterval = 5.0) -> (descriptor: NSAppleEventDescriptor?, error: String?) {
+    static func runAppleScriptDetailed(_ source: String, timeoutSeconds: TimeInterval = 5.0) -> (descriptor: NSAppleEventDescriptor?, error: String?, errorNumber: Int?) {
         let sem = DispatchSemaphore(value: 0)
         var outDesc: NSAppleEventDescriptor?
         var outErr: String?
+        var outErrNum: Int?
 
         appleScriptQueue.async {
             guard let script = NSAppleScript(source: source) else {
@@ -21,6 +22,7 @@ enum FinderBridge {
             let result = script.executeAndReturnError(&errInfo)
             if let errInfo = errInfo {
                 outErr = (errInfo[NSAppleScript.errorMessage] as? String) ?? "AppleScript error"
+                outErrNum = (errInfo[NSAppleScript.errorNumber] as? NSNumber)?.intValue
             } else {
                 outDesc = result
             }
@@ -28,15 +30,36 @@ enum FinderBridge {
         }
 
         if sem.wait(timeout: .now() + timeoutSeconds) == .timedOut {
-            return (nil, "AppleScript timed out after \(Int(timeoutSeconds))s")
+            return (nil, "AppleScript timed out after \(Int(timeoutSeconds))s", nil)
         }
-        return (outDesc, outErr)
+        return (outDesc, outErr, outErrNum)
+    }
+
+    static func runAppleScript(_ source: String, timeoutSeconds: TimeInterval = 5.0) -> (descriptor: NSAppleEventDescriptor?, error: String?) {
+        let res = runAppleScriptDetailed(source, timeoutSeconds: timeoutSeconds)
+        return (res.descriptor, res.error)
+    }
+
+    private static func isAutomationDenied(error: String, errorNumber: Int?) -> Bool {
+        if let code = errorNumber, code == -1743 || code == -1744 {
+            return true
+        }
+        if error.localizedCaseInsensitiveContains("Not authorized") {
+            return true
+        }
+        let finderTarget = NSAppleEventDescriptor(bundleIdentifier: "com.apple.finder")
+        if let aeDesc = finderTarget.aeDesc {
+            let status = AEDeterminePermissionToAutomateTarget(aeDesc, typeWildCard, typeWildCard, false)
+            return status == OSStatus(errAEEventNotPermitted) || status == OSStatus(errAEEventWouldRequireUserConsent)
+        }
+        return false
     }
 
     private static func isTrashFolder(_ path: String) -> Bool {
-        let standardized = (path as NSString).standardizingPath
-        let trashPath = ((FileManager.default.urls(for: .trashDirectory, in: .userDomainMask).first?.path
-            ?? (NSHomeDirectory() + "/.Trash")) as NSString).standardizingPath
+        let standardized = URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        let rawTrash = FileManager.default.urls(for: .trashDirectory, in: .userDomainMask).first?.path
+            ?? (NSHomeDirectory() + "/.Trash")
+        let trashPath = URL(fileURLWithPath: rawTrash).resolvingSymlinksInPath().standardizedFileURL.path
         if standardized == trashPath || standardized.hasPrefix(trashPath + "/") {
             return true
         }
@@ -87,13 +110,13 @@ enum FinderBridge {
         end timeout
         """
 
-        let (desc, err) = runAppleScript(script, timeoutSeconds: 4.0)
+        let (desc, err, errNum) = runAppleScriptDetailed(script, timeoutSeconds: 4.0)
         if let err = err {
             return [
                 "frontmostBundleId": frontmostId,
                 "selectedFiles": [],
                 "targetFolder": desktopPath,
-                "automationGranted": !err.localizedCaseInsensitiveContains("Not authorized"),
+                "automationGranted": !isAutomationDenied(error: err, errorNumber: errNum),
                 "error": err
             ]
         }
@@ -136,6 +159,44 @@ enum FinderBridge {
         ]
     }
 
+    /// Queries raw Finder selection including plain directories so `revealFiles(..., rename: true)`
+    /// can confirm selection of newly created folders (`untitled folder`) as well as files.
+    private static func rawFinderSelection() -> (items: [String], automationGranted: Bool) {
+        let script = """
+        with timeout of 2 seconds
+            tell application "Finder"
+                set selPaths to {}
+                try
+                    set selList to selection as alias list
+                    repeat with itemRef in selList
+                        set end of selPaths to POSIX path of itemRef
+                    end repeat
+                on error
+                    try
+                        set singleItem to (selection as alias)
+                        set end of selPaths to POSIX path of singleItem
+                    end try
+                end try
+                return selPaths
+            end tell
+        end timeout
+        """
+        let (desc, err, errNum) = runAppleScriptDetailed(script, timeoutSeconds: 2.5)
+        if let err = err {
+            return ([], !isAutomationDenied(error: err, errorNumber: errNum))
+        }
+        var items: [String] = []
+        if let desc = desc, desc.numberOfItems > 0 {
+            for i in 1...desc.numberOfItems {
+                if let rawPath = desc.atIndex(i)?.stringValue, !rawPath.isEmpty {
+                    let cleaned = rawPath.hasSuffix("/") && rawPath.count > 1 ? String(rawPath.dropLast()) : rawPath
+                    items.append(cleaned)
+                }
+            }
+        }
+        return (items, true)
+    }
+
     static func revealFiles(_ paths: [String], rename: Bool) -> [String: Any] {
         let urls = paths.map { URL(fileURLWithPath: $0) }
         guard !urls.isEmpty else {
@@ -151,18 +212,17 @@ enum FinderBridge {
             if AXIsProcessTrusted() {
                 if let finderApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
                     finderApp.activate(options: [])
-                    let targetStd = urls[0].standardizedFileURL.path
+                    let targetStd = urls[0].resolvingSymlinksInPath().standardizedFileURL.path
                     var selectionConfirmed = false
                     var automationBlocked = false
-                    for _ in 0..<8 {
+                    for _ in 0..<10 {
                         Thread.sleep(forTimeInterval: 0.04)
-                        let ctx = getFinderContext()
-                        if (ctx["automationGranted"] as? Bool) == false {
+                        let (sel, granted) = rawFinderSelection()
+                        if !granted {
                             automationBlocked = true
                             break
                         }
-                        let sel = (ctx["selectedFiles"] as? [String]) ?? []
-                        if sel.contains(where: { URL(fileURLWithPath: $0).standardizedFileURL.path == targetStd }) {
+                        if sel.contains(where: { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path == targetStd }) {
                             selectionConfirmed = true
                             break
                         }
@@ -256,8 +316,9 @@ enum FinderBridge {
     }
 
     static func saveClipboard(to targetPath: String) -> [String: Any] {
-        if FileManager.default.fileExists(atPath: targetPath) {
-            return ["ok": false, "error": "Target file already exists: \(targetPath)"]
+        if FileManager.default.fileExists(atPath: targetPath)
+            || (try? FileManager.default.attributesOfItem(atPath: targetPath)) != nil {
+            return ["ok": false, "error": "Target path already exists: \(targetPath)"]
         }
         let pb = NSPasteboard.general
         let types = (pb.types ?? []).map { $0.rawValue }

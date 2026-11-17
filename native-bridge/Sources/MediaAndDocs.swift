@@ -74,9 +74,10 @@ enum MediaAndDocs {
     }
 
     // MARK: - Vision OCR
-    static func recognizeText(
+    private static func performRecognizeText(
         cgImage: CGImage,
-        orientation: CGImagePropertyOrientation = .up
+        orientation: CGImagePropertyOrientation,
+        level: VNRequestTextRecognitionLevel
     ) throws -> String {
         var recognizedLines: [String] = []
         var visionError: Error?
@@ -93,7 +94,7 @@ enum MediaAndDocs {
                 }
             }
         }
-        request.recognitionLevel = .accurate
+        request.recognitionLevel = level
         request.usesLanguageCorrection = true
         if #available(macOS 13.0, *) {
             request.automaticallyDetectsLanguage = true
@@ -121,6 +122,49 @@ enum MediaAndDocs {
             throw err
         }
         return recognizedLines.joined(separator: "\n")
+    }
+
+    private static func upscale2xForOCR(_ cgImage: CGImage) -> CGImage? {
+        let w = cgImage.width
+        let h = cgImage.height
+        guard w > 0 && h > 0 && max(w, h) <= 3200 else { return nil }
+        let outW = w * 2
+        let outH = h * 2
+        let (pixels, overflow) = Int64(outW).multipliedReportingOverflow(by: Int64(outH))
+        guard !overflow && pixels <= maxImagePixels else { return nil }
+        guard let cs = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(
+                data: nil,
+                width: outW,
+                height: outH,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: cs,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return nil
+        }
+        ctx.setFillColor(CGColor.white)
+        ctx.fill(CGRect(x: 0, y: 0, width: outW, height: outH))
+        ctx.interpolationQuality = .high
+        ctx.draw(cgImage, in: CGRect(x: 0, y: 0, width: outW, height: outH))
+        return ctx.makeImage()
+    }
+
+    static func recognizeText(
+        cgImage: CGImage,
+        orientation: CGImagePropertyOrientation = .up
+    ) throws -> String {
+        let accurateText = try performRecognizeText(cgImage: cgImage, orientation: orientation, level: .accurate)
+        if !accurateText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return accurateText
+        }
+        // Vision .accurate can return 0 observations on smaller body text (e.g. 144 DPI full-page docs);
+        // retry .accurate on a 2x white-backed upscale (no .fast hallucinations on geometric shapes).
+        if let upscaled = upscale2xForOCR(cgImage) {
+            return try performRecognizeText(cgImage: upscaled, orientation: orientation, level: .accurate)
+        }
+        return accurateText
     }
 
     static func ocrImageFile(path: String, outTxtPath: String?) throws -> [String: Any] {
@@ -285,32 +329,21 @@ enum MediaAndDocs {
         guard !imagePaths.isEmpty && imagePaths.count <= 128 else {
             throw BridgeError.invalidArguments("Select between 1 and 128 images for PDF")
         }
-        guard !FileManager.default.fileExists(atPath: outPdfPath) else {
+        guard !FileManager.default.fileExists(atPath: outPdfPath),
+              (try? FileManager.default.attributesOfItem(atPath: outPdfPath)) == nil else {
             throw BridgeError.operationFailed("Refusing to overwrite existing output PDF: \(outPdfPath)")
         }
 
-        var loadedImages: [CGImage] = []
-        loadedImages.reserveCapacity(imagePaths.count)
+        // Pass 1: Pre-decode dimension & format validation across all inputs before decoding pixels
+        var preparedSources: [(src: CGImageSource, path: String, orientation: UInt32)] = []
+        preparedSources.reserveCapacity(imagePaths.count)
         for path in imagePaths {
             let url = URL(fileURLWithPath: path)
             guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
                 throw BridgeError.operationFailed("Could not open image for PDF: \(path)")
             }
             let (orientation, _) = try inspectImagePropertiesPreDecode(src, path: path)
-            guard let rawImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-                throw BridgeError.operationFailed("Could not decode image for PDF: \(path)")
-            }
-            let (pixels, overflow) = Int64(rawImg.width).multipliedReportingOverflow(by: Int64(rawImg.height))
-            if rawImg.width <= 0 || rawImg.height <= 0 || overflow || pixels > maxImagePixels {
-                throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size: \(path)")
-            }
-            let oriented: CGImage
-            if orientation != 1 {
-                oriented = normalizeOrientedImage(rawImg, orientation: orientation, flattenAlpha: false) ?? rawImg
-            } else {
-                oriented = rawImg
-            }
-            loadedImages.append(oriented)
+            preparedSources.append((src: src, path: path, orientation: orientation))
         }
 
         // A4 595 x 842 pt with 30 pt margins aspect-fit (matching FLIP-windows ImagePdf)
@@ -327,25 +360,42 @@ enum MediaAndDocs {
         let availW = mediaBox.width - 2 * margin
         let availH = mediaBox.height - 2 * margin
 
-        for cgImg in loadedImages {
-            pdfCtx.beginPDFPage(nil)
-            pdfCtx.setFillColor(CGColor.white)
-            pdfCtx.fill(mediaBox)
+        // Pass 2: Decode, orient, draw, and release one image at a time inside autoreleasepool
+        for item in preparedSources {
+            try autoreleasepool {
+                guard let rawImg = CGImageSourceCreateImageAtIndex(item.src, 0, nil) else {
+                    throw BridgeError.operationFailed("Could not decode image for PDF: \(item.path)")
+                }
+                let (pixels, overflow) = Int64(rawImg.width).multipliedReportingOverflow(by: Int64(rawImg.height))
+                if rawImg.width <= 0 || rawImg.height <= 0 || overflow || pixels > maxImagePixels {
+                    throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size: \(item.path)")
+                }
+                let cgImg: CGImage
+                if item.orientation != 1 {
+                    cgImg = normalizeOrientedImage(rawImg, orientation: item.orientation, flattenAlpha: false) ?? rawImg
+                } else {
+                    cgImg = rawImg
+                }
 
-            let imgW = CGFloat(cgImg.width)
-            let imgH = CGFloat(cgImg.height)
-            let scale = min(availW / imgW, availH / imgH)
-            let drawW = imgW * scale
-            let drawH = imgH * scale
-            let drawRect = CGRect(
-                x: (mediaBox.width - drawW) / 2.0,
-                y: (mediaBox.height - drawH) / 2.0,
-                width: drawW,
-                height: drawH
-            )
-            pdfCtx.interpolationQuality = .high
-            pdfCtx.draw(cgImg, in: drawRect)
-            pdfCtx.endPDFPage()
+                pdfCtx.beginPDFPage(nil)
+                pdfCtx.setFillColor(CGColor.white)
+                pdfCtx.fill(mediaBox)
+
+                let imgW = CGFloat(cgImg.width)
+                let imgH = CGFloat(cgImg.height)
+                let scale = min(availW / imgW, availH / imgH)
+                let drawW = imgW * scale
+                let drawH = imgH * scale
+                let drawRect = CGRect(
+                    x: (mediaBox.width - drawW) / 2.0,
+                    y: (mediaBox.height - drawH) / 2.0,
+                    width: drawW,
+                    height: drawH
+                )
+                pdfCtx.interpolationQuality = .high
+                pdfCtx.draw(cgImg, in: drawRect)
+                pdfCtx.endPDFPage()
+            }
         }
         pdfCtx.closePDF()
 
@@ -354,7 +404,7 @@ enum MediaAndDocs {
             throw BridgeError.operationFailed("Failed to generate PDF from images")
         }
         try bytes.write(to: URL(fileURLWithPath: outPdfPath), options: .withoutOverwriting)
-        return ["ok": true, "pages": loadedImages.count, "output": outPdfPath]
+        return ["ok": true, "pages": preparedSources.count, "output": outPdfPath]
     }
 
     static func mergePDFs(outPdfPath: String, pdfPaths: [String]) throws -> [String: Any] {
@@ -381,6 +431,7 @@ enum MediaAndDocs {
         var out = html
         let stripBlockPatterns = [
             "<script\\b[^>]*>[\\s\\S]*?</script>",
+            "<script\\b[^>]*>",
             "<iframe\\b[^>]*>[\\s\\S]*?</iframe>",
             "<iframe\\b[^>]*>",
             "<object\\b[^>]*>[\\s\\S]*?</object>",
@@ -397,9 +448,9 @@ enum MediaAndDocs {
             }
         }
 
-        let srcDoubleQuoted = "(\\b(?:src|background|poster|data)\\s*=\\s*\")(?!\\s*data:image/)([^\"]*)(\")"
-        let srcSingleQuoted = "(\\b(?:src|background|poster|data)\\s*=\\s*')(?!\\s*data:image/)([^']*)(')"
-        let srcUnquoted = "(\\b(?:src|background|poster|data)\\s*=\\s*)(?!\"|'|\\s*data:image/)([^\\s>]+)"
+        let srcDoubleQuoted = "(\\b(?:src|srcset|background|poster|data)\\s*=\\s*\")(?!\\s*data:image/)([^\"]*)(\")"
+        let srcSingleQuoted = "(\\b(?:src|srcset|background|poster|data)\\s*=\\s*')(?!\\s*data:image/)([^']*)(')"
+        let srcUnquoted = "(\\b(?:src|srcset|background|poster|data)\\s*=\\s*)(?!\"|'|\\s*data:image/)([^\\s>]+)"
         for (idx, pattern) in [srcDoubleQuoted, srcSingleQuoted, srcUnquoted].enumerated() {
             if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
                 let template = idx == 2 ? "$1\"#blocked\"" : "$1#blocked$3"
@@ -417,7 +468,8 @@ enum MediaAndDocs {
             }
         }
 
-        if let cssImportRegex = try? NSRegularExpression(pattern: "@import\\b[^;\\n]*[;\\n]?", options: [.caseInsensitive]) {
+        // Stop before '<' so an @import without trailing semicolon never swallows </style> and the HTML body.
+        if let cssImportRegex = try? NSRegularExpression(pattern: "@import\\b[^;<\\n]*[;\\n]?", options: [.caseInsensitive]) {
             out = cssImportRegex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "")
         }
         if let cssUrlRegex = try? NSRegularExpression(pattern: "url\\(\\s*(?![\"']?data:image/)[^)]*\\)", options: [.caseInsensitive]) {
@@ -522,20 +574,50 @@ enum MediaAndDocs {
             ? CGSize(width: 612, height: 792)
             : CGSize(width: 595.28, height: 841.89)
         let margin: CGFloat = 48
+        let contentSize = CGSize(width: size.width - margin * 2, height: size.height - margin * 2)
 
         let mutable = NSMutableAttributedString(attributedString: attr)
         let fullRange = NSRange(location: 0, length: mutable.length)
         try withAquaAppearance {
+            var fontUpdates: [(NSRange, NSFont)] = []
             mutable.enumerateAttribute(.font, in: fullRange) { val, range, _ in
-                if val == nil {
-                    mutable.addAttribute(.font, value: NSFont.systemFont(ofSize: 11.5), range: range)
+                if let f = val as? NSFont {
+                    if f.pointSize > 240 {
+                        let clamped = NSFont(descriptor: f.fontDescriptor, size: 240) ?? NSFont.systemFont(ofSize: 240)
+                        fontUpdates.append((range, clamped))
+                    }
+                } else {
+                    fontUpdates.append((range, NSFont.systemFont(ofSize: 11.5)))
                 }
             }
+            for (range, font) in fontUpdates {
+                mutable.addAttribute(.font, value: font, range: range)
+            }
+
+            var colorUpdates: [(NSRange, NSColor)] = []
             mutable.enumerateAttribute(.foregroundColor, in: fullRange) { val, range, _ in
                 if val == nil {
-                    mutable.addAttribute(.foregroundColor, value: NSColor.black, range: range)
+                    colorUpdates.append((range, NSColor.black))
                 } else if let c = val as? NSColor, let resolved = c.usingColorSpace(.sRGB) {
-                    mutable.addAttribute(.foregroundColor, value: resolved, range: range)
+                    colorUpdates.append((range, resolved))
+                }
+            }
+            for (range, color) in colorUpdates {
+                mutable.addAttribute(.foregroundColor, value: color, range: range)
+            }
+
+            mutable.enumerateAttribute(.attachment, in: fullRange) { val, _, _ in
+                guard let att = val as? NSTextAttachment else { return }
+                let img = att.image ?? att.fileWrapper?.regularFileContents.flatMap { NSImage(data: $0) }
+                guard let nsImg = img else { return }
+                let sz = att.bounds.size != .zero ? att.bounds.size : nsImg.size
+                if sz.width > contentSize.width || sz.height > contentSize.height {
+                    let scale = min(contentSize.width / max(1, sz.width), contentSize.height / max(1, sz.height))
+                    let fitted = CGSize(width: floor(sz.width * scale), height: floor(sz.height * scale))
+                    nsImg.size = fitted
+                    att.image = nsImg
+                    att.attachmentCell = NSTextAttachmentCell(imageCell: nsImg)
+                    att.bounds = CGRect(origin: .zero, size: fitted)
                 }
             }
         }
@@ -549,38 +631,61 @@ enum MediaAndDocs {
             throw BridgeError.operationFailed("Failed to create PDF CGContext")
         }
 
-        let framesetter = CTFramesetterCreateWithAttributedString(mutable as CFAttributedString)
-        let textRect = CGRect(
-            x: margin,
-            y: margin,
-            width: size.width - margin * 2,
-            height: size.height - margin * 2
-        )
+        let storage = NSTextStorage(attributedString: mutable)
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
 
-        var currentIndex: CFIndex = 0
-        let totalLength = mutable.length
+        let totalGlyphs = layoutManager.numberOfGlyphs
+        var glyphIndex = 0
         var pageCount = 0
 
-        repeat {
-            pageCount += 1
-            if pageCount > 200 {
-                throw BridgeError.operationFailed("PDF output exceeds 200-page safety limit")
-            }
-            pdfCtx.beginPDFPage(nil)
-            pdfCtx.setFillColor(CGColor.white)
-            pdfCtx.fill(mediaBox)
+        try withAquaAppearance {
+            while glyphIndex < totalGlyphs || pageCount == 0 {
+                pageCount += 1
+                if pageCount > 200 {
+                    throw BridgeError.operationFailed("PDF output exceeds 200-page safety limit")
+                }
 
-            let path = CGPath(rect: textRect, transform: nil)
-            let frame = CTFramesetterCreateFrame(framesetter, CFRangeMake(currentIndex, 0), path, nil)
-            CTFrameDraw(frame, pdfCtx)
-            pdfCtx.endPDFPage()
+                let container = NSTextContainer(size: contentSize)
+                container.lineFragmentPadding = 0
+                layoutManager.addTextContainer(container)
+                let glyphRange = layoutManager.glyphRange(for: container)
 
-            let visibleRange = CTFrameGetVisibleStringRange(frame)
-            if visibleRange.length <= 0 {
-                break
+                if glyphRange.length == 0 && pageCount > 1 {
+                    layoutManager.removeTextContainer(at: layoutManager.textContainers.count - 1)
+                    pageCount -= 1
+                    break
+                }
+
+                pdfCtx.beginPDFPage(nil)
+                pdfCtx.setFillColor(CGColor.white)
+                pdfCtx.fill(mediaBox)
+
+                if glyphRange.length > 0 {
+                    pdfCtx.saveGState()
+                    pdfCtx.translateBy(x: 0, y: size.height)
+                    pdfCtx.scaleBy(x: 1, y: -1)
+                    let nsCtx = NSGraphicsContext(cgContext: pdfCtx, flipped: true)
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.current = nsCtx
+                    let drawOrigin = CGPoint(x: margin, y: margin)
+                    layoutManager.drawBackground(forGlyphRange: glyphRange, at: drawOrigin)
+                    layoutManager.drawGlyphs(forGlyphRange: glyphRange, at: drawOrigin)
+                    NSGraphicsContext.restoreGraphicsState()
+                    pdfCtx.restoreGState()
+                }
+
+                pdfCtx.endPDFPage()
+
+                if glyphRange.length == 0 {
+                    break
+                }
+                glyphIndex = NSMaxRange(glyphRange)
+                if glyphIndex >= totalGlyphs {
+                    break
+                }
             }
-            currentIndex += visibleRange.length
-        } while currentIndex < totalLength
+        }
 
         pdfCtx.closePDF()
 
@@ -723,6 +828,26 @@ enum MediaAndDocs {
             throw BridgeError.invalidArguments("Unknown iWork extension: \(inExt)")
         }
 
+        guard !FileManager.default.fileExists(atPath: outputPath),
+              (try? FileManager.default.attributesOfItem(atPath: outputPath)) == nil else {
+            throw BridgeError.operationFailed("Refusing to overwrite existing output: \(outputPath)")
+        }
+
+        if let inAttrs = try? FileManager.default.attributesOfItem(atPath: inputPath),
+           let inType = inAttrs[.type] as? FileAttributeType,
+           inType == .typeSymbolicLink {
+            throw BridgeError.operationFailed("Refusing symlinked iWork input")
+        }
+
+        var isDir: ObjCBool = false
+        let inputExists = FileManager.default.fileExists(atPath: inputPath, isDirectory: &isDir)
+        guard inputExists else {
+            throw BridgeError.operationFailed("Input iWork file does not exist: \(inputPath)")
+        }
+        if !isDir.boolValue {
+            try verifyZipPreviewWithinLimit(inputPath)
+        }
+
         let bundleId = "com.apple.iWork.\(appName)"
         if NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) != nil {
             let escapedIn = inputPath
@@ -748,34 +873,35 @@ enum MediaAndDocs {
 
         // Fallback: if format is PDF and QuickLook/Preview.pdf exists inside iWork package/zip
         if format == "PDF" {
-            let previewInsidePkg = (inputPath as NSString).appendingPathComponent("QuickLook/Preview.pdf")
-            if FileManager.default.fileExists(atPath: previewInsidePkg) {
-                let attrs = try FileManager.default.attributesOfItem(atPath: previewInsidePkg)
-                if let ftype = attrs[.type] as? FileAttributeType, ftype == .typeSymbolicLink {
-                    throw BridgeError.operationFailed("Refusing symlinked iWork Preview.pdf")
+            if isDir.boolValue {
+                let previewInsidePkg = (inputPath as NSString).appendingPathComponent("QuickLook/Preview.pdf")
+                if FileManager.default.fileExists(atPath: previewInsidePkg) {
+                    let attrs = try FileManager.default.attributesOfItem(atPath: previewInsidePkg)
+                    if let ftype = attrs[.type] as? FileAttributeType, ftype == .typeSymbolicLink {
+                        throw BridgeError.operationFailed("Refusing symlinked iWork Preview.pdf")
+                    }
+                    let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+                    if size <= 0 || size > maxContainerBytes {
+                        throw BridgeError.operationFailed("iWork Preview.pdf exceeds 256 MiB safety limit")
+                    }
+                    let data = try Data(contentsOf: URL(fileURLWithPath: previewInsidePkg))
+                    guard data.starts(with: Data("%PDF-".utf8)) else {
+                        throw BridgeError.operationFailed("iWork Preview.pdf is not a valid PDF")
+                    }
+                    try data.write(to: URL(fileURLWithPath: outputPath), options: .withoutOverwriting)
+                    return ["ok": true, "engine": "iwork-preview", "output": outputPath]
                 }
-                let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
-                if size <= 0 || size > maxContainerBytes {
-                    throw BridgeError.operationFailed("iWork Preview.pdf exceeds 256 MiB safety limit")
+            } else {
+                let (code, data) = try runProcessWithLimit(
+                    executablePath: "/usr/bin/unzip",
+                    arguments: ["-p", inputPath, "QuickLook/Preview.pdf"],
+                    timeoutSeconds: 15.0,
+                    maxOutputBytes: maxContainerBytes
+                )
+                if code == 0 && !data.isEmpty && data.starts(with: Data("%PDF-".utf8)) {
+                    try data.write(to: URL(fileURLWithPath: outputPath), options: .withoutOverwriting)
+                    return ["ok": true, "engine": "iwork-preview", "output": outputPath]
                 }
-                let data = try Data(contentsOf: URL(fileURLWithPath: previewInsidePkg))
-                guard data.starts(with: Data("%PDF-".utf8)) else {
-                    throw BridgeError.operationFailed("iWork Preview.pdf is not a valid PDF")
-                }
-                try data.write(to: URL(fileURLWithPath: outputPath), options: .withoutOverwriting)
-                return ["ok": true, "engine": "iwork-preview", "output": outputPath]
-            }
-
-            try verifyZipPreviewWithinLimit(inputPath)
-            let (code, data) = try runProcessWithLimit(
-                executablePath: "/usr/bin/unzip",
-                arguments: ["-p", inputPath, "QuickLook/Preview.pdf"],
-                timeoutSeconds: 15.0,
-                maxOutputBytes: maxContainerBytes
-            )
-            if code == 0 && !data.isEmpty && data.starts(with: Data("%PDF-".utf8)) {
-                try data.write(to: URL(fileURLWithPath: outputPath), options: .withoutOverwriting)
-                return ["ok": true, "engine": "iwork-preview", "output": outputPath]
             }
         }
 

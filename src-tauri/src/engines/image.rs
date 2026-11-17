@@ -34,16 +34,27 @@ fn ensure_png_via_rust_image(source: &Path, staging_dir: &Path) -> Result<PathBu
     Ok(tmp_png)
 }
 
+fn is_fatal_bridge_error(err: &bridge::BridgeError) -> bool {
+    match err {
+        bridge::BridgeError::Cancelled => true,
+        bridge::BridgeError::CommandFailed(_, msg) => {
+            msg.contains("40 megapixel") || msg.contains("zero dimensions") || msg.contains("zero size")
+        }
+        _ => false,
+    }
+}
+
 fn normalize_to_png(
     source: &Path,
     staging_dir: &Path,
     cancel: &Arc<AtomicBool>,
 ) -> Result<PathBuf, EngineError> {
     let tmp_png = staging_dir.join(format!("norm-{}.png", Uuid::new_v4().simple()));
-    if bridge::convert_image(source, "PNG", &tmp_png, 1.0, false, true, Some(cancel)).is_ok() {
-        return Ok(tmp_png);
+    match bridge::convert_image(source, "PNG", &tmp_png, 1.0, false, true, Some(cancel)) {
+        Ok(_) => Ok(tmp_png),
+        Err(err) if is_fatal_bridge_error(&err) => Err(EngineError::Bridge(err)),
+        Err(_) => ensure_png_via_rust_image(source, staging_dir),
     }
-    ensure_png_via_rust_image(source, staging_dir)
 }
 
 pub fn convert(
@@ -100,6 +111,9 @@ pub fn convert(
     ) {
         Ok(_) => Ok(()),
         Err(first_err) => {
+            if is_fatal_bridge_error(&first_err) {
+                return Err(EngineError::Bridge(first_err));
+            }
             // Fallback for formats ImageIO may not decode (e.g. .ico or exotic .webp)
             if let Ok(png_fallback) = ensure_png_via_rust_image(source, staging_dir) {
                 bridge::convert_image(

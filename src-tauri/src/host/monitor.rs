@@ -59,6 +59,21 @@ pub fn clamp_to_screen(
     (x, y)
 }
 
+pub fn should_hide_on_drag_end(
+    is_open: bool,
+    is_drag: bool,
+    is_converting: bool,
+    current_open_epoch: u64,
+    acted_epoch: u64,
+    drag_end_epoch: u64,
+) -> bool {
+    is_open
+        && is_drag
+        && !is_converting
+        && current_open_epoch == drag_end_epoch
+        && acted_epoch != drag_end_epoch
+}
+
 fn parse_screen(val: &Value) -> Option<MonitorScreenGeom> {
     val.get("screen")
         .and_then(|s| serde_json::from_value::<MonitorScreenGeom>(s.clone()).ok())
@@ -127,11 +142,11 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
             }
             let x = val.get("x").and_then(|v| v.as_f64()).unwrap_or(-1.0);
             let y = val.get("y").and_then(|v| v.as_f64()).unwrap_or(-1.0);
-            let (is_open, is_drag, wx, wy) = state
+            let (is_open, is_drag, wx, wy, open_epoch) = state
                 .wheel
                 .lock()
-                .map(|g| (g.is_open, g.payload.is_drag, g.window_x, g.window_y))
-                .unwrap_or((false, false, 0, 0));
+                .map(|g| (g.is_open, g.payload.is_drag, g.window_x, g.window_y, g.open_epoch))
+                .unwrap_or((false, false, 0, 0, 0));
 
             if is_open && is_drag && !state.is_converting.load(Ordering::Relaxed) {
                 let inside_wheel = x >= (wx as f64 - 24.0)
@@ -147,15 +162,22 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
                 let state_arc = Arc::clone(state);
                 std::thread::spawn(move || {
                     std::thread::sleep(grace);
-                    if state_arc.is_converting.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let still_drag_open = state_arc
+                    let converting = state_arc.is_converting.load(Ordering::Relaxed);
+                    let should_hide = state_arc
                         .wheel
                         .lock()
-                        .map(|g| g.is_open && g.payload.is_drag)
+                        .map(|g| {
+                            should_hide_on_drag_end(
+                                g.is_open,
+                                g.payload.is_drag,
+                                converting,
+                                g.open_epoch,
+                                g.acted_epoch,
+                                open_epoch,
+                            )
+                        })
                         .unwrap_or(false);
-                    if still_drag_open {
+                    if should_hide {
                         hide_wheel(&app_h, &state_arc, "drag-ended");
                     }
                 });
@@ -480,5 +502,19 @@ mod tests {
             scale: 2.0,
         };
         assert_eq!(clamp_to_screen(200.0, 180.0, 440, &tiny), (0, 25));
+    }
+
+    #[test]
+    fn drag_end_grace_respects_acted_and_open_epochs() {
+        // Normal un-acted drag ends -> should hide
+        assert!(should_hide_on_drag_end(true, true, false, 3, 2, 3));
+        // Still converting -> must not hide
+        assert!(!should_hide_on_drag_end(true, true, true, 3, 3, 3));
+        // Fast (<220ms) conversion finished or errored in this wheel session -> must NOT hide wheel!
+        assert!(!should_hide_on_drag_end(true, true, false, 3, 3, 3));
+        // Wheel re-opened since drag_end was scheduled -> stale timer must NOT hide new wheel!
+        assert!(!should_hide_on_drag_end(true, true, false, 4, 3, 3));
+        // Idle mode -> drag_end must not hide
+        assert!(!should_hide_on_drag_end(true, false, false, 3, 2, 3));
     }
 }

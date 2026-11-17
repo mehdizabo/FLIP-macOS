@@ -1044,4 +1044,85 @@ print("PDF_LAYOUT_OK")
     let pkg_res = convert_files(&[pkg_pages], &["PDF".into()], &prefs, &cancel, None).unwrap();
     assert!(pkg_res[0].error.is_none(), "package .pages -> PDF failed: {:?}", pkg_res[0].error);
     assert!(fs::read(&pkg_res[0].outputs[0]).unwrap().starts_with(b"%PDF-"));
+
+    // 7. Regression tests from Step 5 skeptical review:
+    // 7a. 144 DPI A4 document PNG OCR 2x retry succeeds on crisp 11.5pt body text
+    let a4_pages_dir = dir.path().join("a4_144_pages");
+    let rendered_144 = bridge::convert_pdf_render(&a4_pdf, &a4_pages_dir, "PNG", 144, None).unwrap();
+    assert!(rendered_144.len() >= 3);
+    let ocr_144 = bridge::ocr(&rendered_144[0], None, None).unwrap();
+    let ocr_144_txt = ocr_144.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        ocr_144_txt.contains("Line 001") || ocr_144_txt.contains("CoreText"),
+        "144 DPI A4 OCR failed: {ocr_144_txt}"
+    );
+
+    // 7b. HTML @import without semicolon does NOT swallow </style>/body, and huge font does NOT truncate trailing text
+    let import_html = dir.path().join("no_semi_import.html");
+    fs::write(
+        &import_html,
+        format!(
+            "<html><head><style>@import 'file://{}'</style></head>\
+             <body><p srcset=\"file://{}\">VISIBLE_AFTER_IMPORT</p></body></html>",
+            secret_file.display(),
+            secret_file.display()
+        ),
+    )
+    .unwrap();
+    let imp_res = convert_files(&[import_html], &["TXT".into(), "PDF".into()], &prefs, &cancel, None).unwrap();
+    assert!(imp_res.iter().all(|r| r.error.is_none()));
+    let imp_txt = fs::read_to_string(&imp_res.iter().find(|r| r.format == "TXT").unwrap().outputs[0]).unwrap();
+    assert!(imp_txt.contains("VISIBLE_AFTER_IMPORT"), "HTML @import ate body: {imp_txt}");
+
+    let huge_glyph_html = dir.path().join("huge_glyph.html");
+    fs::write(
+        &huge_glyph_html,
+        "<html><body><p style=\"font-size:900pt\">X</p><p>AFTER_HUGE_GLYPH</p></body></html>",
+    )
+    .unwrap();
+    let huge_pdf_res = convert_files(&[huge_glyph_html], &["PDF".into()], &prefs, &cancel, None).unwrap();
+    assert!(huge_pdf_res[0].error.is_none());
+    let huge_extracted = dir.path().join("huge_extracted.txt");
+    bridge::convert_pdf_extract_text(Path::new(&huge_pdf_res[0].outputs[0]), &huge_extracted, None).unwrap();
+    let huge_txt = fs::read_to_string(&huge_extracted).unwrap();
+    assert!(huge_txt.contains("AFTER_HUGE_GLYPH"), "huge glyph truncated PDF text: {huge_txt}");
+
+    // 7c. > 40 MP image -> PDF through convert_files rejects cleanly without fallback decode
+    let over40_pdf_res = convert_files(&[dir.path().join("over40mp.png")], &["PDF".into()], &prefs, &cancel, None).unwrap();
+    assert!(
+        over40_pdf_res[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("40 megapixel"),
+        "expected 40 megapixel error, got: {:?}",
+        over40_pdf_res[0].error
+    );
+
+    // 7d. iWork zip bomb (> 256 MiB QuickLook/Preview.pdf) rejected before extraction
+    let pages_bomb = dir.path().join("bomb.pages");
+    {
+        let file = File::create(&pages_bomb).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        zip.start_file("QuickLook/Preview.pdf", opts).unwrap();
+        let zeros = vec![0u8; 1024 * 1024];
+        for _ in 0..257 {
+            zip.write_all(&zeros).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let pages_bomb_res = convert_files(&[pages_bomb], &["PDF".into()], &prefs, &cancel, None).unwrap();
+    assert!(
+        pages_bomb_res[0].error.as_deref().unwrap_or("").contains("256 MiB"),
+        "expected 256 MiB error for bomb.pages, got: {:?}",
+        pages_bomb_res[0].error
+    );
+
+    // 7e. clipboard-save refuses overwriting an existing file
+    let existing_clip = dir.path().join("keep_clip.txt");
+    fs::write(&existing_clip, b"KEEP_ME_SAFE").unwrap();
+    let clip_save_res = bridge::clipboard_save(&existing_clip);
+    assert!(clip_save_res.is_err(), "clipboard_save must refuse overwriting existing file");
+    assert_eq!(fs::read(&existing_clip).unwrap(), b"KEEP_ME_SAFE");
 }
