@@ -1,0 +1,182 @@
+export type RouteName = "wheel" | "settings" | "batch" | "onboarding";
+
+export type WheelMode = "convert" | "new";
+
+export type FormatFamily =
+  | "image"
+  | "pdf"
+  | "document"
+  | "data"
+  | "audio"
+  | "video"
+  | "iwork";
+
+export type FeedbackKind =
+  | "tick"
+  | "alignment"
+  | "level"
+  | "generic"
+  | "success"
+  | "error";
+
+export type PermissionRequestKind =
+  | "accessibility_prompt"
+  | "open_accessibility"
+  | "open_automation";
+
+export interface RecentConversion {
+  sourceName: string;
+  targetFormat: string;
+  outputPath: string;
+  timestampUtc: string;
+}
+
+export interface AppPreferences {
+  version: number;
+  soundEnabled: boolean;
+  hapticsEnabled: boolean;
+  dragTrigger: string;
+  idleShortcut: string;
+  mouseTriggerButton: number | null;
+  autoRenameOnCreate: boolean;
+  openAfterCreating: boolean;
+  launchAtLogin: boolean;
+  outputSubfolder: string | null;
+  fallbackFolder: string | null;
+  imageQuality: number;
+  preserveExif: boolean;
+  stripGpsExif: boolean;
+  pdfDpi: number;
+  pdfPageSize: "a4" | "letter" | string;
+  ffmpegPath: string | null;
+  pandocPath: string | null;
+  preferredFormats: Record<string, string[]>;
+  newFileVisibleKinds: string[];
+  recentConversions: RecentConversion[];
+}
+
+export interface ConversionResult {
+  source: string;
+  format: string;
+  outputs: string[];
+  error: string | null;
+}
+
+export interface DetectedTools {
+  ffmpeg: string | null;
+  ffprobe: string | null;
+  pandoc: string | null;
+  bridge: string | null;
+  pages: boolean;
+  numbers: boolean;
+  keynote: boolean;
+}
+
+export interface EngineStatus extends DetectedTools {
+  nativeFrameworks?: {
+    imageIO: boolean;
+    pdfKit: boolean;
+    visionOcr: boolean;
+    avFoundation: boolean;
+  };
+}
+
+export interface PermissionsStatus {
+  accessibility: boolean;
+  automationFinder: string;
+  inputMonitoring: boolean;
+}
+
+export interface NewFileKindInfo {
+  id: string;
+  name: string;
+  extension: string | null;
+  category: string;
+  page: number;
+  available: boolean;
+  disabledReason: string | null;
+}
+
+export interface UserTemplateInfo {
+  id: string;
+  name: string;
+  group: string | null;
+  extension: string | null;
+  sourcePath: string;
+}
+
+export interface ClipboardStatusInfo {
+  available: boolean;
+  kind: string;
+  extension: string;
+  types?: string[];
+}
+
+export interface NewFileKindsResponse {
+  kinds: NewFileKindInfo[];
+  templates: UserTemplateInfo[];
+  clipboard?: ClipboardStatusInfo;
+}
+
+export interface CreateNewResult {
+  path: string;
+  kindId: string;
+  revealed: boolean;
+  renameTriggered: boolean;
+  fallbackUsed: boolean;
+}
+
+export interface InspectFilesResult {
+  files: string[];
+  compatibleFormats: string[];
+  batchActions: string[];
+  availabilityMessage: string;
+  family?: FormatFamily | null;
+}
+
+export interface ThumbnailResult {
+  ok: boolean;
+  pngBase64: string | null;
+  width: number | null;
+  height: number | null;
+  error: string | null;
+}
+
+export interface WheelStatePayload {
+  mode: WheelMode;
+  files: string[];
+  isDrag: boolean;
+  targetFolder: string;
+  compatibleFormats: string[];
+  batchActions: string[];
+  originX: number;
+  originY: number;
+  availabilityMessage?: string;
+  family?: FormatFamily | null;
+}
+
+export interface WheelDragFilesPayload {
+  files: string[];
+}
+
+export interface WheelPointerMovePayload {
+  localX: number;
+  localY: number;
+}
+
+export interface WheelPointerReleasePayload {
+  button: number;
+  localX: number;
+  localY: number;
+}
+
+export interface ConversionProgressPayload {
+  percent: number;
+  label: string;
+}
+
+export interface ConversionCompletePayload {
+  success: boolean;
+  results: ConversionResult[];
+  error: string | null;
+}
