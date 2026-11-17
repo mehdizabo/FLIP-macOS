@@ -111,9 +111,46 @@ enum MediaAndDocs {
     }
 
     // MARK: - PDFKit + Vision OCR
+    private static func renderPageToCGImage(_ page: PDFPage, dpi: CGFloat) throws -> CGImage {
+        let scale = dpi / 72.0
+        let mediaBox = page.bounds(for: .mediaBox)
+        let transform = page.transform(for: .mediaBox)
+        let displayBox = mediaBox.applying(transform)
+
+        let width = max(1, Int((displayBox.width * scale).rounded()))
+        let height = max(1, Int((displayBox.height * scale).rounded()))
+
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            throw BridgeError.operationFailed("Failed to allocate PDF page render context")
+        }
+
+        ctx.setFillColor(CGColor.white)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        ctx.scaleBy(x: scale, y: scale)
+        ctx.translateBy(x: -displayBox.origin.x, y: -displayBox.origin.y)
+        page.draw(with: .mediaBox, to: ctx)
+
+        guard let cgImage = ctx.makeImage() else {
+            throw BridgeError.operationFailed("Failed to render PDF page to image")
+        }
+        return cgImage
+    }
+
     static func renderPDFPages(pdfPath: String, outDir: String, format: String, dpi: CGFloat = 144.0) throws -> [String: Any] {
         guard let doc = PDFDocument(url: URL(fileURLWithPath: pdfPath)) else {
             throw BridgeError.operationFailed("Failed to open PDF: \(pdfPath)")
+        }
+        if doc.isLocked {
+            throw BridgeError.operationFailed("PDF is password-protected or encrypted")
         }
         let pageCount = doc.pageCount
         guard pageCount > 0 else {
@@ -139,35 +176,10 @@ enum MediaAndDocs {
 
         try FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
         var outputs: [String] = []
-        let scale = dpi / 72.0
 
         for idx in 0..<pageCount {
             guard let page = doc.page(at: idx) else { continue }
-            let box = page.bounds(for: .mediaBox)
-            let width = max(1, Int((box.width * scale).rounded()))
-            let height = max(1, Int((box.height * scale).rounded()))
-
-            guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
-                  let ctx = CGContext(
-                    data: nil,
-                    width: width,
-                    height: height,
-                    bitsPerComponent: 8,
-                    bytesPerRow: 0,
-                    space: colorSpace,
-                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-                  ) else {
-                throw BridgeError.operationFailed("Failed to allocate render context for page \(idx + 1)")
-            }
-
-            ctx.setFillColor(CGColor.white)
-            ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
-            ctx.scaleBy(x: scale, y: scale)
-            page.draw(with: .mediaBox, to: ctx)
-
-            guard let cgImage = ctx.makeImage() else {
-                throw BridgeError.operationFailed("Failed to render page \(idx + 1)")
-            }
+            let cgImage = try renderPageToCGImage(page, dpi: dpi)
 
             let outPath = (outDir as NSString).appendingPathComponent(String(format: "page-%03d.%@", idx + 1, ext))
             let outURL = URL(fileURLWithPath: outPath)
@@ -191,6 +203,9 @@ enum MediaAndDocs {
         guard let doc = PDFDocument(url: URL(fileURLWithPath: pdfPath)) else {
             throw BridgeError.operationFailed("Failed to open PDF: \(pdfPath)")
         }
+        if doc.isLocked {
+            throw BridgeError.operationFailed("PDF is password-protected or encrypted")
+        }
         let pageCount = doc.pageCount
         if pageCount > 200 {
             throw BridgeError.operationFailed("PDF exceeds 200-page safety limit")
@@ -205,23 +220,12 @@ enum MediaAndDocs {
             if !raw.isEmpty {
                 parts.append(raw)
             } else {
-                // Scanned page -> Vision OCR fallback
-                let box = page.bounds(for: .mediaBox)
-                let scale: CGFloat = 200.0 / 72.0
-                let w = max(1, Int((box.width * scale).rounded()))
-                let h = max(1, Int((box.height * scale).rounded()))
-                if let cs = CGColorSpace(name: CGColorSpace.sRGB),
-                   let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) {
-                    ctx.setFillColor(CGColor.white)
-                    ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-                    ctx.scaleBy(x: scale, y: scale)
-                    page.draw(with: .mediaBox, to: ctx)
-                    if let cgImg = ctx.makeImage() {
-                        let ocr = try recognizeText(cgImage: cgImg)
-                        if !ocr.isEmpty {
-                            parts.append(ocr)
-                            ocrPages += 1
-                        }
+                // Scanned page -> Vision OCR fallback (with full rotation & MediaBox origin handling)
+                if let cgImg = try? renderPageToCGImage(page, dpi: 200.0) {
+                    let ocr = try recognizeText(cgImage: cgImg)
+                    if !ocr.isEmpty {
+                        parts.append(ocr)
+                        ocrPages += 1
                     }
                 }
             }
@@ -283,6 +287,19 @@ enum MediaAndDocs {
             if inExt == "txt" || inExt == "md" || inExt == "markdown" {
                 docOpts[.documentType] = NSAttributedString.DocumentType.plain
                 docOpts[.characterEncoding] = String.Encoding.utf8.rawValue
+            } else if inExt == "html" || inExt == "htm" {
+                docOpts[.documentType] = NSAttributedString.DocumentType.html
+                if let rawData = try? Data(contentsOf: inURL),
+                   let utf8Str = String(data: rawData, encoding: .utf8) {
+                    let lower = utf8Str.lowercased()
+                    let hasNonUtf8Meta = lower.contains("charset=")
+                        && !lower.contains("charset=utf-8")
+                        && !lower.contains("charset=\"utf-8\"")
+                        && !lower.contains("charset='utf-8'")
+                    if !hasNonUtf8Meta {
+                        docOpts[.characterEncoding] = String.Encoding.utf8.rawValue
+                    }
+                }
             }
             attrString = try NSAttributedString(url: inURL, options: docOpts, documentAttributes: nil)
         } catch {
@@ -424,8 +441,12 @@ enum MediaAndDocs {
 
         let bundleId = "com.apple.iWork.\(appName)"
         if NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) != nil {
-            let escapedIn = inputPath.replacingOccurrences(of: "\"", with: "\\\"")
-            let escapedOut = outputPath.replacingOccurrences(of: "\"", with: "\\\"")
+            let escapedIn = inputPath
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            let escapedOut = outputPath
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
             let script = """
             tell application "\(appName)"
                 set doc to open POSIX file "\(escapedIn)"
@@ -462,6 +483,40 @@ enum MediaAndDocs {
         }
 
         throw BridgeError.operationFailed("\(appName) is not installed or failed to export \(inExt) to \(format)")
+    }
+
+    static func createIWorkDocument(kind: String, outputPath: String) throws -> [String: Any] {
+        let appName: String
+        switch kind.lowercased() {
+        case "pages": appName = "Pages"
+        case "numbers": appName = "Numbers"
+        case "key", "keynote": appName = "Keynote"
+        default: throw BridgeError.invalidArguments("Unknown iWork kind: \(kind)")
+        }
+
+        let bundleId = "com.apple.iWork.\(appName)"
+        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) != nil else {
+            throw BridgeError.operationFailed("\(appName).app is not installed")
+        }
+
+        let escapedOut = outputPath
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "\(appName)"
+            set newDoc to make new document
+            save newDoc in POSIX file "\(escapedOut)"
+            close newDoc saving no
+        end tell
+        """
+        let (_, err) = FinderBridge.runAppleScript(script)
+        if let err = err {
+            throw BridgeError.operationFailed("\(appName) failed to create document: \(err)")
+        }
+        guard FileManager.default.fileExists(atPath: outputPath) else {
+            throw BridgeError.operationFailed("\(appName) did not produce output at \(outputPath)")
+        }
+        return ["ok": true, "engine": appName, "output": outputPath]
     }
 
     // MARK: - Image conversion via ImageIO (HEIC, AVIF, ICNS, PNG, JPG, TIFF, BMP, GIF)
@@ -519,7 +574,14 @@ enum MediaAndDocs {
         return ctx.makeImage()
     }
 
-    static func convertImage(inputPath: String, format: String, outputPath: String, quality: Double = 0.92) throws -> [String: Any] {
+    static func convertImage(
+        inputPath: String,
+        format: String,
+        outputPath: String,
+        quality: Double = 0.92,
+        preserveExif: Bool = true,
+        stripGps: Bool = false
+    ) throws -> [String: Any] {
         let inURL = URL(fileURLWithPath: inputPath)
         guard let src = CGImageSourceCreateWithURL(inURL as CFURL, nil),
               let rawImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
@@ -547,8 +609,9 @@ enum MediaAndDocs {
         }
 
         let flattenAlpha = (fmtUpper == "JPG" || fmtUpper == "JPEG" || fmtUpper == "BMP")
+        let nonRgbSpace = rawImage.colorSpace?.model != .rgb
         var finalImage: CGImage
-        if orientation != 1 || flattenAlpha {
+        if orientation != 1 || flattenAlpha || nonRgbSpace {
             finalImage = normalizeOrientedImage(rawImage, orientation: orientation, flattenAlpha: flattenAlpha) ?? rawImage
         } else {
             finalImage = rawImage
@@ -591,9 +654,32 @@ enum MediaAndDocs {
         guard let dest = CGImageDestinationCreateWithURL(outURL as CFURL, utType.identifier as CFString, 1, nil) else {
             throw BridgeError.operationFailed("Failed to create ImageIO destination for \(fmtUpper)")
         }
-        var props: [CFString: Any] = [
-            kCGImagePropertyOrientation: 1
-        ]
+
+        var props: [CFString: Any] = [:]
+        if preserveExif, let srcProps = srcProps {
+            let metadataKeys: [CFString] = [
+                kCGImagePropertyExifDictionary,
+                kCGImagePropertyExifAuxDictionary,
+                kCGImagePropertyTIFFDictionary,
+                kCGImagePropertyIPTCDictionary,
+                kCGImagePropertyGPSDictionary,
+            ]
+            for key in metadataKeys {
+                if key == kCGImagePropertyGPSDictionary && stripGps {
+                    continue
+                }
+                if let dict = srcProps[key] {
+                    if key == kCGImagePropertyTIFFDictionary, var tiffDict = dict as? [CFString: Any] {
+                        tiffDict[kCGImagePropertyTIFFOrientation] = 1
+                        props[key] = tiffDict
+                    } else {
+                        props[key] = dict
+                    }
+                }
+            }
+        }
+
+        props[kCGImagePropertyOrientation] = 1
         if fmtUpper == "JPG" || fmtUpper == "JPEG" || fmtUpper == "HEIC" {
             props[kCGImageDestinationLossyCompressionQuality] = quality
         }
@@ -605,10 +691,87 @@ enum MediaAndDocs {
     }
 
     // MARK: - AVFoundation Native Media Export
+    private static func convertVideoToGIF(inURL: URL, outURL: URL) throws -> [String: Any] {
+        let asset = AVURLAsset(url: inURL)
+        let sem = DispatchSemaphore(value: 0)
+        var gifError: Error?
+        var totalFramesWritten = 0
+
+        Task {
+            do {
+                let durationCM = try await asset.load(.duration)
+                let durationSecs = max(0.2, min(15.0, CMTimeGetSeconds(durationCM)))
+                let fps = 12.0
+                let frameCount = max(1, min(180, Int((durationSecs * fps).rounded())))
+                let frameDelay = 1.0 / fps
+
+                let generator = AVAssetImageGenerator(asset: asset)
+                generator.appliesPreferredTrackTransform = true
+                generator.maximumSize = CGSize(width: 480, height: 480)
+                generator.requestedTimeToleranceBefore = CMTime(seconds: 0.05, preferredTimescale: 600)
+                generator.requestedTimeToleranceAfter = CMTime(seconds: 0.05, preferredTimescale: 600)
+
+                var frames: [CGImage] = []
+                frames.reserveCapacity(frameCount)
+                for idx in 0..<frameCount {
+                    let t = CMTime(seconds: Double(idx) * frameDelay, preferredTimescale: 600)
+                    if let result = try? await generator.image(at: t) {
+                        frames.append(result.image)
+                    }
+                }
+                guard !frames.isEmpty else {
+                    throw BridgeError.operationFailed("Video produced zero frames for animated GIF export")
+                }
+
+                guard let dest = CGImageDestinationCreateWithURL(
+                    outURL as CFURL,
+                    UTType.gif.identifier as CFString,
+                    frames.count,
+                    nil
+                ) else {
+                    throw BridgeError.operationFailed("Failed to create animated GIF destination")
+                }
+
+                let fileProps: [CFString: Any] = [
+                    kCGImagePropertyGIFDictionary: [
+                        kCGImagePropertyGIFLoopCount: 0
+                    ]
+                ]
+                CGImageDestinationSetProperties(dest, fileProps as CFDictionary)
+
+                let frameProps: [CFString: Any] = [
+                    kCGImagePropertyGIFDictionary: [
+                        kCGImagePropertyGIFDelayTime: frameDelay
+                    ]
+                ]
+                for img in frames {
+                    CGImageDestinationAddImage(dest, img, frameProps as CFDictionary)
+                }
+                guard CGImageDestinationFinalize(dest) else {
+                    throw BridgeError.operationFailed("Failed to finalize animated GIF")
+                }
+                totalFramesWritten = frames.count
+            } catch {
+                gifError = error
+            }
+            sem.signal()
+        }
+        sem.wait()
+
+        if let err = gifError {
+            throw BridgeError.operationFailed(err.localizedDescription)
+        }
+        return ["ok": true, "output": outURL.path, "frames": totalFramesWritten]
+    }
+
     static func convertAV(inputPath: String, format: String, outputPath: String) throws -> [String: Any] {
         let inURL = URL(fileURLWithPath: inputPath)
         let outURL = URL(fileURLWithPath: outputPath)
         let fmtUpper = format.uppercased()
+
+        if fmtUpper == "GIF" {
+            return try convertVideoToGIF(inURL: inURL, outURL: outURL)
+        }
 
         let preset: String
         let fileType: AVFileType

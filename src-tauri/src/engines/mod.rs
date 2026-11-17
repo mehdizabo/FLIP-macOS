@@ -163,6 +163,7 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
     let fmt = format.trim().to_ascii_uppercase();
     match fmt.as_str() {
         "PDF" => {
+            use std::io::{Seek, SeekFrom};
             let mut f = File::open(path)?;
             let mut hdr = [0u8; 5];
             let n = f.read(&mut hdr)?;
@@ -170,6 +171,16 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
                 return Err(EngineError::ValidationFailed(
                     path.display().to_string(),
                     "Missing %PDF- header".to_string(),
+                ));
+            }
+            let tail_len = meta.len().min(2048);
+            f.seek(SeekFrom::End(-(tail_len as i64)))?;
+            let mut tail = vec![0u8; tail_len as usize];
+            f.read_exact(&mut tail)?;
+            if !tail.windows(5).any(|w| w == b"%%EOF") {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Truncated PDF missing %%EOF trailer".to_string(),
                 ));
             }
         }
@@ -181,15 +192,92 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
                 ));
             }
         }
-        "HEIC" => {
-            // Verify non-empty ISOBMFF ftyp box
+        "ICNS" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 4];
+            if f.read(&mut hdr)? < 4 || &hdr != b"icns" {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid ICNS header".to_string(),
+                ));
+            }
+        }
+        "HEIC" | "MP4" | "MOV" | "M4V" | "M4A" | "ALAC" => {
             let mut f = File::open(path)?;
             let mut hdr = [0u8; 12];
             let n = f.read(&mut hdr)?;
-            if n < 12 || &hdr[4..8] != b"ftyp" {
+            let valid_box = n >= 8
+                && matches!(
+                    &hdr[4..8],
+                    b"ftyp" | b"moov" | b"mdat" | b"wide" | b"free" | b"skip"
+                );
+            if !valid_box {
                 return Err(EngineError::ValidationFailed(
                     path.display().to_string(),
-                    "Invalid HEIC container header".to_string(),
+                    format!("Invalid {fmt} ISO-BMFF container header"),
+                ));
+            }
+        }
+        "WAV" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 12];
+            let n = f.read(&mut hdr)?;
+            if n < 12 || &hdr[0..4] != b"RIFF" || &hdr[8..12] != b"WAVE" {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid RIFF WAVE header".to_string(),
+                ));
+            }
+        }
+        "AIFF" | "AIF" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 12];
+            let n = f.read(&mut hdr)?;
+            if n < 12 || &hdr[0..4] != b"FORM" || (&hdr[8..12] != b"AIFF" && &hdr[8..12] != b"AIFC") {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid AIFF header".to_string(),
+                ));
+            }
+        }
+        "FLAC" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 4];
+            if f.read(&mut hdr)? < 4 || &hdr != b"fLaC" {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid FLAC header".to_string(),
+                ));
+            }
+        }
+        "OGG" | "OPUS" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 4];
+            if f.read(&mut hdr)? < 4 || &hdr != b"OggS" {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid Ogg container header".to_string(),
+                ));
+            }
+        }
+        "AVI" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 12];
+            let n = f.read(&mut hdr)?;
+            if n < 12 || &hdr[0..4] != b"RIFF" || &hdr[8..12] != b"AVI " {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid RIFF AVI header".to_string(),
+                ));
+            }
+        }
+        "MKV" | "WEBM" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 4];
+            if f.read(&mut hdr)? < 4 || hdr != [0x1A, 0x45, 0xDF, 0xA3] {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid Matroska/WebM EBML header".to_string(),
                 ));
             }
         }
@@ -239,17 +327,6 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
                     }
                 }
                 buf.clear();
-            }
-        }
-        "WAV" => {
-            let mut f = File::open(path)?;
-            let mut hdr = [0u8; 12];
-            let n = f.read(&mut hdr)?;
-            if n < 12 || &hdr[0..4] != b"RIFF" || &hdr[8..12] != b"WAVE" {
-                return Err(EngineError::ValidationFailed(
-                    path.display().to_string(),
-                    "Invalid RIFF WAVE header".to_string(),
-                ));
             }
         }
         _ => {}
@@ -485,7 +562,16 @@ fn convert_single_unit(
     let staged_outputs: Vec<PathBuf> = if IMAGE_EXTS.contains(&ext.as_str()) {
         unit_progress(35);
         let out = staging.staged_path(&format!("output.{}", format_extension(format)));
-        image::convert(source, format, &out, staging.dir(), prefs.image_quality, cancel)?;
+        image::convert(
+            source,
+            format,
+            &out,
+            staging.dir(),
+            prefs.image_quality,
+            prefs.preserve_exif,
+            prefs.strip_gps_exif,
+            cancel,
+        )?;
         vec![out]
     } else if crate::core::policy::DATA_EXTS.contains(&ext.as_str()) {
         unit_progress(40);
@@ -517,7 +603,9 @@ fn convert_single_unit(
     }
 
     let is_multipage = staged_outputs.len() > 1
-        || ((ext == "pdf" || crate::core::policy::DOC_NATIVE_EXTS.contains(&ext.as_str()))
+        || ((ext == "pdf"
+            || crate::core::policy::DOC_NATIVE_EXTS.contains(&ext.as_str())
+            || crate::core::policy::DOC_PANDOC_ONLY_EXTS.contains(&ext.as_str()))
             && matches!(format, "PNG" | "JPG" | "WEBP" | "HEIC" | "TIFF"));
 
     let committed = staging.commit_all(&staged_outputs, source, format, is_multipage)?;

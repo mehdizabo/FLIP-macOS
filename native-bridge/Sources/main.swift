@@ -17,8 +17,9 @@ func printUsage() {
       convert-pdf from-images <out-pdf> <img1> [<img2>...]
       convert-pdf merge <out-pdf> <pdf1> <pdf2>...
       convert-doc <input> <format> <output> [--page-size a4|letter]
-      convert-image <input> <format> <output> [quality]
+      convert-image <input> <format> <output> [quality] [preserve-exif:true|false] [strip-gps:true|false]
       convert-av <input> <format> <output>
+      create-iwork <pages|numbers|key> <output>
       feedback <tick|alignment|level|generic|error> [wav-path]
     """
     print(usage)
@@ -136,10 +137,27 @@ func runCLI() {
         }
 
     case "convert-image":
-        guard args.count >= 4 else { failExit("convert-image <input> <format> <output> [quality]") }
+        guard args.count >= 4 else { failExit("convert-image <input> <format> <output> [quality] [preserve-exif] [strip-gps]") }
         let quality = args.count >= 5 ? (Double(args[4]) ?? 0.92) : 0.92
+        let preserveExif = args.count >= 6 ? (args[5].lowercased() != "false" && args[5] != "0") : true
+        let stripGps = args.count >= 7 ? (args[6].lowercased() == "true" || args[6] == "1") : false
         do {
-            writeJSON(try MediaAndDocs.convertImage(inputPath: args[1], format: args[2], outputPath: args[3], quality: quality))
+            writeJSON(try MediaAndDocs.convertImage(
+                inputPath: args[1],
+                format: args[2],
+                outputPath: args[3],
+                quality: quality,
+                preserveExif: preserveExif,
+                stripGps: stripGps
+            ))
+        } catch {
+            failExit(error.localizedDescription)
+        }
+
+    case "create-iwork":
+        guard args.count >= 3 else { failExit("create-iwork <pages|numbers|key> <output>") }
+        do {
+            writeJSON(try MediaAndDocs.createIWorkDocument(kind: args[1], outputPath: args[2]))
         } catch {
             failExit(error.localizedDescription)
         }

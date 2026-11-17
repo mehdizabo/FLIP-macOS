@@ -69,8 +69,11 @@ final class MonitorController {
     func configure(dragKey: String?, idleShortcutSpec: String?, mouseButton: Int?, wavPath: String?, isWheelOpen: Bool?) {
         if let dk = dragKey {
             let low = dk.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if ["option", "alt", "control", "ctrl", "shift", "command", "cmd", "fn"].contains(low) && low != "fn" {
-                dragModifierOnly = low
+            if ["option", "alt", "control", "ctrl", "shift", "command", "cmd", "fn", "function", "globe"].contains(low) {
+                dragModifierOnly = (low == "function" || low == "globe") ? "fn" : low
+                if dragModifierOnly == "fn" {
+                    dragKeyCode = 63
+                }
             } else {
                 dragModifierOnly = nil
                 if let kc = keyCodeForName(dk) {
@@ -205,7 +208,7 @@ final class MonitorController {
         if count != lastChangeCount {
             lastChangeCount = count
             let files = readDragFileURLs()
-            if !files.isEmpty && (leftDown || !forceEndIfUp) {
+            if !files.isEmpty && leftDown && !forceEndIfUp {
                 let changed = !dragActive || files != dragFiles
                 dragActive = true
                 dragFiles = files
@@ -229,7 +232,7 @@ final class MonitorController {
                     }
                 }
             }
-        } else if !dragActive && leftDown {
+        } else if !dragActive && leftDown && !forceEndIfUp {
             // In case drag began before monitor attached or changeCount wasn't observed
             let files = readDragFileURLs()
             if !files.isEmpty {
@@ -243,6 +246,15 @@ final class MonitorController {
                     "y": pos.y,
                     "screen": pos.screen.toDict()
                 ])
+                if dragKeyHeld {
+                    writeJSON([
+                        "event": "trigger_drag_wheel",
+                        "files": files,
+                        "x": pos.x,
+                        "y": pos.y,
+                        "screen": pos.screen.toDict()
+                    ])
+                }
             }
         }
 
@@ -370,7 +382,7 @@ final class MonitorController {
                         return nil
                     }
                     dragKeyConsumed = false
-                } else if dragKeyConsumed || dragActive {
+                } else if dragKeyConsumed {
                     return nil
                 }
             } else if type == .keyUp {
@@ -464,6 +476,23 @@ final class MonitorController {
             } else if event.type == .keyUp {
                 dragKeyHeld = false
             }
+        } else if event.type == .flagsChanged, let mod = dragModifierOnly {
+            let pressed = modifierActive(mod, nsFlags: event.modifierFlags)
+            if pressed && !dragKeyHeld {
+                dragKeyHeld = true
+                if dragActive {
+                    let pos = currentCursorAndScreen()
+                    writeJSON([
+                        "event": "trigger_drag_wheel",
+                        "files": dragFiles,
+                        "x": pos.x,
+                        "y": pos.y,
+                        "screen": pos.screen.toDict()
+                    ])
+                }
+            } else if !pressed {
+                dragKeyHeld = false
+            }
         }
     }
 
@@ -474,6 +503,17 @@ final class MonitorController {
         case "shift": return flags.contains(.maskShift)
         case "command", "cmd": return flags.contains(.maskCommand)
         case "fn": return flags.contains(.maskSecondaryFn)
+        default: return false
+        }
+    }
+
+    private func modifierActive(_ mod: String, nsFlags: NSEvent.ModifierFlags) -> Bool {
+        switch mod {
+        case "option", "alt": return nsFlags.contains(.option)
+        case "control", "ctrl": return nsFlags.contains(.control)
+        case "shift": return nsFlags.contains(.shift)
+        case "command", "cmd": return nsFlags.contains(.command)
+        case "fn": return nsFlags.contains(.function)
         default: return false
         }
     }

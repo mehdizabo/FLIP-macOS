@@ -24,6 +24,30 @@ pub struct JobStaging {
     cleaned: bool,
 }
 
+#[cfg(target_os = "macos")]
+fn rename_excl(src: &Path, dst: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    const RENAME_EXCL: libc::c_uint = 0x0000_0004;
+    extern "C" {
+        fn renamex_np(
+            from: *const libc::c_char,
+            to: *const libc::c_char,
+            flags: libc::c_uint,
+        ) -> libc::c_int;
+    }
+    let src_c = CString::new(src.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let dst_c = CString::new(dst.as_os_str().as_bytes())
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let rc = unsafe { renamex_np(src_c.as_ptr(), dst_c.as_ptr(), RENAME_EXCL) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
 impl JobStaging {
     pub fn create(parent_dir: &Path) -> Result<Self, StagingError> {
         let job_name = format!(".flip-job-{}", Uuid::new_v4().simple());
@@ -65,6 +89,17 @@ impl JobStaging {
 
         for counter in 1..=crate::core::naming::MAX_COLLISION_ATTEMPTS {
             let dest = candidate_conversion_path(&self.parent, &stem, page_suffix, format, counter);
+            #[cfg(target_os = "macos")]
+            {
+                match rename_excl(staged, &dest) {
+                    Ok(()) => return Ok(dest),
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(e) if e.raw_os_error() == Some(libc::ENOTSUP) => {
+                        // Fall through to link/create_new for exotic filesystems that reject RENAME_EXCL
+                    }
+                    Err(e) => return Err(StagingError::Io(e)),
+                }
+            }
             if staged_meta.is_dir() {
                 if fs::symlink_metadata(&dest).is_err() {
                     match fs::rename(staged, &dest) {
@@ -80,6 +115,19 @@ impl JobStaging {
                         return Ok(dest);
                     }
                     Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(e) if e.raw_os_error() == Some(libc::ENOTSUP) => {
+                        match fs::OpenOptions::new().create_new(true).write(true).open(&dest) {
+                            Ok(mut out_f) => {
+                                let mut in_f = fs::File::open(staged)?;
+                                io::copy(&mut in_f, &mut out_f)?;
+                                out_f.sync_all()?;
+                                let _ = fs::remove_file(staged);
+                                return Ok(dest);
+                            }
+                            Err(ce) if ce.kind() == io::ErrorKind::AlreadyExists => continue,
+                            Err(ce) => return Err(StagingError::Io(ce)),
+                        }
+                    }
                     Err(e) => return Err(StagingError::Io(e)),
                 }
             }

@@ -40,7 +40,7 @@ fn normalize_to_png(
     cancel: &Arc<AtomicBool>,
 ) -> Result<PathBuf, EngineError> {
     let tmp_png = staging_dir.join(format!("norm-{}.png", Uuid::new_v4().simple()));
-    if bridge::convert_image(source, "PNG", &tmp_png, 1.0, Some(cancel)).is_ok() {
+    if bridge::convert_image(source, "PNG", &tmp_png, 1.0, false, true, Some(cancel)).is_ok() {
         return Ok(tmp_png);
     }
     ensure_png_via_rust_image(source, staging_dir)
@@ -52,6 +52,8 @@ pub fn convert(
     output: &Path,
     staging_dir: &Path,
     quality_pct: u8,
+    preserve_exif: bool,
+    strip_gps_exif: bool,
     cancel: &Arc<AtomicBool>,
 ) -> Result<(), EngineError> {
     let fmt = format.trim().to_ascii_uppercase();
@@ -87,12 +89,28 @@ pub fn convert(
     }
 
     let quality_01 = (quality_pct.clamp(10, 100) as f64) / 100.0;
-    match bridge::convert_image(source, &fmt, output, quality_01, Some(cancel)) {
+    match bridge::convert_image(
+        source,
+        &fmt,
+        output,
+        quality_01,
+        preserve_exif,
+        strip_gps_exif,
+        Some(cancel),
+    ) {
         Ok(_) => Ok(()),
         Err(first_err) => {
             // Fallback for formats ImageIO may not decode (e.g. .ico or exotic .webp)
             if let Ok(png_fallback) = ensure_png_via_rust_image(source, staging_dir) {
-                bridge::convert_image(&png_fallback, &fmt, output, quality_01, Some(cancel))?;
+                bridge::convert_image(
+                    &png_fallback,
+                    &fmt,
+                    output,
+                    quality_01,
+                    preserve_exif,
+                    strip_gps_exif,
+                    Some(cancel),
+                )?;
                 Ok(())
             } else {
                 Err(EngineError::Bridge(first_err))

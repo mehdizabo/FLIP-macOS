@@ -276,6 +276,8 @@ pub fn convert_image(
     format: &str,
     output: &Path,
     quality_01: f64,
+    preserve_exif: bool,
+    strip_gps: bool,
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<Value, BridgeError> {
     let args = vec![
@@ -284,8 +286,19 @@ pub fn convert_image(
         format.to_string(),
         output.to_string_lossy().into_owned(),
         format!("{quality_01:.3}"),
+        if preserve_exif { "true" } else { "false" }.to_string(),
+        if strip_gps { "true" } else { "false" }.to_string(),
     ];
     run_bridge_json(&args, 60, cancel)
+}
+
+pub fn create_iwork(kind: &str, output: &Path) -> Result<Value, BridgeError> {
+    let args = vec![
+        "create-iwork".to_string(),
+        kind.to_string(),
+        output.to_string_lossy().into_owned(),
+    ];
+    run_bridge_json(&args, 30, None)
 }
 
 pub fn convert_pdf_render(

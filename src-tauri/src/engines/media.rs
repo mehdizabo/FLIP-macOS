@@ -30,7 +30,12 @@ pub fn convert(
                 "FFmpeg is required for .{ext} files. Install via `brew install ffmpeg`."
             )));
         }
-        if matches!(fmt.as_str(), "M4A" | "MP4" | "MOV" | "M4V") {
+        if matches!(fmt.as_str(), "M4A" | "MP4" | "MOV" | "M4V" | "GIF") {
+            if fmt == "GIF" && !matches!(ext.as_str(), "mp4" | "mov" | "m4v") {
+                return Err(EngineError::Unsupported(format!(
+                    "Cannot convert audio .{ext} to animated GIF"
+                )));
+            }
             unit_progress(30);
             bridge::convert_av(source, &fmt, output, Some(cancel))?;
             unit_progress(100);
@@ -96,6 +101,8 @@ pub fn convert(
             "ipod".into(),
         ]),
         "MP4" => args.extend([
+            "-vf".into(),
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2".into(),
             "-c:v".into(),
             "libx264".into(),
             "-preset".into(),
@@ -112,6 +119,8 @@ pub fn convert(
             "+faststart".into(),
         ]),
         "MOV" => args.extend([
+            "-vf".into(),
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2".into(),
             "-c:v".into(),
             "libx264".into(),
             "-preset".into(),
@@ -126,6 +135,8 @@ pub fn convert(
             "+faststart".into(),
         ]),
         "M4V" => args.extend([
+            "-vf".into(),
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2".into(),
             "-c:v".into(),
             "libx264".into(),
             "-preset".into(),
@@ -140,6 +151,8 @@ pub fn convert(
             "ipod".into(),
         ]),
         "MKV" => args.extend([
+            "-vf".into(),
+            "scale=trunc(iw/2)*2:trunc(ih/2)*2".into(),
             "-c:v".into(),
             "libx264".into(),
             "-preset".into(),
@@ -302,35 +315,35 @@ fn run_ffmpeg_with_progress(
         s
     });
 
-    let cancel_clone = Arc::clone(cancel);
-    if let Some(out) = stdout {
-        let reader = BufReader::new(out);
-        for line in reader.lines().map_while(Result::ok) {
-            if cancel_clone.load(Ordering::Relaxed) {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = err_handle.join();
-                return Err(EngineError::Cancelled);
-            }
-            if total_secs > 0.0 {
-                if let Some(us_str) = line.strip_prefix("out_time_us=") {
-                    if let Ok(us) = us_str.trim().parse::<f64>() {
-                        let pct = ((us / 1_000_000.0) / total_secs * 100.0)
-                            .round()
-                            .clamp(5.0, 98.0) as u8;
-                        unit_progress(pct);
+    let (tx, rx) = std::sync::mpsc::channel::<u8>();
+    let out_handle = std::thread::spawn(move || {
+        if let Some(out) = stdout {
+            let reader = BufReader::new(out);
+            for line in reader.lines().map_while(Result::ok) {
+                if total_secs > 0.0 {
+                    if let Some(us_str) = line.strip_prefix("out_time_us=") {
+                        if let Ok(us) = us_str.trim().parse::<f64>() {
+                            let pct = ((us / 1_000_000.0) / total_secs * 100.0)
+                                .round()
+                                .clamp(5.0, 98.0) as u8;
+                            let _ = tx.send(pct);
+                        }
                     }
                 }
             }
         }
-    }
+    });
 
     let start = Instant::now();
     let timeout = Duration::from_secs(600);
     let status = loop {
+        for pct in rx.try_iter() {
+            unit_progress(pct);
+        }
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = out_handle.join();
             let _ = err_handle.join();
             return Err(EngineError::Cancelled);
         }
@@ -340,6 +353,7 @@ fn run_ffmpeg_with_progress(
         if start.elapsed() >= timeout {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = out_handle.join();
             let _ = err_handle.join();
             return Err(EngineError::ConversionFailed(
                 "FFmpeg exceeded 10-minute safety timeout".to_string(),
@@ -348,6 +362,10 @@ fn run_ffmpeg_with_progress(
         std::thread::sleep(Duration::from_millis(25));
     };
 
+    let _ = out_handle.join();
+    for pct in rx.try_iter() {
+        unit_progress(pct);
+    }
     let err_out = err_handle.join().unwrap_or_default();
     if !status.success() {
         let tail: String = err_out.chars().rev().take(600).collect::<Vec<_>>().into_iter().rev().collect();

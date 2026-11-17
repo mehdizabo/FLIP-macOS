@@ -112,14 +112,158 @@ pub fn convert(
     Ok(())
 }
 
+fn strip_json_comments_and_trailing_commas(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut no_comments = String::with_capacity(raw.len());
+    let mut i = 0;
+    let mut in_string = false;
+    let mut escape = false;
+
+    while i < bytes.len() {
+        let ch = raw[i..].chars().next().unwrap();
+        let ch_len = ch.len_utf8();
+        if in_string {
+            no_comments.push(ch);
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            i += ch_len;
+            continue;
+        }
+        if ch == '"' {
+            in_string = true;
+            no_comments.push(ch);
+            i += ch_len;
+            continue;
+        }
+        if ch == '/' && i + 1 < bytes.len() {
+            if bytes[i + 1] == b'/' {
+                i += 2;
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+        }
+        no_comments.push(ch);
+        i += ch_len;
+    }
+
+    // Strip trailing commas before `}` or `]` outside strings
+    let mut out = String::with_capacity(no_comments.len());
+    let chars: Vec<char> = no_comments.chars().collect();
+    let mut idx = 0;
+    in_string = false;
+    escape = false;
+    while idx < chars.len() {
+        let c = chars[idx];
+        if in_string {
+            out.push(c);
+            if escape {
+                escape = false;
+            } else if c == '\\' {
+                escape = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            idx += 1;
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push(c);
+            idx += 1;
+            continue;
+        }
+        if c == ',' {
+            let mut look = idx + 1;
+            while look < chars.len() && chars[look].is_whitespace() {
+                look += 1;
+            }
+            if look < chars.len() && (chars[look] == '}' || chars[look] == ']') {
+                idx += 1;
+                continue;
+            }
+        }
+        out.push(c);
+        idx += 1;
+    }
+    out
+}
+
 fn parse_json(raw: &str) -> Result<Value, EngineError> {
-    serde_json::from_str(raw)
-        .map_err(|e| EngineError::ConversionFailed(format!("Invalid JSON: {e}")))
+    match serde_json::from_str(raw) {
+        Ok(val) => Ok(val),
+        Err(first_err) => {
+            let cleaned = strip_json_comments_and_trailing_commas(raw);
+            serde_json::from_str(&cleaned)
+                .map_err(|_| EngineError::ConversionFailed(format!("Invalid JSON: {first_err}")))
+        }
+    }
+}
+
+fn yaml_key_to_string(k: &serde_yaml::Value) -> String {
+    match k {
+        serde_yaml::Value::Null => "null".to_string(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        serde_yaml::Value::String(s) => s.clone(),
+        other => serde_yaml::to_string(other)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    }
+}
+
+fn yaml_to_json(val: serde_yaml::Value) -> Value {
+    match val {
+        serde_yaml::Value::Null => Value::Null,
+        serde_yaml::Value::Bool(b) => Value::Bool(b),
+        serde_yaml::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Number(Number::from(i))
+            } else if let Some(u) = n.as_u64() {
+                Value::Number(Number::from(u))
+            } else if let Some(f) = n.as_f64() {
+                Number::from_f64(f)
+                    .map(Value::Number)
+                    .unwrap_or_else(|| Value::String(n.to_string()))
+            } else {
+                Value::String(n.to_string())
+            }
+        }
+        serde_yaml::Value::String(s) => Value::String(s),
+        serde_yaml::Value::Sequence(seq) => {
+            Value::Array(seq.into_iter().map(yaml_to_json).collect())
+        }
+        serde_yaml::Value::Mapping(map) => {
+            let mut obj = Map::new();
+            for (k, v) in map {
+                obj.insert(yaml_key_to_string(&k), yaml_to_json(v));
+            }
+            Value::Object(obj)
+        }
+        serde_yaml::Value::Tagged(tagged) => yaml_to_json(tagged.value),
+    }
 }
 
 fn parse_yaml(raw: &str) -> Result<Value, EngineError> {
-    serde_yaml::from_str(raw)
-        .map_err(|e| EngineError::ConversionFailed(format!("Invalid YAML: {e}")))
+    let mut yaml_val: serde_yaml::Value = serde_yaml::from_str(raw)
+        .map_err(|e| EngineError::ConversionFailed(format!("Invalid YAML: {e}")))?;
+    let _ = yaml_val.apply_merge();
+    Ok(yaml_to_json(yaml_val))
 }
 
 fn parse_toml(raw: &str) -> Result<Value, EngineError> {
@@ -482,7 +626,17 @@ fn to_xml(root: &Value) -> Result<String, EngineError> {
         .write_event(Event::Decl(BytesDecl::new("1.0", Some("utf-8"), None)))
         .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
 
-    let root_start = BytesStart::new("root");
+    let mut root_start = BytesStart::new("root");
+    if let Value::Object(map) = root {
+        for (k, v) in map {
+            if let Some(attr_name) = k.strip_prefix('@') {
+                if let Some(s) = scalar_opt(v) {
+                    let attr_clean = sanitize_xml_name(attr_name);
+                    root_start.push_attribute((attr_clean.as_str(), s.as_str()));
+                }
+            }
+        }
+    }
     writer
         .write_event(Event::Start(root_start))
         .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
@@ -731,4 +885,35 @@ fn to_html(root: &Value, title: &str) -> Result<String, EngineError> {
     out.push_str(&html_escape(&pretty));
     out.push_str("</pre></body></html>");
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn yaml_non_string_keys_anchors_and_json_comments_trailing_commas() {
+        let yaml_raw = "1: one\ntrue: yes\nbase: &base\n  role: admin\nuser:\n  <<: *base\n  name: \"Ada\"\n";
+        let parsed = parse_yaml(yaml_raw).unwrap();
+        assert_eq!(parsed["1"], Value::String("one".into()));
+        assert_eq!(parsed["true"], Value::String("yes".into()));
+        assert_eq!(parsed["user"]["role"], Value::String("admin".into()));
+
+        let json_commented = "{\n  // comment\n  \"a\": 1, /* block */\n  \"b\": [1, 2,],\n}\n";
+        let parsed_j = parse_json(json_commented).unwrap();
+        assert_eq!(parsed_j["a"], Value::Number(Number::from(1)));
+        assert_eq!(parsed_j["b"].as_array().unwrap().len(), 2);
+
+        let dir = tempdir().unwrap();
+        let xml_src = dir.path().join("attr.xml");
+        let json_out = dir.path().join("attr.json");
+        let xml_back = dir.path().join("attr_back.xml");
+        let cancel = Arc::new(AtomicBool::new(false));
+        fs::write(&xml_src, r#"<root version="2.0"><item id="9">hello</item></root>"#).unwrap();
+        convert(&xml_src, "JSON", &json_out, dir.path(), "a4", &cancel).unwrap();
+        convert(&json_out, "XML", &xml_back, dir.path(), "a4", &cancel).unwrap();
+        let back_str = fs::read_to_string(&xml_back).unwrap();
+        assert!(back_str.contains(r#"version="2.0""#), "xml lost root attr: {back_str}");
+    }
 }

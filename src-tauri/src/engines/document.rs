@@ -52,84 +52,252 @@ pub fn markdown_to_html(title: &str, md: &str) -> String {
     )
 }
 
-pub fn html_to_markdown(html_input: &str) -> String {
-    // Lightweight structured HTML -> Markdown converter when Pandoc is unavailable
-    let mut text = html_input.to_string();
-    // Strip <head>...</head> and <style>...</style>
-    for tag in ["head", "style", "script"] {
-        let open_tag = format!("<{tag}");
-        let close_tag = format!("</{tag}>");
-        while let Some(start) = text.to_ascii_lowercase().find(&open_tag) {
-            if let Some(rel_end) = text[start..].to_ascii_lowercase().find(&close_tag) {
-                text.replace_range(start..start + rel_end + close_tag.len(), "");
-            } else {
-                break;
+fn decode_html_entities(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    let bytes = s.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'&' {
+            if let Some(semi_rel) = s[i..].find(';') {
+                if semi_rel <= 12 {
+                    let entity = &s[i + 1..i + semi_rel];
+                    let decoded = match entity {
+                        "nbsp" => Some(" ".to_string()),
+                        "amp" => Some("&".to_string()),
+                        "lt" => Some("<".to_string()),
+                        "gt" => Some(">".to_string()),
+                        "quot" => Some("\"".to_string()),
+                        "apos" | "#39" => Some("'".to_string()),
+                        _ if entity.starts_with("#x") || entity.starts_with("#X") => {
+                            u32::from_str_radix(&entity[2..], 16)
+                                .ok()
+                                .and_then(char::from_u32)
+                                .map(|c| c.to_string())
+                        }
+                        _ if entity.starts_with('#') => entity[1..]
+                            .parse::<u32>()
+                            .ok()
+                            .and_then(char::from_u32)
+                            .map(|c| c.to_string()),
+                        _ => None,
+                    };
+                    if let Some(ch_str) = decoded {
+                        out.push_str(&ch_str);
+                        i += semi_rel + 1;
+                        continue;
+                    }
+                }
             }
         }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
     }
+    out
+}
 
-    for (from, to) in [
-        ("<h1>", "\n# "),
-        ("</h1>", "\n\n"),
-        ("<h2>", "\n## "),
-        ("</h2>", "\n\n"),
-        ("<h3>", "\n### "),
-        ("</h3>", "\n\n"),
-        ("<h4>", "\n#### "),
-        ("</h4>", "\n\n"),
-        ("<li>", "\n- "),
-        ("</li>", ""),
-        ("<strong>", "**"),
-        ("</strong>", "**"),
-        ("<b>", "**"),
-        ("</b>", "**"),
-        ("<em>", "*"),
-        ("</em>", "*"),
-        ("<i>", "*"),
-        ("</i>", "*"),
-        ("<code>", "`"),
-        ("</code>", "`"),
-        ("<pre>", "\n```\n"),
-        ("</pre>", "\n```\n"),
-        ("<br>", "\n"),
-        ("<br/>", "\n"),
-        ("<br />", "\n"),
-        ("</p>", "\n\n"),
-        ("</tr>", "\n"),
-        ("</td>", " | "),
-        ("</th>", " | "),
-    ] {
-        text = text.replace(from, to);
-        text = text.replace(&from.to_ascii_uppercase(), to);
+fn extract_attr(tag_inner: &str, attr_name: &str) -> Option<String> {
+    let lower = tag_inner.to_ascii_lowercase();
+    let needle = format!("{attr_name}=");
+    let pos = lower.find(&needle)?;
+    let rest = tag_inner[pos + needle.len()..].trim_start();
+    if let Some(stripped) = rest.strip_prefix('"') {
+        stripped.split('"').next().map(String::from)
+    } else if let Some(stripped) = rest.strip_prefix('\'') {
+        stripped.split('\'').next().map(String::from)
+    } else {
+        rest.split_whitespace().next().map(String::from)
     }
+}
 
-    // Strip remaining tags
-    let mut stripped = String::with_capacity(text.len());
-    let mut in_tag = false;
-    for ch in text.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => stripped.push(ch),
-            _ => {}
+pub fn html_to_markdown(html_input: &str) -> String {
+    let mut out = String::with_capacity(html_input.len());
+    let mut skip_tag: Option<String> = None;
+    let mut in_pre = false;
+    let mut list_stack: Vec<(bool, usize)> = Vec::new(); // (is_ordered, count)
+    let mut link_hrefs: Vec<Option<String>> = Vec::new();
+    let mut table_row_cells: Vec<String> = Vec::new();
+    let mut in_table_row = false;
+    let mut table_has_header_sep = false;
+    let mut current_cell = String::new();
+    let mut in_cell = false;
+
+    let bytes = html_input.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            // Find end of tag respecting quotes
+            let mut j = i + 1;
+            let mut quote: Option<u8> = None;
+            while j < bytes.len() {
+                let b = bytes[j];
+                if let Some(q) = quote {
+                    if b == q {
+                        quote = None;
+                    }
+                } else if b == b'"' || b == b'\'' {
+                    quote = Some(b);
+                } else if b == b'>' {
+                    break;
+                }
+                j += 1;
+            }
+            if j >= bytes.len() {
+                out.push_str(&html_input[i..]);
+                break;
+            }
+
+            let raw_tag = html_input[i + 1..j].trim();
+            i = j + 1;
+
+            if raw_tag.starts_with("!--") || raw_tag.starts_with('!') || raw_tag.starts_with('?') {
+                continue;
+            }
+
+            let is_close = raw_tag.starts_with('/');
+            let inner = if is_close { raw_tag[1..].trim() } else { raw_tag };
+            let tag_name = inner
+                .split(|c: char| c.is_whitespace() || c == '/')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+
+            if let Some(ref skipping) = skip_tag {
+                if is_close && &tag_name == skipping {
+                    skip_tag = None;
+                }
+                continue;
+            }
+
+            if !is_close && matches!(tag_name.as_str(), "head" | "style" | "script") && !inner.ends_with('/') {
+                skip_tag = Some(tag_name);
+                continue;
+            }
+
+            let target = if in_cell { &mut current_cell } else { &mut out };
+
+            match (is_close, tag_name.as_str()) {
+                (false, "h1") => target.push_str("\n# "),
+                (false, "h2") => target.push_str("\n## "),
+                (false, "h3") => target.push_str("\n### "),
+                (false, "h4") => target.push_str("\n#### "),
+                (false, "h5") => target.push_str("\n##### "),
+                (false, "h6") => target.push_str("\n###### "),
+                (true, "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => target.push_str("\n\n"),
+                (false, "ul") => list_stack.push((false, 0)),
+                (false, "ol") => list_stack.push((true, 0)),
+                (true, "ul" | "ol") => {
+                    list_stack.pop();
+                    target.push('\n');
+                }
+                (false, "li") => {
+                    let indent = "  ".repeat(list_stack.len().saturating_sub(1));
+                    if let Some((true, count)) = list_stack.last_mut() {
+                        *count += 1;
+                        target.push_str(&format!("\n{indent}{count}. "));
+                    } else {
+                        target.push_str(&format!("\n{indent}- "));
+                    }
+                }
+                (true, "li") => {}
+                (false, "blockquote") => target.push_str("\n> "),
+                (true, "blockquote") => target.push_str("\n\n"),
+                (false, "strong" | "b") => target.push_str("**"),
+                (true, "strong" | "b") => target.push_str("**"),
+                (false, "em" | "i") => target.push('*'),
+                (true, "em" | "i") => target.push('*'),
+                (false, "pre") => {
+                    in_pre = true;
+                    target.push_str("\n```\n");
+                }
+                (true, "pre") => {
+                    in_pre = false;
+                    target.push_str("\n```\n\n");
+                }
+                (false, "code") if !in_pre => target.push('`'),
+                (true, "code") if !in_pre => target.push('`'),
+                (false, "a") => {
+                    let href = extract_attr(inner, "href");
+                    link_hrefs.push(href);
+                    target.push('[');
+                }
+                (true, "a") => {
+                    if let Some(Some(href)) = link_hrefs.pop() {
+                        target.push_str(&format!("]({href})"));
+                    } else {
+                        target.push(']');
+                    }
+                }
+                (false, "br") => target.push('\n'),
+                (false, "hr") => target.push_str("\n---\n"),
+                (true, "p" | "div") => target.push_str("\n\n"),
+                (false, "table") => {
+                    table_has_header_sep = false;
+                    target.push('\n');
+                }
+                (true, "table") => target.push('\n'),
+                (false, "tr") => {
+                    in_table_row = true;
+                    table_row_cells.clear();
+                }
+                (true, "tr") => {
+                    if in_table_row && !table_row_cells.is_empty() {
+                        out.push_str(&format!("| {} |\n", table_row_cells.join(" | ")));
+                        if !table_has_header_sep {
+                            let sep: Vec<&str> = table_row_cells.iter().map(|_| "---").collect();
+                            out.push_str(&format!("| {} |\n", sep.join(" | ")));
+                            table_has_header_sep = true;
+                        }
+                    }
+                    in_table_row = false;
+                    table_row_cells.clear();
+                }
+                (false, "td" | "th") => {
+                    in_cell = true;
+                    current_cell.clear();
+                }
+                (true, "td" | "th") => {
+                    in_cell = false;
+                    let cleaned = decode_html_entities(current_cell.trim())
+                        .replace('|', "\\|")
+                        .replace('\n', " ");
+                    table_row_cells.push(cleaned);
+                    current_cell.clear();
+                }
+                _ => {}
+            }
+            continue;
         }
+
+        let ch = html_input[i..].chars().next().unwrap();
+        if skip_tag.is_none() {
+            let target = if in_cell { &mut current_cell } else { &mut out };
+            if in_pre {
+                target.push(ch);
+            } else if ch == '\r' {
+                // skip CR
+            } else if ch == '\n' {
+                if !target.ends_with('\n') && !target.ends_with(' ') {
+                    target.push(' ');
+                }
+            } else {
+                target.push(ch);
+            }
+        }
+        i += ch.len_utf8();
     }
 
-    let decoded = stripped
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'");
-
-    let lines: Vec<String> = decoded
-        .lines()
-        .map(|l| l.trim_end().to_string())
-        .collect();
+    let decoded = decode_html_entities(&out);
     let mut collapsed = String::new();
     let mut blank_run = 0usize;
-    for line in lines {
+    for raw_line in decoded.lines() {
+        let mut line = raw_line.trim_end().to_string();
+        // Convert Cocoa HTML Writer bullet paragraphs (`\t•\tText` or `• Text`) into Markdown bullets
+        let trimmed_start = line.trim_start();
+        if let Some(after_bullet) = trimmed_start.strip_prefix('•') {
+            line = format!("- {}", after_bullet.trim_start());
+        }
         if line.trim().is_empty() {
             blank_run += 1;
             if blank_run <= 1 && !collapsed.is_empty() {
@@ -141,7 +309,12 @@ pub fn html_to_markdown(html_input: &str) -> String {
             collapsed.push('\n');
         }
     }
-    collapsed.trim().to_string() + "\n"
+    let result = collapsed.trim().to_string();
+    if result.is_empty() {
+        String::new()
+    } else {
+        format!("{result}\n")
+    }
 }
 
 pub fn convert_via_pandoc(
@@ -355,4 +528,33 @@ pub fn convert(
         Some(cancel),
     )?;
     Ok(vec![output])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn html_to_markdown_handles_attributes_cocoa_bullets_links_and_header() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head><title>Hidden Head</title><style>.p1{color:red}</style></head>
+<body>
+<header><h1 style="font-size:24px">Page Header</h1></header>
+<p class="p1">Intro with <a href="https://example.com">Link &amp; More</a> and <strong class="b">bold</strong>.</p>
+<ul class="list"><li class="li1">Alpha</li><li class="li1">Beta</li></ul>
+<p class="p2"><span class="Apple-tab-span">	</span>•<span class="Apple-tab-span">	</span>Cocoa Bullet</p>
+<table><tr><th>Name</th><th>City</th></tr><tr><td>Ada</td><td>Milano</td></tr></table>
+</body>
+</html>"#;
+        let md = html_to_markdown(html);
+        assert!(!md.contains("Hidden Head"));
+        assert!(!md.contains("color:red"));
+        assert!(md.contains("# Page Header"), "missing heading in:\n{md}");
+        assert!(md.contains("[Link & More](https://example.com)"), "missing link in:\n{md}");
+        assert!(md.contains("**bold**"), "missing bold in:\n{md}");
+        assert!(md.contains("- Alpha") && md.contains("- Beta"), "missing ul bullets in:\n{md}");
+        assert!(md.contains("- Cocoa Bullet"), "missing cocoa bullet in:\n{md}");
+        assert!(md.contains("| Name | City |") && md.contains("| Ada | Milano |"), "missing table in:\n{md}");
+    }
 }

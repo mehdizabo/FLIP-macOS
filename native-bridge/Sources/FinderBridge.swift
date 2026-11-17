@@ -141,10 +141,39 @@ enum FinderBridge {
         ]
     }
 
+    private static func clipboardHasTrueImage(_ pb: NSPasteboard, types: [String]) -> Bool {
+        // Finder file copies put `public.file-url` + a generic file icon TIFF on the pasteboard.
+        // Only treat clipboard as an image when explicit image pasteboard data exists or there is no file-url icon shadow.
+        let hasDirectImage = pb.data(forType: .png) != nil
+            || types.contains("public.heic")
+            || types.contains("public.jpeg")
+            || types.contains("com.apple.uikit.image")
+        if hasDirectImage {
+            return true
+        }
+        if types.contains("public.file-url") {
+            return false
+        }
+        return pb.data(forType: .tiff) != nil || NSImage(pasteboard: pb) != nil
+    }
+
+    private static func clipboardWebURL(_ pb: NSPasteboard) -> String? {
+        if let urlStr = pb.string(forType: .URL)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           urlStr.lowercased().hasPrefix("http://") || urlStr.lowercased().hasPrefix("https://") {
+            return urlStr
+        }
+        return nil
+    }
+
+    private static func weblocData(for urlString: String) -> Data? {
+        let plist: [String: Any] = ["URL": urlString]
+        return try? PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+    }
+
     static func inspectClipboard() -> [String: Any] {
         let pb = NSPasteboard.general
         let types = (pb.types ?? []).map { $0.rawValue }
-        if pb.data(forType: .png) != nil || pb.data(forType: .tiff) != nil || NSImage(pasteboard: pb) != nil {
+        if clipboardHasTrueImage(pb, types: types) {
             return ["available": true, "kind": "image", "extension": "png", "types": types]
         }
         if pb.data(forType: .pdf) != nil {
@@ -152,6 +181,12 @@ enum FinderBridge {
         }
         if pb.data(forType: .rtf) != nil {
             return ["available": true, "kind": "rtf", "extension": "rtf", "types": types]
+        }
+        if let urlStr = clipboardWebURL(pb) {
+            let plain = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if plain == nil || plain == urlStr {
+                return ["available": true, "kind": "webloc", "extension": "webloc", "url": urlStr, "types": types]
+            }
         }
         if let str = pb.string(forType: .string), !str.isEmpty {
             return ["available": true, "kind": "text", "extension": "txt", "length": str.count, "types": types]
@@ -161,25 +196,28 @@ enum FinderBridge {
 
     static func saveClipboard(to targetPath: String) -> [String: Any] {
         let pb = NSPasteboard.general
+        let types = (pb.types ?? []).map { $0.rawValue }
         let outURL = URL(fileURLWithPath: targetPath)
 
-        if let pngData = pb.data(forType: .png) {
-            do {
-                try pngData.write(to: outURL, options: .atomic)
-                return ["ok": true, "kind": "image", "path": targetPath]
-            } catch {
-                return ["ok": false, "error": error.localizedDescription]
+        if clipboardHasTrueImage(pb, types: types) {
+            if let pngData = pb.data(forType: .png) {
+                do {
+                    try pngData.write(to: outURL, options: .atomic)
+                    return ["ok": true, "kind": "image", "path": targetPath]
+                } catch {
+                    return ["ok": false, "error": error.localizedDescription]
+                }
             }
-        }
-        if let img = NSImage(pasteboard: pb),
-           let tiff = img.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: tiff),
-           let pngData = rep.representation(using: .png, properties: [:]) {
-            do {
-                try pngData.write(to: outURL, options: .atomic)
-                return ["ok": true, "kind": "image", "path": targetPath]
-            } catch {
-                return ["ok": false, "error": error.localizedDescription]
+            if let img = NSImage(pasteboard: pb),
+               let tiff = img.tiffRepresentation,
+               let rep = NSBitmapImageRep(data: tiff),
+               let pngData = rep.representation(using: .png, properties: [:]) {
+                do {
+                    try pngData.write(to: outURL, options: .atomic)
+                    return ["ok": true, "kind": "image", "path": targetPath]
+                } catch {
+                    return ["ok": false, "error": error.localizedDescription]
+                }
             }
         }
         if let pdfData = pb.data(forType: .pdf) {
@@ -198,6 +236,17 @@ enum FinderBridge {
                 return ["ok": false, "error": error.localizedDescription]
             }
         }
+        if let urlStr = clipboardWebURL(pb) {
+            let plain = pb.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (plain == nil || plain == urlStr), let plistData = weblocData(for: urlStr) {
+                do {
+                    try plistData.write(to: outURL, options: .atomic)
+                    return ["ok": true, "kind": "webloc", "path": targetPath]
+                } catch {
+                    return ["ok": false, "error": error.localizedDescription]
+                }
+            }
+        }
         if let str = pb.string(forType: .string), !str.isEmpty {
             do {
                 try Data(str.utf8).write(to: outURL, options: .atomic)
@@ -206,7 +255,7 @@ enum FinderBridge {
                 return ["ok": false, "error": error.localizedDescription]
             }
         }
-        return ["ok": false, "error": "Clipboard does not contain supported image, PDF, RTF, or text data"]
+        return ["ok": false, "error": "Clipboard does not contain supported image, PDF, RTF, URL, or text data"]
     }
 
     static func checkPermissions(promptAx: Bool, openAx: Bool, openAutomation: Bool) -> [String: Any] {

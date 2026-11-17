@@ -18,7 +18,7 @@ tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
-toml = "0.8"
+toml = { version = "0.8", features = ["preserve_order"] }
 quick-xml = "0.37"
 csv = "1"
 pulldown-cmark = "0.12"

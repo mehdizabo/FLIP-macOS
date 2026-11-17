@@ -27,6 +27,8 @@ pub enum PolicyError {
     DirectoryNotAllowed(String),
     #[error("Symbolic links and aliases are refused for safety: {0}")]
     SymlinkRefused(String),
+    #[error("iCloud file is not downloaded locally: {0}")]
+    CloudFileNotDownloaded(String),
     #[error("Network volumes are refused for conversions: {0}")]
     NetworkVolumeRefused(String),
     #[error("File exceeds size limit: {0}")]
@@ -388,6 +390,51 @@ fn is_local_filesystem(_path: &Path) -> bool {
     true
 }
 
+#[cfg(target_os = "macos")]
+fn is_finder_alias(path: &Path) -> bool {
+    let Ok(cstr) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut buf = [0u8; 32];
+    let rc = unsafe {
+        libc::getxattr(
+            cstr.as_ptr(),
+            b"com.apple.FinderInfo\0".as_ptr() as *const libc::c_char,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len(),
+            0,
+            libc::XATTR_NOFOLLOW,
+        )
+    };
+    // FinderInfo bytes 8..10 are big-endian Finder flags; bit 0x8000 (buf[8] & 0x80) is kIsAlias.
+    rc >= 9 && (buf[8] & 0x80) != 0
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_finder_alias(_path: &Path) -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+fn is_dataless_icloud(path: &Path, meta: &fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    const SF_DATALESS: u32 = 0x4000_0000;
+    if (meta.st_flags() & SF_DATALESS) != 0 {
+        return true;
+    }
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if name.starts_with('.') && name.ends_with(".icloud") {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_dataless_icloud(_path: &Path, _meta: &fs::Metadata) -> bool {
+    false
+}
+
 pub fn validate_input_files<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<PathBuf>, PolicyError> {
     if paths.is_empty() || paths.len() > MAX_BATCH_FILES {
         return Err(PolicyError::InvalidBatchCount);
@@ -411,6 +458,12 @@ pub fn validate_input_files<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<PathBuf>,
         if !meta.is_file() {
             return Err(PolicyError::InvalidPath(p.display().to_string()));
         }
+        if is_finder_alias(p) {
+            return Err(PolicyError::SymlinkRefused(p.display().to_string()));
+        }
+        if is_dataless_icloud(p, &meta) {
+            return Err(PolicyError::CloudFileNotDownloaded(p.display().to_string()));
+        }
         if !is_local_filesystem(p) {
             return Err(PolicyError::NetworkVolumeRefused(p.display().to_string()));
         }
@@ -425,9 +478,12 @@ pub fn validate_input_files<P: AsRef<Path>>(paths: &[P]) -> Result<Vec<PathBuf>,
             return Err(PolicyError::FileTooLarge(p.display().to_string()));
         }
 
-        let canonical = p.to_path_buf();
-        if seen.insert(canonical.clone()) {
-            validated.push(canonical);
+        let dedup_key = match (p.parent().and_then(|d| fs::canonicalize(d).ok()), p.file_name()) {
+            (Some(canon_dir), Some(fname)) => canon_dir.join(fname),
+            _ => p.to_path_buf(),
+        };
+        if seen.insert(dedup_key) {
+            validated.push(p.to_path_buf());
         }
     }
 
@@ -447,21 +503,21 @@ pub fn validate_container(path: &Path) -> Result<(), PolicyError> {
         return Err(PolicyError::ContainerTooManyEntries);
     }
 
-    let mut expanded: u64 = 0;
+    let mut declared_total: u64 = 0;
+    let mut actual_total: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
             .map_err(|e| PolicyError::InvalidContainer(e.to_string()))?;
         let declared = entry.size();
-        expanded = expanded
+        declared_total = declared_total
             .checked_add(declared)
             .ok_or(PolicyError::ContainerBombDetected)?;
-        if expanded > MAX_CONTAINER_EXPANDED_BYTES {
+        if declared_total > MAX_CONTAINER_EXPANDED_BYTES {
             return Err(PolicyError::ContainerBombDetected);
         }
-        // Also ensure reading actual stream cannot exceed the 256 MiB cap (guards forged zip headers)
+        // Also enforce actual decompressed stream total across ALL entries (guards forged zip headers)
         let mut buf = [0u8; 65536];
-        let mut entry_actual: u64 = 0;
         loop {
             let n = entry
                 .read(&mut buf)
@@ -469,10 +525,10 @@ pub fn validate_container(path: &Path) -> Result<(), PolicyError> {
             if n == 0 {
                 break;
             }
-            entry_actual = entry_actual
+            actual_total = actual_total
                 .checked_add(n as u64)
                 .ok_or(PolicyError::ContainerBombDetected)?;
-            if entry_actual > declared.max(1024) && expanded - declared + entry_actual > MAX_CONTAINER_EXPANDED_BYTES {
+            if actual_total > MAX_CONTAINER_EXPANDED_BYTES {
                 return Err(PolicyError::ContainerBombDetected);
             }
         }
@@ -633,5 +689,71 @@ mod tests {
         }
         let res = validate_container(&bomb_path);
         assert_eq!(res, Err(PolicyError::ContainerBombDetected));
+    }
+
+    #[test]
+    fn finder_alias_icloud_and_multi_entry_bomb_rejected() {
+        let dir = tempdir().unwrap();
+        let regular = dir.path().join("normal.txt");
+        fs::write(&regular, b"hello").unwrap();
+
+        // Deduplicate equivalent relative dot segments
+        let dot_path = dir.path().join(".").join("normal.txt");
+        let deduped = validate_input_files(&[regular.clone(), dot_path]).unwrap();
+        assert_eq!(deduped.len(), 1);
+
+        // .icloud placeholder rejected
+        let icloud_stub = dir.path().join(".report.pdf.icloud");
+        fs::write(&icloud_stub, b"stub").unwrap();
+        assert!(matches!(
+            validate_input_files(&[&icloud_stub]),
+            Err(PolicyError::CloudFileNotDownloaded(_))
+        ));
+
+        // Finder Alias (com.apple.FinderInfo kIsAlias bit 0x80 at byte 8) rejected
+        #[cfg(target_os = "macos")]
+        {
+            let alias_path = dir.path().join("finder_alias.txt");
+            fs::write(&alias_path, b"book\0\0\0\0mark\0\0\0\0").unwrap();
+            let cstr = std::ffi::CString::new(alias_path.as_os_str().as_bytes()).unwrap();
+            let mut finfo = [0u8; 32];
+            finfo[0..8].copy_from_slice(b"alisMACS");
+            finfo[8] = 0x80;
+            let rc = unsafe {
+                libc::setxattr(
+                    cstr.as_ptr(),
+                    b"com.apple.FinderInfo\0".as_ptr() as *const libc::c_char,
+                    finfo.as_ptr() as *const libc::c_void,
+                    finfo.len(),
+                    0,
+                    0,
+                )
+            };
+            assert_eq!(rc, 0);
+            assert!(matches!(
+                validate_input_files(&[&alias_path]),
+                Err(PolicyError::SymlinkRefused(_))
+            ));
+        }
+
+        // Multi-entry zip totaling > 256 MiB across entries rejected
+        let multi_bomb = dir.path().join("multi.docx");
+        {
+            let file = File::create(&multi_bomb).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            let zeros = vec![0u8; 1024 * 1024];
+            for name in ["word/a.xml", "word/b.xml"] {
+                zip.start_file(name, opts).unwrap();
+                for _ in 0..130 {
+                    zip.write_all(&zeros).unwrap();
+                }
+            }
+            zip.finish().unwrap();
+        }
+        assert_eq!(
+            validate_container(&multi_bomb),
+            Err(PolicyError::ContainerBombDetected)
+        );
     }
 }

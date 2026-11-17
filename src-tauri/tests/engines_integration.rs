@@ -584,3 +584,263 @@ fn output_subfolder_and_corrupt_data_edge_cases() {
     assert!(bad_res.iter().all(|r| r.error.is_some() && r.outputs.is_empty()));
     let _ = HashSet::<String>::new();
 }
+
+#[test]
+fn regression_fixes_pdf_rotation_lock_exif_html_utf8_media_gif_cancel_and_iwork() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let tools = detect_tools(Some(&prefs));
+
+    // 1. UTF-8 HTML without <meta charset="utf-8"> preserves accents in TXT
+    let html_no_meta = dir.path().join("no_meta.html");
+    fs::write(
+        &html_no_meta,
+        "<html><body><h1>Titolo caffè perché €</h1><p>Città italiana</p></body></html>",
+    )
+    .unwrap();
+    let html_txt = convert_files(&[html_no_meta], &["TXT".into()], &prefs, &cancel, None).unwrap();
+    assert!(html_txt[0].error.is_none());
+    let extracted_html_txt = fs::read_to_string(&html_txt[0].outputs[0]).unwrap();
+    assert!(
+        extracted_html_txt.contains("caffè") && extracted_html_txt.contains("perché") && extracted_html_txt.contains('€'),
+        "HTML without meta charset lost UTF-8: {extracted_html_txt}"
+    );
+
+    // 2. MD -> DOCX -> MD preserves list items & heading markers
+    let md_src = dir.path().join("struct.md");
+    fs::write(&md_src, "# Structured Heading\n\nBold **caffè**.\n\n- Bullet One\n- Bullet Two\n").unwrap();
+    let md_docx = convert_files(&[md_src], &["DOCX".into()], &prefs, &cancel, None).unwrap();
+    assert!(md_docx[0].error.is_none());
+    let docx_md = convert_files(
+        &[PathBuf::from(&md_docx[0].outputs[0])],
+        &["MD".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(docx_md[0].error.is_none());
+    let round_md = fs::read_to_string(&docx_md[0].outputs[0]).unwrap();
+    assert!(
+        round_md.contains("- Bullet One") && round_md.contains("- Bullet Two"),
+        "DOCX -> MD lost list bullets:\n{round_md}"
+    );
+
+    // 3. Rotated (/Rotate 90) + offset MediaBox PDF -> PNG upright & unclipped, plus Locked PDF rejection
+    let rot_pdf = dir.path().join("rotated_offset.pdf");
+    let locked_pdf = dir.path().join("locked.pdf");
+    let swift_gen = dir.path().join("gen_pdfs.swift");
+    fs::write(
+        &swift_gen,
+        format!(
+            r#"import Foundation
+import AppKit
+import PDFKit
+import CoreGraphics
+import CoreText
+
+let box = CGRect(x: 100, y: 100, width: 300, height: 200)
+var mediaBox = box
+let data = NSMutableData()
+let consumer = CGDataConsumer(data: data as CFMutableData)!
+let ctx = CGContext(consumer: consumer, mediaBox: &mediaBox, nil)!
+ctx.beginPDFPage(nil)
+ctx.setFillColor(CGColor.white)
+ctx.fill(box)
+let line = CTLineCreateWithAttributedString(NSAttributedString(string: "ROTATED OFFSET TEXT", attributes: [
+    .font: NSFont.boldSystemFont(ofSize: 22),
+    .foregroundColor: NSColor.black
+]))
+ctx.textPosition = CGPoint(x: 120, y: 190)
+CTLineDraw(line, ctx)
+ctx.endPDFPage()
+ctx.closePDF()
+
+let doc = PDFDocument(data: data as Data)!
+doc.page(at: 0)!.rotation = 90
+doc.write(toFile: "{}")
+
+let doc2 = PDFDocument(data: data as Data)!
+doc2.write(toFile: "{}", withOptions: [
+    PDFDocumentWriteOption.ownerPasswordOption: "secret123",
+    PDFDocumentWriteOption.userPasswordOption: "secret123"
+])
+"#,
+            rot_pdf.display(),
+            locked_pdf.display()
+        ),
+    )
+    .unwrap();
+    let gen_status = Command::new("/usr/bin/swift").arg(&swift_gen).status().unwrap();
+    assert!(gen_status.success());
+
+    let rot_pngs = convert_files(&[rot_pdf], &["PNG".into()], &prefs, &cancel, None).unwrap();
+    assert!(rot_pngs[0].error.is_none());
+    let rot_img = image::open(&rot_pngs[0].outputs[0]).unwrap();
+    assert_eq!(rot_img.dimensions(), (400, 600), "rotated PDF must render 400x600 at 144 DPI");
+    let ocr_rot = bridge::ocr(Path::new(&rot_pngs[0].outputs[0]), None, None).unwrap();
+    let ocr_text = ocr_rot.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        ocr_text.contains("ROTATED OFFSET TEXT"),
+        "rotated PDF OCR clipped text: {ocr_text}"
+    );
+
+    let locked_png = convert_files(&[locked_pdf.clone()], &["PNG".into()], &prefs, &cancel, None).unwrap();
+    assert!(
+        locked_png[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("password-protected"),
+        "expected password-protected error, got: {:?}",
+        locked_png[0].error
+    );
+    let locked_txt = convert_files(&[locked_pdf], &["TXT".into()], &prefs, &cancel, None).unwrap();
+    assert!(locked_txt[0]
+        .error
+        .as_deref()
+        .unwrap_or("")
+        .contains("password-protected"));
+
+    // 4. EXIF preservation and GPS stripping through convert_files
+    let exif_src = dir.path().join("with_exif.jpg");
+    let swift_exif = dir.path().join("mk_exif.swift");
+    fs::write(
+        &swift_exif,
+        format!(
+            r#"import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: "{}") as CFURL, nil)!
+let img = CGImageSourceCreateImageAtIndex(src, 0, nil)!
+let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "{}") as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
+let props: [CFString: Any] = [
+    kCGImagePropertyTIFFDictionary: [kCGImagePropertyTIFFMake: "FlipCam"],
+    kCGImagePropertyExifDictionary: [kCGImagePropertyExifUserComment: "FlipExif"],
+    kCGImagePropertyGPSDictionary: [kCGImagePropertyGPSLatitude: 45.4642, kCGImagePropertyGPSLongitude: 9.1900]
+]
+CGImageDestinationAddImage(dest, img, props as CFDictionary)
+CGImageDestinationFinalize(dest)
+"#,
+            repo_root().join("docs/assets/flip-cover.png").display(),
+            exif_src.display()
+        ),
+    )
+    .unwrap();
+    assert!(Command::new("/usr/bin/swift").arg(&swift_exif).status().unwrap().success());
+
+    let mut no_gps_prefs = prefs.clone();
+    no_gps_prefs.preserve_exif = true;
+    no_gps_prefs.strip_gps_exif = true;
+    let jpg_nogps = convert_files(&[exif_src.clone()], &["TIFF".into()], &no_gps_prefs, &cancel, None).unwrap();
+    assert!(jpg_nogps[0].error.is_none());
+    let tiff_nogps_path = PathBuf::from(&jpg_nogps[0].outputs[0]);
+
+    let inspect_exif = dir.path().join("inspect_exif.swift");
+    fs::write(
+        &inspect_exif,
+        format!(
+            r#"import Foundation
+import ImageIO
+let s = CGImageSourceCreateWithURL(URL(fileURLWithPath: "{}") as CFURL, nil)!
+let p = CGImageSourceCopyPropertiesAtIndex(s, 0, nil) as? [CFString: Any] ?? [:]
+print("exif=\(p[kCGImagePropertyExifDictionary] != nil) tiff=\(p[kCGImagePropertyTIFFDictionary] != nil) gps=\(p[kCGImagePropertyGPSDictionary] != nil)")
+"#,
+            tiff_nogps_path.display()
+        ),
+    )
+    .unwrap();
+    let exif_out = Command::new("/usr/bin/swift").arg(&inspect_exif).output().unwrap();
+    let exif_stdout = String::from_utf8_lossy(&exif_out.stdout);
+    assert!(
+        exif_stdout.contains("exif=true") && exif_stdout.contains("tiff=true") && exif_stdout.contains("gps=false"),
+        "unexpected EXIF/GPS result: {exif_stdout}"
+    );
+
+    // 5. Native MP4 -> GIF without FFmpeg, odd-dimension MP4 -> MOV, and mid-flight cancellation
+    if let Some(ref ffmpeg) = tools.ffmpeg {
+        let odd_mp4 = dir.path().join("odd.mp4");
+        let gen_odd = Command::new(ffmpeg)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=s=321x241:d=1",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=f=440:d=1",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv444p",
+                "-c:a",
+                "aac",
+                "-shortest",
+                odd_mp4.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(gen_odd.status.success());
+
+        let mov_res = convert_files(&[odd_mp4.clone()], &["MOV".into()], &prefs, &cancel, None).unwrap();
+        assert!(mov_res[0].error.is_none(), "odd dimension MP4->MOV failed: {:?}", mov_res[0].error);
+
+        // Native GIF without FFmpeg (matching Policy::outputs for native_only!)
+        let mut native_tools = tools.clone();
+        native_tools.ffmpeg = None;
+        let native_gif = dir.path().join("native.gif");
+        media::convert(&odd_mp4, "GIF", &native_gif, &native_tools, &cancel, &|_| {}).unwrap();
+        let gif_hdr = fs::read(&native_gif).unwrap();
+        assert!(gif_hdr.starts_with(b"GIF8"), "native Video->GIF failed");
+
+        // Mid-flight cancellation of running FFmpeg
+        let long_wav = dir.path().join("long.wav");
+        let gen_long = Command::new(ffmpeg)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=f=440:d=30",
+                long_wav.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(gen_long.status.success());
+
+        let cancel_mid = Arc::new(AtomicBool::new(false));
+        let cancel_trigger = Arc::clone(&cancel_mid);
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(80));
+            cancel_trigger.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let started = std::time::Instant::now();
+        let mid_res = convert_files(&[long_wav], &["OGG".into()], &prefs, &cancel_mid, None);
+        handle.join().unwrap();
+        assert!(
+            matches!(mid_res, Err(EngineError::Cancelled)),
+            "expected mid-flight cancellation, got {:?}",
+            mid_res
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "cancellation took too long: {:?}",
+            started.elapsed()
+        );
+    }
+
+    // 6. iWork Create New explicit handling + template symlink refusal
+    if !Path::new("/Applications/Pages.app").exists() {
+        let pages_err = create_new_item("pages", Some(dir.path()), &prefs, false).unwrap_err();
+        assert!(matches!(pages_err, EngineError::Unsupported(_)));
+    }
+    let real_tmpl = dir.path().join("real.txt");
+    fs::write(&real_tmpl, "hi").unwrap();
+    let link_tmpl = dir.path().join("link.txt");
+    std::os::unix::fs::symlink(&real_tmpl, &link_tmpl).unwrap();
+    let tmpl_err = create_new_item(&format!("template:{}", link_tmpl.display()), Some(dir.path()), &prefs, false);
+    assert!(tmpl_err.is_err(), "symlinked template must be refused");
+}

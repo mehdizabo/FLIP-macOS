@@ -359,9 +359,12 @@ pub fn create_new_item(
 
     if let Some(tmpl_path_str) = kind_id.strip_prefix("template:") {
         let tmpl_path = Path::new(tmpl_path_str);
-        if !tmpl_path.is_file() {
+        let meta = fs::symlink_metadata(tmpl_path).map_err(|_| {
+            EngineError::ConversionFailed(format!("Template file not found: {tmpl_path_str}"))
+        })?;
+        if meta.file_type().is_symlink() || !meta.is_file() {
             return Err(EngineError::ConversionFailed(format!(
-                "Template file not found: {tmpl_path_str}"
+                "Template must be a regular non-symlink file: {tmpl_path_str}"
             )));
         }
         let ext = tmpl_path.extension().and_then(|e| e.to_str());
@@ -499,6 +502,33 @@ pub fn create_new_item(
                 let dest = next_available_new_item_path(&target_dir, "Untitled", Some("swift"))
                     .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
                 write_new_file(&dest, b"import Foundation\n\n")?;
+                dest
+            }
+            "pages" => {
+                if !Path::new("/Applications/Pages.app").exists() {
+                    return Err(EngineError::Unsupported("Pages.app is not installed".to_string()));
+                }
+                let dest = next_available_new_item_path(&target_dir, "Untitled", Some("pages"))
+                    .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+                bridge::create_iwork("pages", &dest)?;
+                dest
+            }
+            "numbers" => {
+                if !Path::new("/Applications/Numbers.app").exists() {
+                    return Err(EngineError::Unsupported("Numbers.app is not installed".to_string()));
+                }
+                let dest = next_available_new_item_path(&target_dir, "Untitled", Some("numbers"))
+                    .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+                bridge::create_iwork("numbers", &dest)?;
+                dest
+            }
+            "keynote" => {
+                if !Path::new("/Applications/Keynote.app").exists() {
+                    return Err(EngineError::Unsupported("Keynote.app is not installed".to_string()));
+                }
+                let dest = next_available_new_item_path(&target_dir, "Untitled", Some("key"))
+                    .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+                bridge::create_iwork("key", &dest)?;
                 dest
             }
             "clipboard" => {
