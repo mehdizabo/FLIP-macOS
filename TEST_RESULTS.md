@@ -79,13 +79,14 @@ Command: `npx tsc --noEmit && npm run build && bun test`
 2. **Code Signing (`codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/FLIP.app`)**:
    - **Passed**: `valid on disk`, `satisfies its Designated Requirement` (ad-hoc local signature).
 3. **DMG Packager, SHA-256 & Homebrew Cask Sync (`./scripts/package-dmg.sh --update-cask`)**:
-   - Built `src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg` (`9,065,745` bytes / `8.6 MiB`).
-   - **SHA-256**: `7aa65cea17524e73db9edd3e1771eb43531baba0005c51d1199ea96380674668` — verified synced into `packaging/homebrew/flip.rb` (`ruby -c packaging/homebrew/flip.rb` -> `Syntax OK`).
+   - Built `src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg` (`9,066,485` bytes / `8.6 MiB`).
+   - **SHA-256**: `e4de6fc1c0f140ff7ecdec2c360cee09230dcfd4db0d660f66083ec82f77b029` — verified synced into `packaging/homebrew/flip.rb` (`ruby -c packaging/homebrew/flip.rb` -> `Syntax OK`; `brew style packaging/homebrew/flip.rb` -> `1 file inspected, no offenses detected`).
    - `codesign --verify --deep --strict --verbose=2` on `.dmg`: **Passed** (`valid on disk`, `satisfies its Designated Requirement`).
    - Mounted with `hdiutil attach -nobrowse -readonly -mountpoint ...`: verified `FLIP.app` and `Applications -> /Applications` symlink inside mounted volume, verified `codesign --verify --deep --strict --verbose=2` on mounted `FLIP.app`, and ejected cleanly with `hdiutil detach`.
 4. **Local Installer (`scripts/install-local.sh`)**:
    - `./scripts/install-local.sh --dest <tempdir> --no-quick-actions --no-cli --dry-run`: validated source bundle & printed planned actions with zero filesystem mutations (`test ! -e <tempdir>/FLIP.app`).
    - `./scripts/install-local.sh --dest <tempdir> --no-quick-actions --no-cli`: copied `FLIP.app`, cleared `com.apple.quarantine`, and passed `codesign --verify --deep --strict --verbose=2` on `<tempdir>/FLIP.app`.
+   - `HOME=<tempdir> ./scripts/install-local.sh --dest <tempdir>/apps`: installed `FLIP.app`, registered `Convert with FLIP.workflow` & `New File with FLIP.workflow` (with `APP_HINT`/`BIN_HINT` pointing to `<tempdir>/apps/FLIP.app`, validated via `plutil -lint`), linked `<tempdir>/.local/bin/flip` (`flip --version` -> `flip 0.1.0`), and verified fail-fast refusal before mutating destination/Services when `~/.local/bin/flip` is a non-symlink file.
 5. **Live Bundled Release CLI Smoke Tests (`<tempdir>/FLIP.app/Contents/MacOS/flip`)**:
    - **`--version`**: `flip 0.1.0` (`exit 0`).
    - **Zero-Pandoc `FB2` & `RST`**: `FLIP_DISABLE_PANDOC=1 flip convert doc.md --to FB2,RST` -> `doc.fb2` (`529` B) and `doc.rst` (`40` B), `success: true`.
@@ -102,7 +103,7 @@ The following paths were **not** executed live inside a WindowServer GUI session
 - **Live WindowServer GUI, Finder & Accessibility Walkthrough**:
   - Interactive Finder drag + trigger (`Drag -> Trigger` and `Trigger -> Drag`), `NSPasteboard(name: .drag)` live capture, Mouse Button `2`/`3`/`4` triggers, global Idle shortcut (`Option+Shift+Space`), Full-Screen Spaces overlay, multi-monitor mixed-DPI positioning, live Finder inline rename (`Return`), Light/Dark appearance, `Reduce Motion`, `Reduce Transparency`, and **VoiceOver** live announcements
   - Live `WKWebView` clicks/controls across `#settings` (`EN`/`IT` language switcher, `Test Wheel Sound & Haptics` physical audio + Force Touch feedback, `Preferred Format Order` chips + `Reset to Default`), `#wheel`, `#batch`, `#onboarding`, and live `flip://` / `flip wheel` / `flip settings` / `flip batch` / `flip quit` GUI socket launches
-  - Default interactive `./scripts/install-local.sh` execution into `/Applications` (or `~/Applications`) with live Quick Actions registration in `~/Library/Services` and `~/.local/bin/flip` symlink
+  - Host-wide `/Applications/FLIP.app` installation via `./scripts/install-local.sh` (only verified in isolated `HOME=<tempdir>` and `--dest <tempdir>` to avoid mutating the host `/Applications` or user `~/Library/Services`)
 - **Missing Optional External Apps / Tools on Host**:
   - **Pandoc** (`FB2` and `RST` optional Pandoc-preferred path): Not installed on host; built-in native zero-Pandoc `FB2`/`RST` engines verified end-to-end, while live Pandoc subprocess invocation remains unverified here.
   - **Apple iWork** (`Pages.app`, `Numbers.app`, `Keynote.app` AppleScript automation): Not installed in `/Applications`; missing-app errors and `.pages` QuickLook extraction tested instead.

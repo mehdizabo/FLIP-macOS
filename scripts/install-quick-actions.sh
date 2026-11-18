@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_OVERRIDE=""
 SERVICES_DIR="${HOME}/Library/Services"
 CLI_DIR="${HOME}/.local/bin"
 INSTALL_CLI=0
@@ -15,6 +16,7 @@ Usage:
   ./scripts/install-quick-actions.sh [options]
 
 Options:
+  --app <path>          Explicit path to FLIP.app (overrides automatic bundle lookup)
   --install-cli         Also symlink `flip` into ~/.local/bin/flip (or --cli-dir)
   --cli-dir <dir>       Target directory for the `flip` CLI symlink (implies --install-cli)
   --services-dir <dir>  Override target Services directory (default: ~/Library/Services)
@@ -25,18 +27,23 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --app)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --app requires a path" >&2; exit 1; }
+      APP_OVERRIDE="${2%/}"
+      shift 2
+      ;;
     --install-cli)
       INSTALL_CLI=1
       shift
       ;;
     --cli-dir)
-      [[ $# -ge 2 ]] || { echo "Error: --cli-dir requires a path" >&2; exit 1; }
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --cli-dir requires a path" >&2; exit 1; }
       CLI_DIR="$2"
       INSTALL_CLI=1
       shift 2
       ;;
     --services-dir)
-      [[ $# -ge 2 ]] || { echo "Error: --services-dir requires a path" >&2; exit 1; }
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --services-dir requires a path" >&2; exit 1; }
       SERVICES_DIR="$2"
       shift 2
       ;;
@@ -57,34 +64,46 @@ while [[ $# -gt 0 ]]; do
 done
 
 APP_PATH=""
-for candidate in \
-  "/Applications/FLIP.app" \
-  "${HOME}/Applications/FLIP.app" \
-  "$ROOT_DIR/src-tauri/target/release/bundle/macos/FLIP.app"
-do
-  if [[ -d "$candidate" ]]; then
-    APP_PATH="$candidate"
-    break
+if [[ -n "$APP_OVERRIDE" ]]; then
+  if [[ ! -d "$APP_OVERRIDE" ]]; then
+    echo "Error: App bundle not found at: $APP_OVERRIDE" >&2
+    exit 1
   fi
-done
+  APP_PATH="$(cd "$(dirname "$APP_OVERRIDE")" && pwd)/$(basename "$APP_OVERRIDE")"
+else
+  for candidate in \
+    "/Applications/FLIP.app" \
+    "${HOME}/Applications/FLIP.app" \
+    "$ROOT_DIR/src-tauri/target/release/bundle/macos/FLIP.app"
+  do
+    if [[ -d "$candidate" ]]; then
+      APP_PATH="$candidate"
+      break
+    fi
+  done
+fi
 
 if [[ -z "$APP_PATH" ]]; then
   APP_PATH="/Applications/FLIP.app"
 fi
 
 CLI_BIN=""
-for candidate in \
-  "$APP_PATH/Contents/MacOS/flip" \
-  "/Applications/FLIP.app/Contents/MacOS/flip" \
-  "${HOME}/Applications/FLIP.app/Contents/MacOS/flip" \
-  "$ROOT_DIR/src-tauri/target/release/flip" \
-  "$ROOT_DIR/src-tauri/target/debug/flip"
-do
-  if [[ -x "$candidate" ]]; then
-    CLI_BIN="$candidate"
-    break
-  fi
-done
+if [[ -n "$APP_OVERRIDE" && -x "$APP_PATH/Contents/MacOS/flip" ]]; then
+  CLI_BIN="$APP_PATH/Contents/MacOS/flip"
+else
+  for candidate in \
+    "$APP_PATH/Contents/MacOS/flip" \
+    "/Applications/FLIP.app/Contents/MacOS/flip" \
+    "${HOME}/Applications/FLIP.app/Contents/MacOS/flip" \
+    "$ROOT_DIR/src-tauri/target/release/flip" \
+    "$ROOT_DIR/src-tauri/target/debug/flip"
+  do
+    if [[ -x "$candidate" ]]; then
+      CLI_BIN="$candidate"
+      break
+    fi
+  done
+fi
 
 if [[ -z "$CLI_BIN" ]]; then
   CLI_BIN="/Applications/FLIP.app/Contents/MacOS/flip"

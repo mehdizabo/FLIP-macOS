@@ -28,12 +28,12 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app)
-      [[ $# -ge 2 ]] || { echo "Error: --app requires a path" >&2; exit 1; }
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --app requires a path" >&2; exit 1; }
       APP_PATH="$2"
       shift 2
       ;;
     --dest)
-      [[ $# -ge 2 ]] || { echo "Error: --dest requires a directory" >&2; exit 1; }
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --dest requires a directory" >&2; exit 1; }
       DEST_DIR="$2"
       shift 2
       ;;
@@ -104,6 +104,11 @@ fi
 echo "==> Validating source bundle signature: $APP_PATH"
 codesign --verify --deep --strict "$APP_PATH"
 
+if [[ "$INSTALL_CLI" -eq 1 && -e "$CLI_LINK" && ! -L "$CLI_LINK" ]]; then
+  echo "Error: Refusing to overwrite non-symlink file at $CLI_LINK" >&2
+  exit 1
+fi
+
 SRC_ABS="$(cd "$(dirname "$APP_PATH")" && pwd)/$(basename "$APP_PATH")"
 DEST_PARENT_ABS=""
 if [[ -d "$DEST_DIR" ]]; then
@@ -116,7 +121,7 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   echo "[dry-run] Would copy bundle to: $DEST_APP"
   echo "[dry-run] Would clear com.apple.quarantine on: $DEST_APP"
   if [[ "$INSTALL_QUICK_ACTIONS" -eq 1 ]]; then
-    echo "[dry-run] Would run: $ROOT_DIR/scripts/install-quick-actions.sh"
+    echo "[dry-run] Would run: $ROOT_DIR/scripts/install-quick-actions.sh --app $DEST_APP"
   else
     echo "[dry-run] Skipping Quick Actions (--no-quick-actions)"
   fi
@@ -151,7 +156,7 @@ echo "==> Verifying installed bundle signature: $DEST_APP"
 codesign --verify --deep --strict "$DEST_APP"
 
 if [[ "$INSTALL_QUICK_ACTIONS" -eq 1 ]]; then
-  "$ROOT_DIR/scripts/install-quick-actions.sh"
+  "$ROOT_DIR/scripts/install-quick-actions.sh" --app "$DEST_ABS"
 fi
 
 if [[ "$INSTALL_CLI" -eq 1 ]]; then
@@ -160,10 +165,6 @@ if [[ "$INSTALL_CLI" -eq 1 ]]; then
     exit 1
   fi
   mkdir -p "$CLI_DIR"
-  if [[ -e "$CLI_LINK" && ! -L "$CLI_LINK" ]]; then
-    echo "Error: Refusing to overwrite non-symlink file at $CLI_LINK" >&2
-    exit 1
-  fi
   ln -sfn "$DEST_CLI_TARGET" "$CLI_LINK"
   echo "==> Linked CLI: $CLI_LINK -> $DEST_CLI_TARGET"
   case ":$PATH:" in

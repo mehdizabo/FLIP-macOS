@@ -1,14 +1,17 @@
+# typed: strict
+# frozen_string_literal: true
+
 cask "flip" do
   version "0.1.0"
-  sha256 "7aa65cea17524e73db9edd3e1771eb43531baba0005c51d1199ea96380674668"
+  sha256 "e4de6fc1c0f140ff7ecdec2c360cee09230dcfd4db0d660f66083ec82f77b029"
 
   url "https://github.com/thetinyfoundry/FLIP/releases/download/v#{version}/FLIP-#{version}-macOS-arm64.dmg"
   name "FLIP"
   desc "100% local Liquid Glass radial file converter and Create New File utility"
   homepage "https://github.com/thetinyfoundry/FLIP"
 
-  depends_on macos: ">= :sequoia"
   depends_on arch: :arm64
+  depends_on macos: ">= :sequoia"
 
   app "FLIP.app"
   binary "#{appdir}/FLIP.app/Contents/MacOS/flip"

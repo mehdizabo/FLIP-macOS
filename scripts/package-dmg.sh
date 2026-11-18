@@ -34,12 +34,12 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --app)
-      [[ $# -ge 2 ]] || { echo "Error: --app requires a path" >&2; exit 1; }
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --app requires a path" >&2; exit 1; }
       APP_PATH="$2"
       shift 2
       ;;
     --out)
-      [[ $# -ge 2 ]] || { echo "Error: --out requires a path" >&2; exit 1; }
+      [[ $# -ge 2 && -n "$2" ]] || { echo "Error: --out requires a path" >&2; exit 1; }
       DMG_PATH="$2"
       shift 2
       ;;
