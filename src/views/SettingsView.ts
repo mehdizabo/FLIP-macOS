@@ -1017,36 +1017,39 @@ export function mountSettingsView(root: HTMLElement): () => void {
       });
     });
     mainEl.querySelector("#btn-reset-family-order")?.addEventListener("click", () => {
-      const def = defaultPreferences().preferredFormats[selectedFamily] ?? [];
+      const family = selectedFamily;
+      const def = defaultPreferences().preferredFormats[family] ?? [];
       void persistPrefs((d) => {
-        d.preferredFormats[selectedFamily] = [...def];
+        d.preferredFormats[family] = [...def];
       }).then(() => {
+        if (disposed) return;
         renderMain();
         mainEl.querySelector<HTMLButtonElement>("#btn-reset-family-order")?.focus();
       });
     });
     mainEl.querySelectorAll<HTMLButtonElement>("[data-move-fmt]").forEach((btn) => {
       btn.addEventListener("click", () => {
+        const family = selectedFamily;
         const idx = Number(btn.dataset.moveFmt!);
         const dir = Number(btn.dataset.dir!) as -1 | 1;
-        const currentList =
-          prefs.preferredFormats[selectedFamily] ??
-          defaultPreferences().preferredFormats[selectedFamily] ??
-          [];
+        const defaultsForFamily = defaultPreferences().preferredFormats[family] ?? [];
+        const previewList = prefs.preferredFormats[family] ?? defaultsForFamily;
         const target = idx + dir;
-        if (target < 0 || target >= currentList.length) return;
-        const nextList = reorderFormatList(currentList, idx, dir);
+        if (target < 0 || target >= previewList.length) return;
         void persistPrefs((d) => {
-          d.preferredFormats[selectedFamily] = nextList;
+          const base = d.preferredFormats[family] ?? defaultsForFamily;
+          d.preferredFormats[family] = reorderFormatList(base, idx, dir);
         }).then(() => {
+          if (disposed) return;
           renderMain();
-          const selector = `[data-move-fmt="${target}"][data-dir="${dir}"]`;
+          if (selectedFamily !== family) return;
+          const selector = `[data-move-fmt="${target}"][data-dir="${dir}"]:not(:disabled)`;
           const movedBtn = mainEl.querySelector<HTMLButtonElement>(selector);
-          if (movedBtn && !movedBtn.disabled) {
+          if (movedBtn) {
             movedBtn.focus();
           } else {
             mainEl
-              .querySelector<HTMLButtonElement>(`[data-move-fmt="${target}"]`)
+              .querySelector<HTMLButtonElement>(`[data-move-fmt="${target}"]:not(:disabled)`)
               ?.focus();
           }
         });
@@ -1076,20 +1079,21 @@ export function mountSettingsView(root: HTMLElement): () => void {
       chip.addEventListener("drop", (ev) => {
         ev.preventDefault();
         chip.classList.remove("is-drag-over");
+        const family = selectedFamily;
         const fromIdx =
           dragSourceIndex !== null
             ? dragSourceIndex
             : Number(ev.dataTransfer?.getData("text/plain") ?? "-1");
         dragSourceIndex = null;
-        const currentList =
-          prefs.preferredFormats[selectedFamily] ??
-          defaultPreferences().preferredFormats[selectedFamily] ??
-          [];
-        if (fromIdx < 0 || fromIdx >= currentList.length || fromIdx === chipIdx) return;
-        const nextList = moveFormatToIndex(currentList, fromIdx, chipIdx);
+        const defaultsForFamily = defaultPreferences().preferredFormats[family] ?? [];
+        const previewList = prefs.preferredFormats[family] ?? defaultsForFamily;
+        if (fromIdx < 0 || fromIdx >= previewList.length || fromIdx === chipIdx) return;
         void persistPrefs((d) => {
-          d.preferredFormats[selectedFamily] = nextList;
-        }).then(renderMain);
+          const base = d.preferredFormats[family] ?? defaultsForFamily;
+          d.preferredFormats[family] = moveFormatToIndex(base, fromIdx, chipIdx);
+        }).then(() => {
+          if (!disposed) renderMain();
+        });
       });
       chip.addEventListener("dragend", () => {
         dragSourceIndex = null;

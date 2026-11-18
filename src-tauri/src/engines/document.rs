@@ -250,6 +250,38 @@ fn parse_html_attrs(tag_inner: &str) -> Vec<(String, String)> {
     attrs
 }
 
+fn has_xml_self_closing_slash(inner: &str) -> bool {
+    let trimmed = inner.trim_end();
+    if !trimmed.ends_with('/') {
+        return false;
+    }
+    let before = trimmed
+        .as_bytes()
+        .get(trimmed.len().saturating_sub(2))
+        .copied();
+    matches!(before, Some(b) if b.is_ascii_whitespace() || b == b'"' || b == b'\'')
+        || !trimmed.contains('=')
+}
+
+fn find_raw_close_tag(input: &str, from: usize, tag_name: &str) -> Option<usize> {
+    let lower = input[from..].to_ascii_lowercase();
+    let needle = format!("</{tag_name}");
+    let mut search_from = 0usize;
+    while let Some(rel) = lower[search_from..].find(&needle) {
+        let start = search_from + rel;
+        let after = start + needle.len();
+        let next_b = lower.as_bytes().get(after).copied();
+        if matches!(next_b, Some(b) if b == b'>' || b.is_ascii_whitespace()) {
+            if let Some(gt_rel) = lower[after..].find('>') {
+                return Some(from + after + gt_rel + 1);
+            }
+            return None;
+        }
+        search_from = after;
+    }
+    None
+}
+
 pub fn html_to_markdown(html_input: &str) -> String {
     let mut out = String::with_capacity(html_input.len());
     let mut skip_tag: Option<String> = None;
@@ -267,6 +299,39 @@ pub fn html_to_markdown(html_input: &str) -> String {
 
     while i < bytes.len() {
         if bytes[i] == b'<' {
+            if html_input[i..].starts_with("<!--") {
+                if let Some(end_rel) = html_input[i + 4..].find("-->") {
+                    i = i + 4 + end_rel + 3;
+                } else {
+                    break;
+                }
+                continue;
+            }
+            if html_input[i..].starts_with("<![CDATA[") {
+                let (cdata_end, next_i) = if let Some(end_rel) = html_input[i + 9..].find("]]>") {
+                    (i + 9 + end_rel, i + 9 + end_rel + 3)
+                } else {
+                    (bytes.len(), bytes.len())
+                };
+                if skip_tag.is_none() {
+                    let target = if in_cell { &mut current_cell } else { &mut out };
+                    target.push_str(&html_input[i + 9..cdata_end]);
+                }
+                i = next_i;
+                continue;
+            }
+            if !matches!(
+                bytes.get(i + 1),
+                Some(b) if b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?')
+            ) {
+                if skip_tag.is_none() {
+                    let target = if in_cell { &mut current_cell } else { &mut out };
+                    target.push('<');
+                }
+                i += 1;
+                continue;
+            }
+
             // Find end of tag respecting quotes
             let mut j = i + 1;
             let mut quote: Option<u8> = None;
@@ -284,24 +349,32 @@ pub fn html_to_markdown(html_input: &str) -> String {
                 j += 1;
             }
             if j >= bytes.len() {
-                out.push_str(&html_input[i..]);
+                if skip_tag.is_none() {
+                    out.push_str(&html_input[i..]);
+                }
                 break;
             }
 
             let raw_tag = html_input[i + 1..j].trim();
             i = j + 1;
 
-            if raw_tag.starts_with("!--") || raw_tag.starts_with('!') || raw_tag.starts_with('?') {
+            if raw_tag.starts_with('!') || raw_tag.starts_with('?') {
                 continue;
             }
 
             let is_close = raw_tag.starts_with('/');
             let inner = if is_close { raw_tag[1..].trim() } else { raw_tag };
+            let self_closing_syntax = !is_close && has_xml_self_closing_slash(inner);
             let tag_name = inner
                 .split(|c: char| c.is_whitespace() || c == '/')
                 .next()
                 .unwrap_or("")
                 .to_ascii_lowercase();
+
+            if !is_close && matches!(tag_name.as_str(), "script" | "style") && !self_closing_syntax {
+                i = find_raw_close_tag(html_input, i, &tag_name).unwrap_or(bytes.len());
+                continue;
+            }
 
             if let Some(ref skipping) = skip_tag {
                 if is_close && &tag_name == skipping {
@@ -310,7 +383,7 @@ pub fn html_to_markdown(html_input: &str) -> String {
                 continue;
             }
 
-            if !is_close && matches!(tag_name.as_str(), "head" | "style" | "script") && !inner.ends_with('/') {
+            if !is_close && tag_name == "head" && !self_closing_syntax {
                 skip_tag = Some(tag_name);
                 continue;
             }
@@ -582,6 +655,37 @@ pub fn html_to_plain_text(html_input: &str) -> String {
 
     while i < bytes.len() {
         if bytes[i] == b'<' {
+            if html_input[i..].starts_with("<!--") {
+                if let Some(end_rel) = html_input[i + 4..].find("-->") {
+                    i = i + 4 + end_rel + 3;
+                } else {
+                    break;
+                }
+                continue;
+            }
+            if html_input[i..].starts_with("<![CDATA[") {
+                let (cdata_end, next_i) = if let Some(end_rel) = html_input[i + 9..].find("]]>") {
+                    (i + 9 + end_rel, i + 9 + end_rel + 3)
+                } else {
+                    (bytes.len(), bytes.len())
+                };
+                if skip_tag.is_none() {
+                    out.push_str(&html_input[i + 9..cdata_end]);
+                }
+                i = next_i;
+                continue;
+            }
+            if !matches!(
+                bytes.get(i + 1),
+                Some(b) if b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?')
+            ) {
+                if skip_tag.is_none() {
+                    out.push('<');
+                }
+                i += 1;
+                continue;
+            }
+
             let mut j = i + 1;
             let mut quote: Option<u8> = None;
             while j < bytes.len() {
@@ -598,24 +702,35 @@ pub fn html_to_plain_text(html_input: &str) -> String {
                 j += 1;
             }
             if j >= bytes.len() {
-                out.push_str(&html_input[i..]);
+                if skip_tag.is_none() {
+                    out.push_str(&html_input[i..]);
+                }
                 break;
             }
 
             let raw_tag = html_input[i + 1..j].trim();
             i = j + 1;
 
-            if raw_tag.starts_with("!--") || raw_tag.starts_with('!') || raw_tag.starts_with('?') {
+            if raw_tag.starts_with('!') || raw_tag.starts_with('?') {
                 continue;
             }
 
             let is_close = raw_tag.starts_with('/');
             let inner = if is_close { raw_tag[1..].trim() } else { raw_tag };
+            let self_closing_syntax = !is_close && has_xml_self_closing_slash(inner);
             let tag_name = inner
                 .split(|c: char| c.is_whitespace() || c == '/')
                 .next()
                 .unwrap_or("")
                 .to_ascii_lowercase();
+
+            if !is_close
+                && matches!(tag_name.as_str(), "script" | "style" | "title")
+                && !self_closing_syntax
+            {
+                i = find_raw_close_tag(html_input, i, &tag_name).unwrap_or(bytes.len());
+                continue;
+            }
 
             if let Some(ref skipping) = skip_tag {
                 if is_close && &tag_name == skipping {
@@ -627,9 +742,9 @@ pub fn html_to_plain_text(html_input: &str) -> String {
             if !is_close
                 && matches!(
                     tag_name.as_str(),
-                    "head" | "style" | "script" | "title" | "iframe" | "object" | "embed" | "noscript"
+                    "head" | "iframe" | "object" | "embed" | "noscript"
                 )
-                && !inner.ends_with('/')
+                && !self_closing_syntax
             {
                 skip_tag = Some(tag_name);
                 continue;
@@ -739,19 +854,73 @@ pub fn html_to_plain_text(html_input: &str) -> String {
 
 fn find_tag_range_case_insensitive(input: &str, open_prefix: &str, close_tag: &str) -> Option<(usize, usize)> {
     let lower = input.to_ascii_lowercase();
-    let mut search_from = 0;
-    while let Some(rel) = lower[search_from..].find(open_prefix) {
-        let start = search_from + rel;
-        let after = start + open_prefix.len();
-        let next_b = lower.as_bytes().get(after).copied();
-        if matches!(next_b, Some(b) if b == b'>' || b.is_ascii_whitespace()) {
-            let open_end = lower[after..].find('>')? + after + 1;
-            if let Some(close_rel) = lower[open_end..].find(close_tag) {
-                return Some((open_end, open_end + close_rel));
+    let bytes = lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            if lower[i..].starts_with("<!--") {
+                if let Some(end_rel) = lower[i + 4..].find("-->") {
+                    i = i + 4 + end_rel + 3;
+                    continue;
+                }
+                return None;
             }
-            return Some((open_end, input.len()));
+            if open_prefix != "<script"
+                && lower[i..].starts_with("<script")
+                && matches!(bytes.get(i + 7), Some(b) if *b == b'>' || b.is_ascii_whitespace())
+            {
+                if let Some(gt_rel) = lower[i + 7..].find('>') {
+                    let after_open = i + 7 + gt_rel + 1;
+                    i = find_raw_close_tag(&lower, after_open, "script").unwrap_or(bytes.len());
+                    continue;
+                }
+            }
+            if open_prefix != "<style"
+                && lower[i..].starts_with("<style")
+                && matches!(bytes.get(i + 6), Some(b) if *b == b'>' || b.is_ascii_whitespace())
+            {
+                if let Some(gt_rel) = lower[i + 6..].find('>') {
+                    let after_open = i + 6 + gt_rel + 1;
+                    i = find_raw_close_tag(&lower, after_open, "style").unwrap_or(bytes.len());
+                    continue;
+                }
+            }
+            if lower[i..].starts_with(open_prefix) {
+                let after = i + open_prefix.len();
+                let next_b = bytes.get(after).copied();
+                if matches!(next_b, Some(b) if b == b'>' || b.is_ascii_whitespace()) {
+                    let mut j = after;
+                    let mut quote: Option<u8> = None;
+                    while j < bytes.len() {
+                        let b = bytes[j];
+                        if let Some(q) = quote {
+                            if b == q {
+                                quote = None;
+                            }
+                        } else if b == b'"' || b == b'\'' {
+                            quote = Some(b);
+                        } else if b == b'>' {
+                            break;
+                        }
+                        j += 1;
+                    }
+                    if j >= bytes.len() {
+                        return None;
+                    }
+                    let open_end = j + 1;
+                    let close_rel = if close_tag == "</body>" {
+                        lower[open_end..].rfind(close_tag)
+                    } else {
+                        lower[open_end..].find(close_tag)
+                    };
+                    if let Some(rel) = close_rel {
+                        return Some((open_end, open_end + rel));
+                    }
+                    return Some((open_end, input.len()));
+                }
+            }
         }
-        search_from = after;
+        i += 1;
     }
     None
 }
@@ -782,11 +951,14 @@ struct TocHeading {
 }
 
 fn is_safe_xhtml_url(raw: &str, allow_data_image: bool) -> bool {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
+    let compact: String = raw
+        .chars()
+        .filter(|c| !c.is_ascii_control() && !c.is_ascii_whitespace())
+        .collect();
+    if compact.is_empty() {
         return false;
     }
-    let lower = trimmed.to_ascii_lowercase();
+    let lower = compact.to_ascii_lowercase();
     if lower.starts_with("javascript:")
         || lower.starts_with("vbscript:")
         || lower.starts_with("file:")
@@ -809,6 +981,35 @@ fn is_valid_xml_attr_name(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
 }
 
+fn allocate_unique_id(preferred: Option<&str>, used_ids: &mut HashSet<String>, seq: &mut usize) -> String {
+    if let Some(raw) = preferred {
+        let cleaned: String = raw
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join("-");
+        if !cleaned.is_empty() {
+            if used_ids.insert(cleaned.clone()) {
+                return cleaned;
+            }
+            let mut suffix = 2usize;
+            loop {
+                let cand = format!("{cleaned}-{suffix}");
+                if used_ids.insert(cand.clone()) {
+                    return cand;
+                }
+                suffix += 1;
+            }
+        }
+    }
+    loop {
+        *seq += 1;
+        let cand = format!("sec-{seq}");
+        if used_ids.insert(cand.clone()) {
+            return cand;
+        }
+    }
+}
+
 fn normalize_html_to_xhtml5_body(html_input: &str) -> (String, Vec<TocHeading>) {
     let slice = extract_html_body_slice(html_input);
     let mut out = String::with_capacity(slice.len() + 64);
@@ -817,12 +1018,51 @@ fn normalize_html_to_xhtml5_body(html_input: &str) -> (String, Vec<TocHeading>) 
     let mut toc_headings: Vec<TocHeading> = Vec::new();
     let mut active_heading: Option<(String, String)> = None;
     let mut heading_seq = 0usize;
+    let mut used_ids: HashSet<String> = HashSet::new();
 
     let bytes = slice.as_bytes();
     let mut i = 0;
 
     while i < bytes.len() {
         if bytes[i] == b'<' {
+            if slice[i..].starts_with("<!--") {
+                if let Some(end_rel) = slice[i + 4..].find("-->") {
+                    i = i + 4 + end_rel + 3;
+                } else {
+                    break;
+                }
+                continue;
+            }
+            if slice[i..].starts_with("<![CDATA[") {
+                let (cdata_end, next_i) = if let Some(end_rel) = slice[i + 9..].find("]]>") {
+                    (i + 9 + end_rel, i + 9 + end_rel + 3)
+                } else {
+                    (bytes.len(), bytes.len())
+                };
+                if skip_tag.is_none() {
+                    let text_chunk = &slice[i + 9..cdata_end];
+                    if let Some((_, ref mut htext)) = active_heading {
+                        htext.push_str(text_chunk);
+                    }
+                    out.push_str(&xml_escape_text(text_chunk));
+                }
+                i = next_i;
+                continue;
+            }
+            if !matches!(
+                bytes.get(i + 1),
+                Some(b) if b.is_ascii_alphabetic() || matches!(b, b'/' | b'!' | b'?')
+            ) {
+                if skip_tag.is_none() {
+                    if let Some((_, ref mut htext)) = active_heading {
+                        htext.push('<');
+                    }
+                    out.push_str("&lt;");
+                }
+                i += 1;
+                continue;
+            }
+
             let mut j = i + 1;
             let mut quote: Option<u8> = None;
             while j < bytes.len() {
@@ -839,21 +1079,23 @@ fn normalize_html_to_xhtml5_body(html_input: &str) -> (String, Vec<TocHeading>) 
                 j += 1;
             }
             if j >= bytes.len() {
-                let text = xml_escape_text(&decode_html_entities_inner(&slice[i..], true));
-                out.push_str(&text);
+                if skip_tag.is_none() {
+                    let text = xml_escape_text(&decode_html_entities_inner(&slice[i..], true));
+                    out.push_str(&text);
+                }
                 break;
             }
 
             let raw_tag = slice[i + 1..j].trim();
             i = j + 1;
 
-            if raw_tag.starts_with("!--") || raw_tag.starts_with('!') || raw_tag.starts_with('?') {
+            if raw_tag.starts_with('!') || raw_tag.starts_with('?') {
                 continue;
             }
 
             let is_close = raw_tag.starts_with('/');
             let inner = if is_close { raw_tag[1..].trim() } else { raw_tag };
-            let self_closing_syntax = !is_close && inner.ends_with('/');
+            let self_closing_syntax = !is_close && has_xml_self_closing_slash(inner);
             let tag_name = inner
                 .split(|c: char| c.is_whitespace() || c == '/')
                 .next()
@@ -861,6 +1103,14 @@ fn normalize_html_to_xhtml5_body(html_input: &str) -> (String, Vec<TocHeading>) 
                 .to_ascii_lowercase();
 
             if tag_name.is_empty() {
+                continue;
+            }
+
+            if !is_close
+                && matches!(tag_name.as_str(), "script" | "style" | "title")
+                && !self_closing_syntax
+            {
+                i = find_raw_close_tag(slice, i, &tag_name).unwrap_or(bytes.len());
                 continue;
             }
 
@@ -1000,7 +1250,7 @@ fn normalize_html_to_xhtml5_body(html_input: &str) -> (String, Vec<TocHeading>) 
             let raw_attrs = parse_html_attrs(inner);
             let mut safe_attrs: Vec<(String, String)> = Vec::new();
             let mut seen_attr_names: HashSet<String> = HashSet::new();
-            let mut heading_id: Option<String> = None;
+            let mut element_id: Option<String> = None;
 
             for (k, v) in raw_attrs {
                 if !is_valid_xml_attr_name(&k) || k.starts_with("on") || k == "style" || k == "srcset" {
@@ -1034,8 +1284,13 @@ fn normalize_html_to_xhtml5_body(html_input: &str) -> (String, Vec<TocHeading>) 
                 if k == "src" && !is_safe_xhtml_url(&decoded_val, true) {
                     continue;
                 }
-                if k == "id" && !decoded_val.trim().is_empty() {
-                    heading_id = Some(decoded_val.trim().to_string());
+                if k == "id" {
+                    if !decoded_val.trim().is_empty() {
+                        let unique_id = allocate_unique_id(Some(&decoded_val), &mut used_ids, &mut heading_seq);
+                        element_id = Some(unique_id.clone());
+                        safe_attrs.push((k, unique_id));
+                    }
+                    continue;
                 }
                 let final_val = if matches!(k.as_str(), "disabled" | "checked") && decoded_val.is_empty() {
                     k.clone()
@@ -1054,9 +1309,8 @@ fn normalize_html_to_xhtml5_body(html_input: &str) -> (String, Vec<TocHeading>) 
             }
 
             if matches!(tag_name.as_str(), "h1" | "h2" | "h3") && !self_closing_syntax {
-                heading_seq += 1;
-                let assigned_id = heading_id.unwrap_or_else(|| {
-                    let generated = format!("sec-{heading_seq}");
+                let assigned_id = element_id.unwrap_or_else(|| {
+                    let generated = allocate_unique_id(None, &mut used_ids, &mut heading_seq);
                     safe_attrs.push(("id".to_string(), generated.clone()));
                     generated
                 });
@@ -1385,7 +1639,7 @@ fn is_xhtml_item(item: &OpfManifestItem) -> bool {
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
     mt.contains("xhtml")
-        || mt == "text/html"
+        || mt.starts_with("text/html")
         || matches!(ext.as_str(), "xhtml" | "html" | "htm")
 }
 
@@ -1567,8 +1821,9 @@ pub fn read_epub_to_html(source: &Path) -> Result<(String, String), EngineError>
                     }
                     Ok(Event::Text(ref t)) => {
                         if in_title {
-                            if let Ok(decoded) = t.unescape() {
-                                title_acc.push_str(&decoded);
+                            match t.unescape() {
+                                Ok(decoded) => title_acc.push_str(&decoded),
+                                Err(_) => title_acc.push_str(&decode_html_entities(&String::from_utf8_lossy(t.as_ref()))),
                             }
                         }
                     }
@@ -2099,5 +2354,70 @@ mod tests {
         let fb_plain = html_to_plain_text(&fb_html);
         assert!(fb_plain.find("CHAPTER_ONE").unwrap() < fb_plain.find("CHAPTER_TWO").unwrap());
         assert!(!fb_plain.contains("NAV_IGNORED"));
+    }
+
+    #[test]
+    fn html_comment_apostrophes_scripts_cdata_and_duplicate_heading_ids_handled_safely() {
+        let dir = tempfile::tempdir().unwrap();
+        let epub_path = dir.path().join("edge_html.epub");
+        let nasty_html = r#"<!DOCTYPE html>
+<html>
+<head>
+  <!-- <title>Fake Comment Title</title> -->
+  <title>Real &amp; Clean Title</title>
+  <script>var fake = "<body>"; // don't break here</script>
+</head>
+<body>
+  <!-- Don't break on apostrophe in comment -->
+  <h1 id="sec-2">First Heading</h1>
+  <h2>Second Heading</h2>
+  <script>
+    if (a < b) {
+      // don't break on '<' + apostrophe!
+    }
+  </script>
+  <script src=https://example.com/app/>EVIL_LEAK()</script>
+  <style>/* it's a < style */ p { color: red; }</style>
+  <p>AFTER_COMMENT_AND_SCRIPT: 1 < 2 and <![CDATA[a < b & c]]></p>
+  <p><a href="java&#9;script:alert(1)">blocked_js</a> and <a href="https://example.org">ok</a></p>
+</body>
+</html>"#;
+
+        write_epub_from_html("FLIP Document", nasty_html, &epub_path).unwrap();
+
+        let file = File::open(&epub_path).unwrap();
+        let mut archive = ZipArchive::new(file).unwrap();
+
+        let mut chap = String::new();
+        archive.by_name("OEBPS/chapter.xhtml").unwrap().read_to_string(&mut chap).unwrap();
+        assert_valid_xml(&chap, "OEBPS/chapter.xhtml");
+
+        let mut nav = String::new();
+        archive.by_name("OEBPS/nav.xhtml").unwrap().read_to_string(&mut nav).unwrap();
+        assert_valid_xml(&nav, "OEBPS/nav.xhtml");
+
+        assert!(!chap.contains("EVIL_LEAK"));
+        assert!(!chap.contains("Don't break on apostrophe"));
+        assert!(!chap.contains("alert(1)"));
+        assert!(chap.contains("AFTER_COMMENT_AND_SCRIPT"));
+        assert!(chap.contains("1 &lt; 2"));
+        assert!(chap.contains("a &lt; b &amp; c"));
+        assert!(chap.contains("https://example.org"));
+
+        // Heading IDs must never collide even when input already claimed id="sec-2"
+        assert_eq!(chap.matches("id=\"sec-2\"").count(), 1, "duplicate sec-2 in:\n{chap}");
+        assert!(chap.contains("id=\"sec-1\""), "expected sec-1 for Second Heading:\n{chap}");
+        assert!(nav.contains("chapter.xhtml#sec-2") && nav.contains("chapter.xhtml#sec-1"));
+
+        let (title, combined) = read_epub_to_html(&epub_path).unwrap();
+        assert_eq!(title, "Real & Clean Title");
+
+        let plain = html_to_plain_text(&combined);
+        assert!(plain.contains("AFTER_COMMENT_AND_SCRIPT: 1 < 2 and a < b & c"), "plain={plain}");
+        assert!(!plain.contains("EVIL_LEAK"));
+
+        let md = html_to_markdown(&combined);
+        assert!(md.contains("AFTER_COMMENT_AND_SCRIPT: 1 < 2 and a < b & c"), "md={md}");
+        assert!(!md.contains("EVIL_LEAK"));
     }
 }

@@ -966,6 +966,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (!slot) return;
 
     if (slot.kind === "more" || slot.kind === "back") {
+      const wasFocusInsideSectors =
+        document.activeElement instanceof Element &&
+        sectorsLayer.contains(document.activeElement);
       page = slot.targetPage;
       activeIndex = -1;
       clearDwell();
@@ -973,6 +976,12 @@ export function mountWheelView(root: HTMLElement): () => void {
       renderSectors();
       renderHub();
       announce(formatPageFlipAnnouncement(page, totalPages), { force: true });
+      if (wasFocusInsideSectors) {
+        const firstFocusIdx = slots.findIndex((s) => isSlotActionable(s));
+        if (firstFocusIdx >= 0) {
+          sectorGroups[firstFocusIdx]?.focus();
+        }
+      }
       return;
     }
 
@@ -1216,6 +1225,10 @@ export function mountWheelView(root: HTMLElement): () => void {
       hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
         previousIndex: activeIndex,
       });
+      if (hit < 0 && sectorGroupEl) {
+        const idxAttr = Number(sectorGroupEl.dataset.slotIndex ?? "-1");
+        if (Number.isInteger(idxAttr)) hit = idxAttr;
+      }
     }
     if (hit < 0) return;
     const slot = slots[hit];

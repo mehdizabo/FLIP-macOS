@@ -88,8 +88,8 @@ pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
     map.insert(
         "pdf".to_string(),
         vec![
-            "PNG", "JPG", "TXT", "DOCX", "MD", "HTML", "RTF", "WEBP", "HEIC", "ODT", "EPUB",
-            "FB2", "RST",
+            "PNG", "JPG", "TXT", "DOCX", "MD", "HTML", "RTF", "WEBP", "HEIC", "TIFF", "ODT",
+            "EPUB", "FB2", "RST",
         ]
         .into_iter()
         .map(String::from)
@@ -229,6 +229,17 @@ impl AppPreferences {
         if self.recent_conversions.len() > 10 {
             self.recent_conversions.truncate(10);
         }
+        for (family, defaults) in default_preferred_formats() {
+            let entry = self
+                .preferred_formats
+                .entry(family)
+                .or_insert_with(|| defaults.clone());
+            for fmt in defaults {
+                if !entry.iter().any(|existing| existing.eq_ignore_ascii_case(&fmt)) {
+                    entry.push(fmt);
+                }
+            }
+        }
     }
 
     pub fn push_recent(&mut self, item: RecentConversion) {
@@ -237,6 +248,17 @@ impl AppPreferences {
         self.recent_conversions.insert(0, item);
         if self.recent_conversions.len() > 10 {
             self.recent_conversions.truncate(10);
+        }
+        for (family, defaults) in default_preferred_formats() {
+            let entry = self
+                .preferred_formats
+                .entry(family)
+                .or_insert_with(|| defaults.clone());
+            for fmt in defaults {
+                if !entry.iter().any(|existing| existing.eq_ignore_ascii_case(&fmt)) {
+                    entry.push(fmt);
+                }
+            }
         }
     }
 
@@ -313,5 +335,19 @@ mod tests {
         let loaded = AppPreferences::load_from(&path);
         assert_eq!(loaded.drag_trigger, "Down");
         assert!(loaded.sound_enabled);
+    }
+
+    #[test]
+    fn sanitize_preserves_custom_order_while_backfilling_new_defaults() {
+        let mut prefs = AppPreferences::default();
+        prefs.preferred_formats.insert(
+            "document".to_string(),
+            vec!["EPUB".into(), "MD".into(), "PDF".into()],
+        );
+        prefs.sanitize();
+        let doc = &prefs.preferred_formats["document"];
+        assert_eq!(&doc[0..3], &["EPUB", "MD", "PDF"]);
+        assert!(doc.contains(&"HEIC".to_string()));
+        assert!(prefs.preferred_formats["pdf"].contains(&"TIFF".to_string()));
     }
 }

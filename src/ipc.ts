@@ -115,6 +115,7 @@ export function defaultPreferences(): AppPreferences {
         "RTF",
         "WEBP",
         "HEIC",
+        "TIFF",
         "ODT",
         "EPUB",
         "FB2",
@@ -676,6 +677,34 @@ export async function getNewFileKinds(): Promise<NewFileKindsResponse> {
   };
 }
 
+function mergePreferredFormats(
+  defaults: Record<string, string[]>,
+  incoming?: Record<string, string[]>,
+): Record<string, string[]> {
+  const merged: Record<string, string[]> = {};
+  for (const [fam, defList] of Object.entries(defaults)) {
+    const custom = incoming?.[fam];
+    if (Array.isArray(custom) && custom.length > 0) {
+      const next = [...custom];
+      const upper = new Set(next.map((f) => f.toUpperCase()));
+      for (const d of defList) {
+        if (!upper.has(d.toUpperCase())) next.push(d);
+      }
+      merged[fam] = next;
+    } else {
+      merged[fam] = [...defList];
+    }
+  }
+  if (incoming) {
+    for (const [fam, list] of Object.entries(incoming)) {
+      if (!(fam in merged) && Array.isArray(list)) {
+        merged[fam] = [...list];
+      }
+    }
+  }
+  return merged;
+}
+
 export async function getPreferences(): Promise<AppPreferences> {
   const defaults = defaultPreferences();
   if (!isTauriRuntime()) {
@@ -683,20 +712,14 @@ export async function getPreferences(): Promise<AppPreferences> {
     return {
       ...defaults,
       ...mock,
-      preferredFormats: {
-        ...defaults.preferredFormats,
-        ...(mock.preferredFormats ?? {}),
-      },
+      preferredFormats: mergePreferredFormats(defaults.preferredFormats, mock.preferredFormats),
     };
   }
   const prefs = await invoke<Partial<AppPreferences>>("get_preferences");
   return {
     ...defaults,
     ...prefs,
-    preferredFormats: {
-      ...defaults.preferredFormats,
-      ...(prefs.preferredFormats ?? {}),
-    },
+    preferredFormats: mergePreferredFormats(defaults.preferredFormats, prefs.preferredFormats),
   };
 }
 

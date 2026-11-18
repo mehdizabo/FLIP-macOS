@@ -142,8 +142,12 @@ describe("Frontend IPC surface & contract alignment", () => {
 
       const prefs = await getPreferences();
       prefs.dragTrigger = "Space";
+      prefs.preferredFormats.document = ["EPUB", "MD"];
       const saved = await savePreferences(prefs);
       expect(saved.dragTrigger).toBe("Space");
+      const reloaded = await getPreferences();
+      expect(reloaded.preferredFormats.document.slice(0, 2)).toEqual(["EPUB", "MD"]);
+      expect(reloaded.preferredFormats.document).toContain("HEIC");
       expect((await getRecentConversions()).length).toBeGreaterThan(0);
 
       await dismissWheel("test-dismiss");
@@ -272,5 +276,6 @@ describe("Frontend IPC surface & contract alignment", () => {
 
     expect(defaultPreferences().preferredFormats.document).toContain("HEIC");
     expect(defaultPreferences().preferredFormats.document).toContain("EPUB");
+    expect(defaultPreferences().preferredFormats.pdf).toContain("TIFF");
   });
 });
