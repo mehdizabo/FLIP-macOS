@@ -90,9 +90,9 @@ pub const AUDIO_ALL_EXTS: &[&str] = &[
 pub const VIDEO_NATIVE_EXTS: &[&str] = &["mp4", "mov", "m4v"];
 pub const VIDEO_ALL_EXTS: &[&str] = &["mp4", "mkv", "webm", "avi", "mov", "wmv", "m4v"];
 pub const DOC_NATIVE_EXTS: &[&str] = &[
-    "txt", "md", "markdown", "html", "htm", "docx", "odt", "rtf", "doc",
+    "txt", "md", "markdown", "html", "htm", "docx", "odt", "rtf", "doc", "epub",
 ];
-pub const DOC_PANDOC_ONLY_EXTS: &[&str] = &["epub", "fb2", "rst"];
+pub const DOC_PANDOC_ONLY_EXTS: &[&str] = &["fb2", "rst"];
 pub const IWORK_EXTS: &[&str] = &["pages", "numbers", "key"];
 
 pub fn ext_lower(path: &Path) -> String {
@@ -171,18 +171,20 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
         "pdf" => {
             let mut out = vec![
                 "PNG", "JPG", "WEBP", "HEIC", "TIFF", "TXT", "DOCX", "MD", "HTML", "RTF", "ODT",
+                "EPUB",
             ];
             if caps.pandoc {
-                out.extend_from_slice(&["EPUB", "FB2", "RST"]);
+                out.extend_from_slice(&["FB2", "RST"]);
             }
             out
         }
         e if DOC_NATIVE_EXTS.contains(&e) => {
             let mut out = vec![
-                "PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP",
+                "PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP", "HEIC",
+                "EPUB",
             ];
             if caps.pandoc {
-                out.extend_from_slice(&["EPUB", "FB2", "RST"]);
+                out.extend_from_slice(&["FB2", "RST"]);
             }
             out
         }
@@ -190,7 +192,7 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
             if caps.pandoc {
                 vec![
                     "PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP",
-                    "EPUB", "FB2", "RST",
+                    "HEIC", "EPUB", "FB2", "RST",
                 ]
             } else {
                 vec![]
@@ -588,21 +590,48 @@ mod tests {
             ..Default::default()
         };
 
+        assert!(DOC_NATIVE_EXTS.contains(&"epub"));
+        assert!(!DOC_PANDOC_ONLY_EXTS.contains(&"epub"));
+        assert!(DOC_PANDOC_ONLY_EXTS.contains(&"fb2"));
+        assert!(DOC_PANDOC_ONLY_EXTS.contains(&"rst"));
+
         let txt_native = outputs(&["note.txt"], &native);
         assert!(txt_native.contains(&"PDF".to_string()));
         assert!(txt_native.contains(&"DOCX".to_string()));
         assert!(txt_native.contains(&"PNG".to_string()));
-        assert!(!txt_native.contains(&"EPUB".to_string()));
+        assert!(txt_native.contains(&"HEIC".to_string()));
+        assert!(txt_native.contains(&"EPUB".to_string()));
+        assert!(!txt_native.contains(&"FB2".to_string()));
+        assert!(!txt_native.contains(&"RST".to_string()));
         assert!(!txt_native.contains(&"PAGES".to_string()));
-        assert!(!outputs(&["note.html"], &native).contains(&"EPUB".to_string()));
+
+        assert!(outputs(&["note.html"], &native).contains(&"EPUB".to_string()));
         assert!(outputs(&["note.html"], &native).contains(&"DOCX".to_string()));
+        assert!(outputs(&["deck.pdf"], &native).contains(&"EPUB".to_string()));
+        assert!(!outputs(&["deck.pdf"], &native).contains(&"FB2".to_string()));
+        assert!(!outputs(&["deck.pdf"], &native).contains(&"RST".to_string()));
+        assert!(outputs(&["deck.pdf"], &with_pd).contains(&"FB2".to_string()));
+        assert!(outputs(&["deck.pdf"], &with_pd).contains(&"RST".to_string()));
+
+        let epub_native = outputs(&["book.epub"], &native);
+        assert_eq!(family_for_ext("epub"), Some(FormatFamily::Document));
+        for needed in ["TXT", "MD", "HTML", "RTF", "DOCX", "ODT", "PDF", "PNG", "JPG", "WEBP", "HEIC"] {
+            assert!(epub_native.contains(&needed.to_string()), "EPUB missing native output {needed}");
+        }
+        assert!(!epub_native.contains(&"EPUB".to_string()));
+        assert!(!epub_native.contains(&"FB2".to_string()));
+        assert!(!epub_native.contains(&"RST".to_string()));
+
+        assert!(outputs(&["book.fb2"], &native).is_empty());
+        assert!(outputs(&["guide.rst"], &native).is_empty());
+        assert!(outputs(&["book.fb2"], &with_pd).contains(&"EPUB".to_string()));
         assert!(!outputs(&["note.txt"], &with_pd).contains(&"PAGES".to_string()));
 
         let txt_pd = outputs(&["note.txt"], &with_pd);
         assert!(txt_pd.contains(&"EPUB".to_string()));
         assert!(txt_pd.contains(&"FB2".to_string()));
         assert!(txt_pd.contains(&"RST".to_string()));
-        assert_eq!(txt_pd.len(), 12);
+        assert_eq!(txt_pd.len(), 13);
 
         // Order formats preserves set membership
         let ordered = order_formats(&txt_pd, Some(FormatFamily::Document), None);

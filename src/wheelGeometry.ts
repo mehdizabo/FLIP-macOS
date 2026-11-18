@@ -405,3 +405,131 @@ export function paginateWheelItems<T>(
     slots: pages[safePage],
   };
 }
+
+export interface SectorAnnouncementItem {
+  subtitle: string;
+  enabled?: boolean;
+  disabledReason?: string;
+}
+
+export function moveFormatToIndex(
+  formats: readonly string[],
+  fromIndex: number,
+  toIndex: number,
+): string[] {
+  const list = [...formats];
+  if (list.length <= 1) return list;
+  const from = Math.trunc(fromIndex);
+  const to = Math.max(0, Math.min(list.length - 1, Math.trunc(toIndex)));
+  if (from < 0 || from >= list.length || from === to) {
+    return list;
+  }
+  const [moved] = list.splice(from, 1);
+  list.splice(to, 0, moved);
+  return list;
+}
+
+export function reorderFormatList(
+  formats: readonly string[],
+  index: number,
+  direction: -1 | 1,
+): string[] {
+  return moveFormatToIndex(formats, index, index + direction);
+}
+
+export function formatSectorAriaLabel(
+  slot: PaginatedSlot<SectorAnnouncementItem>,
+  index: number,
+  total: number,
+): string {
+  const safeTotal = Math.max(1, Math.trunc(total));
+  const sectorNum = Math.max(1, Math.min(safeTotal, Math.trunc(index) + 1));
+  if (slot.kind === "more") {
+    return `More options, page ${slot.targetPage + 1}, sector ${sectorNum} of ${safeTotal}`;
+  }
+  if (slot.kind === "back") {
+    return `Previous options, page ${slot.targetPage + 1}, sector ${sectorNum} of ${safeTotal}`;
+  }
+  const base = `${slot.item.subtitle}, sector ${sectorNum} of ${safeTotal}`;
+  if (slot.item.enabled === false) {
+    const reason = slot.item.disabledReason?.trim();
+    return reason ? `${base}, unavailable (${reason})` : `${base}, unavailable`;
+  }
+  return base;
+}
+
+export function formatWheelOpenAnnouncement(params: {
+  mode: "convert" | "new";
+  fileCount: number;
+  optionCount: number;
+  page?: number;
+  totalPages?: number;
+}): string {
+  const page = Math.max(0, Math.trunc(params.page ?? 0));
+  const totalPages = Math.max(1, Math.trunc(params.totalPages ?? 1));
+  const pageSuffix = totalPages > 1 ? `, page ${page + 1} of ${totalPages}` : "";
+  if (params.mode === "new") {
+    return `Create New File wheel opened, ${params.optionCount} options${pageSuffix}.`;
+  }
+  if (params.fileCount <= 0) {
+    return "Convert wheel opened. No files selected yet.";
+  }
+  const noun = params.fileCount === 1 ? "file" : "files";
+  if (params.optionCount === 0) {
+    return `Convert wheel opened for ${params.fileCount} ${noun}. No compatible output formats.`;
+  }
+  return `Convert wheel opened for ${params.fileCount} ${noun}, ${params.optionCount} options${pageSuffix}.`;
+}
+
+export function formatPageFlipAnnouncement(page: number, totalPages: number): string {
+  const safeTotal = Math.max(1, Math.trunc(totalPages));
+  const safePage = Math.max(0, Math.min(safeTotal - 1, Math.trunc(page)));
+  return `Page ${safePage + 1} of ${safeTotal}`;
+}
+
+export function getProgressMilestoneBucket(percent: number): number {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  if (clamped >= 75) return 75;
+  if (clamped >= 50) return 50;
+  if (clamped >= 25) return 25;
+  return 0;
+}
+
+export function formatProgressMilestoneAnnouncement(
+  targetFormat: string,
+  bucketPercent: number,
+): string {
+  const fmt = targetFormat.trim().toUpperCase();
+  if (bucketPercent <= 0) {
+    return `Converting to ${fmt}`;
+  }
+  return `Converting to ${fmt}, ${bucketPercent}% complete`;
+}
+
+export function formatCompletionAnnouncement(params: {
+  ok: boolean;
+  succeeded?: number;
+  failed?: number;
+  canceled?: boolean;
+  outputFormat?: string;
+  createdLabel?: string;
+  errorMessage?: string;
+}): string {
+  if (params.createdLabel) {
+    return `Created ${params.createdLabel}.`;
+  }
+  if (params.canceled) {
+    return "Conversion canceled.";
+  }
+  if (params.ok) {
+    const count = params.succeeded ?? 1;
+    const fmt = params.outputFormat ? ` to ${params.outputFormat.toUpperCase()}` : "";
+    return `Converted ${count} ${count === 1 ? "file" : "files"}${fmt}.`;
+  }
+  const reason = params.errorMessage?.trim();
+  if (reason) {
+    return `Conversion failed: ${reason}`;
+  }
+  const failed = params.failed ?? 1;
+  return `Conversion failed for ${failed} ${failed === 1 ? "file" : "files"}.`;
+}

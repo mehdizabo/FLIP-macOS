@@ -1,4 +1,5 @@
 import { UI_ICONS } from "../icons";
+import { moveFormatToIndex, reorderFormatList } from "../wheelGeometry";
 import {
   checkForUpdates,
   consumeSettingsNavigation,
@@ -491,26 +492,26 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Preferred Wheel Format Order</h2>
-            <p class="card-subtitle">Top 7 formats appear immediately on Ring Page 1 for each family</p>
+            <h2 class="card-title">Preferred Format Order</h2>
+            <p class="card-subtitle">Top 7 formats appear immediately on Ring Page 1 for each family; drag or reorder below</p>
           </div>
-          <button type="button" class="btn btn-sm" id="btn-reset-family-order">Reset Family</button>
+          <button type="button" class="btn btn-sm" id="btn-reset-family-order" aria-label="Reset format order for this family to default">Reset to Default</button>
         </div>
-        <div class="preset-row" style="margin-bottom:10px">
+        <div class="preset-row" style="margin-bottom:10px" role="tablist" aria-label="Format family">
           ${FAMILY_LABELS.map(
             (f) =>
-              `<button type="button" class="btn btn-sm ${selectedFamily === f.key ? "btn-primary" : ""}" data-family-tab="${f.key}">${f.label}</button>`,
+              `<button type="button" role="tab" aria-selected="${selectedFamily === f.key ? "true" : "false"}" class="btn btn-sm ${selectedFamily === f.key ? "btn-primary" : ""}" data-family-tab="${f.key}">${f.label}</button>`,
           ).join("")}
         </div>
-        <div class="format-chips">
+        <div class="format-chips" role="list" aria-label="Preferred formats order for ${escapeHtml(selectedFamily)}">
           ${familyFormats
             .map(
               (fmt, idx) => `
-              <div class="format-order-chip">
+              <div class="format-order-chip" role="listitem" draggable="true" data-chip-index="${idx}" data-format-tag="${escapeHtml(fmt)}">
                 <span style="opacity:0.5;font-size:10.5px">${idx + 1}.</span>
                 <span>${escapeHtml(fmt)}</span>
-                <button type="button" data-move-fmt="${idx}" data-dir="-1" ${idx === 0 ? "disabled" : ""} title="Move earlier">◀</button>
-                <button type="button" data-move-fmt="${idx}" data-dir="1" ${idx === familyFormats.length - 1 ? "disabled" : ""} title="Move later">▶</button>
+                <button type="button" data-move-fmt="${idx}" data-dir="-1" ${idx === 0 ? "disabled" : ""} aria-label="Move ${escapeHtml(fmt)} earlier (left or up), position ${idx + 1} of ${familyFormats.length}" title="Move earlier (Left / Up)">◀</button>
+                <button type="button" data-move-fmt="${idx}" data-dir="1" ${idx === familyFormats.length - 1 ? "disabled" : ""} aria-label="Move ${escapeHtml(fmt)} later (right or down), position ${idx + 1} of ${familyFormats.length}" title="Move later (Right / Down)">▶</button>
               </div>
             `,
             )
@@ -699,7 +700,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
         <div class="card-header">
           <div>
             <h2 class="card-title">Optional Local CLI Engines</h2>
-            <p class="card-subtitle">Unlocks MKV/WebM/MP3/FLAC/OGG transcoding and EPUB/FB2/RST books</p>
+            <p class="card-subtitle">Unlocks MKV/WebM/MP3/FLAC/OGG transcoding and FB2/RST books (EPUB 3 is built-in)</p>
           </div>
         </div>
         <div class="setting-row">
@@ -1019,20 +1020,82 @@ export function mountSettingsView(root: HTMLElement): () => void {
       const def = defaultPreferences().preferredFormats[selectedFamily] ?? [];
       void persistPrefs((d) => {
         d.preferredFormats[selectedFamily] = [...def];
-      }).then(renderMain);
+      }).then(() => {
+        renderMain();
+        mainEl.querySelector<HTMLButtonElement>("#btn-reset-family-order")?.focus();
+      });
     });
     mainEl.querySelectorAll<HTMLButtonElement>("[data-move-fmt]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const idx = Number(btn.dataset.moveFmt!);
-        const dir = Number(btn.dataset.dir!);
-        const list = [...(prefs.preferredFormats[selectedFamily] ?? defaultPreferences().preferredFormats[selectedFamily] ?? [])];
+        const dir = Number(btn.dataset.dir!) as -1 | 1;
+        const currentList =
+          prefs.preferredFormats[selectedFamily] ??
+          defaultPreferences().preferredFormats[selectedFamily] ??
+          [];
         const target = idx + dir;
-        if (target < 0 || target >= list.length) return;
-        const [item] = list.splice(idx, 1);
-        list.splice(target, 0, item);
+        if (target < 0 || target >= currentList.length) return;
+        const nextList = reorderFormatList(currentList, idx, dir);
         void persistPrefs((d) => {
-          d.preferredFormats[selectedFamily] = list;
+          d.preferredFormats[selectedFamily] = nextList;
+        }).then(() => {
+          renderMain();
+          const selector = `[data-move-fmt="${target}"][data-dir="${dir}"]`;
+          const movedBtn = mainEl.querySelector<HTMLButtonElement>(selector);
+          if (movedBtn && !movedBtn.disabled) {
+            movedBtn.focus();
+          } else {
+            mainEl
+              .querySelector<HTMLButtonElement>(`[data-move-fmt="${target}"]`)
+              ?.focus();
+          }
+        });
+      });
+    });
+
+    let dragSourceIndex: number | null = null;
+    mainEl.querySelectorAll<HTMLElement>(".format-order-chip[data-chip-index]").forEach((chip) => {
+      const chipIdx = Number(chip.dataset.chipIndex!);
+      chip.addEventListener("dragstart", (ev) => {
+        dragSourceIndex = chipIdx;
+        chip.classList.add("is-dragging");
+        if (ev.dataTransfer) {
+          ev.dataTransfer.effectAllowed = "move";
+          ev.dataTransfer.setData("text/plain", String(chipIdx));
+        }
+      });
+      chip.addEventListener("dragover", (ev) => {
+        if (dragSourceIndex === null || dragSourceIndex === chipIdx) return;
+        ev.preventDefault();
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+        chip.classList.add("is-drag-over");
+      });
+      chip.addEventListener("dragleave", () => {
+        chip.classList.remove("is-drag-over");
+      });
+      chip.addEventListener("drop", (ev) => {
+        ev.preventDefault();
+        chip.classList.remove("is-drag-over");
+        const fromIdx =
+          dragSourceIndex !== null
+            ? dragSourceIndex
+            : Number(ev.dataTransfer?.getData("text/plain") ?? "-1");
+        dragSourceIndex = null;
+        const currentList =
+          prefs.preferredFormats[selectedFamily] ??
+          defaultPreferences().preferredFormats[selectedFamily] ??
+          [];
+        if (fromIdx < 0 || fromIdx >= currentList.length || fromIdx === chipIdx) return;
+        const nextList = moveFormatToIndex(currentList, fromIdx, chipIdx);
+        void persistPrefs((d) => {
+          d.preferredFormats[selectedFamily] = nextList;
         }).then(renderMain);
+      });
+      chip.addEventListener("dragend", () => {
+        dragSourceIndex = null;
+        mainEl.querySelectorAll(".format-order-chip").forEach((el) => {
+          el.classList.remove("is-dragging", "is-drag-over");
+        });
       });
     });
 

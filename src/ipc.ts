@@ -131,6 +131,7 @@ export function defaultPreferences(): AppPreferences {
         "PNG",
         "JPG",
         "WEBP",
+        "HEIC",
         "EPUB",
         "FB2",
         "RST",
@@ -256,7 +257,8 @@ const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", 
 const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "csv"]);
 const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf"]);
 const VIDEO_EXTS = new Set(["mp4", "mkv", "webm", "avi", "mov", "wmv", "m4v"]);
-const DOC_EXTS = new Set(["txt", "md", "markdown", "html", "htm", "docx", "odt", "rtf", "doc", "epub", "fb2", "rst"]);
+export const DOC_NATIVE_EXTS = new Set(["txt", "md", "markdown", "html", "htm", "docx", "odt", "rtf", "doc", "epub"]);
+export const DOC_PANDOC_ONLY_EXTS = new Set(["fb2", "rst"]);
 
 function canonicalForExt(ext: string): string {
   switch (ext) {
@@ -279,7 +281,10 @@ function canonicalForExt(ext: string): string {
   }
 }
 
-function mockTargetsForExt(ext: string): { targets: string[]; family: FormatFamily | null } {
+function mockTargetsForExt(
+  ext: string,
+  hasPandoc = false,
+): { targets: string[]; family: FormatFamily | null } {
   if (IMAGE_EXTS.has(ext)) {
     return { targets: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP"], family: "image" };
   }
@@ -293,14 +298,46 @@ function mockTargetsForExt(ext: string): { targets: string[]; family: FormatFami
     return { targets: ["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"], family: "video" };
   }
   if (ext === "pdf") {
-    return {
-      targets: ["PNG", "JPG", "WEBP", "HEIC", "TIFF", "TXT", "DOCX", "MD", "HTML", "RTF", "ODT", "EPUB", "FB2", "RST"],
-      family: "pdf",
-    };
+    const targets = [
+      "PNG",
+      "JPG",
+      "WEBP",
+      "HEIC",
+      "TIFF",
+      "TXT",
+      "DOCX",
+      "MD",
+      "HTML",
+      "RTF",
+      "ODT",
+      "EPUB",
+    ];
+    if (hasPandoc) targets.push("FB2", "RST");
+    return { targets, family: "pdf" };
   }
-  if (DOC_EXTS.has(ext)) {
+  if (DOC_NATIVE_EXTS.has(ext)) {
+    const targets = [
+      "PDF",
+      "DOCX",
+      "MD",
+      "HTML",
+      "TXT",
+      "RTF",
+      "ODT",
+      "PNG",
+      "JPG",
+      "WEBP",
+      "HEIC",
+      "EPUB",
+    ];
+    if (hasPandoc) targets.push("FB2", "RST");
+    return { targets, family: "document" };
+  }
+  if (DOC_PANDOC_ONLY_EXTS.has(ext)) {
     return {
-      targets: ["PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP", "EPUB", "FB2", "RST"],
+      targets: hasPandoc
+        ? ["PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP", "HEIC", "EPUB", "FB2", "RST"]
+        : [],
       family: "document",
     };
   }
@@ -310,7 +347,10 @@ function mockTargetsForExt(ext: string): { targets: string[]; family: FormatFami
   return { targets: [], family: null };
 }
 
-export function inspectFilesLocally(paths: string[]): InspectFilesResult {
+export function inspectFilesLocally(
+  paths: string[],
+  caps: { pandoc?: boolean } = {},
+): InspectFilesResult {
   if (paths.length === 0) {
     return {
       files: [],
@@ -327,7 +367,7 @@ export function inspectFilesLocally(paths: string[]): InspectFilesResult {
   for (const p of paths) {
     const ext = extLower(p);
     const same = canonicalForExt(ext);
-    const { targets, family } = mockTargetsForExt(ext);
+    const { targets, family } = mockTargetsForExt(ext, Boolean(caps.pandoc));
     if (primaryFamily === null) primaryFamily = family;
     const filtered = targets.filter((t) => t !== same);
     if (shared === null) {

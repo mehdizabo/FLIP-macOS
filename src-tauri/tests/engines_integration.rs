@@ -235,12 +235,12 @@ fn documents_and_pdf_multipage_ocr_merge_and_container_bomb() {
     fs::write(&txt, &txt_body).unwrap();
     let txt_hash = sha256_file(&txt);
 
-    let mut doc_targets: Vec<String> = ["PDF", "DOCX", "MD", "HTML", "RTF", "ODT", "PNG", "JPG", "WEBP"]
+    let mut doc_targets: Vec<String> = ["PDF", "DOCX", "MD", "HTML", "RTF", "ODT", "EPUB", "PNG", "JPG", "WEBP"]
         .into_iter()
         .map(String::from)
         .collect();
     if tools.pandoc.is_some() {
-        doc_targets.extend(["EPUB", "FB2", "RST"].into_iter().map(String::from));
+        doc_targets.extend(["FB2", "RST"].into_iter().map(String::from));
     }
 
     let doc_res = convert_files(std::slice::from_ref(&txt), &doc_targets, &prefs, &cancel, None).unwrap();
@@ -1254,4 +1254,119 @@ fn readonly_source_directory_falls_back_to_fallback_folder() {
             .join("Downloads")
     });
     assert_eq!(resolved_secondary, expected_downloads);
+}
+
+fn assert_valid_epub3_archive(epub_path: &Path) {
+    use std::io::Read;
+    let file = File::open(epub_path).expect("open generated epub");
+    let mut archive = ZipArchive::new(file).expect("parse epub zip");
+    assert!(archive.len() >= 6, "expected >= 6 EPUB 3 container entries");
+
+    {
+        let mut entry0 = archive.by_index(0).expect("entry 0 mimetype");
+        assert_eq!(entry0.name(), "mimetype", "EPUB 3 requires mimetype as entry 0");
+        assert_eq!(
+            entry0.compression(),
+            CompressionMethod::Stored,
+            "EPUB 3 requires mimetype stored uncompressed"
+        );
+        let mut mime = String::new();
+        entry0.read_to_string(&mut mime).unwrap();
+        assert_eq!(mime, "application/epub+zip");
+    }
+
+    for required in [
+        "META-INF/container.xml",
+        "OEBPS/content.opf",
+        "OEBPS/nav.xhtml",
+        "OEBPS/style.css",
+        "OEBPS/chapter.xhtml",
+    ] {
+        assert!(
+            archive.by_name(required).is_ok(),
+            "EPUB 3 missing required entry `{required}`"
+        );
+    }
+
+    let mut opf = String::new();
+    archive.by_name("OEBPS/content.opf").unwrap().read_to_string(&mut opf).unwrap();
+    assert!(opf.contains("dc:identifier") && opf.contains("dc:title") && opf.contains("dc:language"));
+    assert!(opf.contains("dcterms:modified"));
+
+    let mut nav = String::new();
+    archive.by_name("OEBPS/nav.xhtml").unwrap().read_to_string(&mut nav).unwrap();
+    assert!(nav.contains("epub:type=\"toc\""));
+}
+
+#[test]
+fn native_epub3_md_epub_txt_and_pdf_epub_roundtrips_without_pandoc() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // 1. MD -> EPUB (zero Pandoc) + mimetype Stored entry 0 verification
+    let md_src = dir.path().join("handbook.md");
+    fs::write(
+        &md_src,
+        "# FLIP Native EPUB\n\nEspresso & **caffè** guide.\n\n- Alpha chapter\n- Beta chapter\n",
+    )
+    .unwrap();
+    let md_hash = sha256_file(&md_src);
+
+    let md_to_epub = convert_files(std::slice::from_ref(&md_src), &["EPUB".into()], &prefs, &cancel, None).unwrap();
+    assert!(md_to_epub[0].error.is_none(), "MD -> EPUB failed: {:?}", md_to_epub[0].error);
+    let epub_from_md = PathBuf::from(&md_to_epub[0].outputs[0]);
+    assert_valid_epub3_archive(&epub_from_md);
+
+    // 2. EPUB -> all 11 native target formats (TXT, MD, HTML, RTF, DOCX, ODT, PDF, PNG, JPG, WEBP, HEIC)
+    let epub_targets: Vec<String> = [
+        "TXT", "MD", "HTML", "RTF", "DOCX", "ODT", "PDF", "PNG", "JPG", "WEBP", "HEIC",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    let epub_outs = convert_files(std::slice::from_ref(&epub_from_md), &epub_targets, &prefs, &cancel, None).unwrap();
+    for r in &epub_outs {
+        assert!(r.error.is_none(), "EPUB -> {} failed: {:?}", r.format, r.error);
+        assert!(!r.outputs.is_empty(), "EPUB -> {} produced 0 outputs", r.format);
+    }
+
+    let epub_txt = fs::read_to_string(&epub_outs.iter().find(|r| r.format == "TXT").unwrap().outputs[0]).unwrap();
+    assert!(
+        epub_txt.contains("FLIP Native EPUB") && epub_txt.contains("caffè") && epub_txt.contains("Beta chapter"),
+        "EPUB -> TXT lost content:\n{epub_txt}"
+    );
+    let epub_md = fs::read_to_string(&epub_outs.iter().find(|r| r.format == "MD").unwrap().outputs[0]).unwrap();
+    assert!(epub_md.contains("# FLIP Native EPUB") && epub_md.contains("caffè"));
+    let epub_pdf = PathBuf::from(&epub_outs.iter().find(|r| r.format == "PDF").unwrap().outputs[0]);
+    assert!(fs::read(&epub_pdf).unwrap().starts_with(b"%PDF-"));
+
+    // 3. PDF -> EPUB -> TXT roundtrip (zero Pandoc)
+    let pdf_to_epub = convert_files(std::slice::from_ref(&epub_pdf), &["EPUB".into()], &prefs, &cancel, None).unwrap();
+    assert!(pdf_to_epub[0].error.is_none(), "PDF -> EPUB failed: {:?}", pdf_to_epub[0].error);
+    let epub_from_pdf = PathBuf::from(&pdf_to_epub[0].outputs[0]);
+    assert_valid_epub3_archive(&epub_from_pdf);
+
+    let pdf_epub_txt = convert_files(&[epub_from_pdf], &["TXT".into()], &prefs, &cancel, None).unwrap();
+    assert!(pdf_epub_txt[0].error.is_none(), "PDF->EPUB->TXT failed: {:?}", pdf_epub_txt[0].error);
+    let roundtrip_txt = fs::read_to_string(&pdf_epub_txt[0].outputs[0]).unwrap();
+    assert!(
+        roundtrip_txt.contains("FLIP Native EPUB") && roundtrip_txt.contains("caffè"),
+        "PDF -> EPUB -> TXT lost text:\n{roundtrip_txt}"
+    );
+
+    // 4. DOCX / ODT / RTF / TXT / HTML -> EPUB roundtrips
+    for fmt in ["TXT", "HTML", "DOCX", "RTF", "ODT"] {
+        let mid_path = PathBuf::from(&epub_outs.iter().find(|r| r.format == fmt).unwrap().outputs[0]);
+        let to_epub = convert_files(&[mid_path], &["EPUB".into()], &prefs, &cancel, None).unwrap();
+        assert!(to_epub[0].error.is_none(), "{fmt} -> EPUB failed: {:?}", to_epub[0].error);
+        let gen_epub = PathBuf::from(&to_epub[0].outputs[0]);
+        assert_valid_epub3_archive(&gen_epub);
+        let back_txt = convert_files(&[gen_epub], &["TXT".into()], &prefs, &cancel, None).unwrap();
+        assert!(back_txt[0].error.is_none(), "{fmt}->EPUB->TXT failed: {:?}", back_txt[0].error);
+        let text = fs::read_to_string(&back_txt[0].outputs[0]).unwrap();
+        assert!(text.contains("caffè"), "{fmt} -> EPUB -> TXT lost caffè:\n{text}");
+    }
+
+    assert_eq!(sha256_file(&md_src), md_hash);
 }

@@ -9,15 +9,23 @@ import {
 import { resolveRoute } from "./router";
 import { mapBrowserKeyToToken } from "./views/SettingsView";
 import {
+  formatCompletionAnnouncement,
+  formatPageFlipAnnouncement,
+  formatProgressMilestoneAnnouncement,
+  formatSectorAriaLabel,
+  formatWheelOpenAnnouncement,
+  getProgressMilestoneBucket,
   getSectorAngles,
   getSectorAtPoint,
   getSectorCenter,
+  moveFormatToIndex,
   orderFormats,
   paginateWheelItems,
   polarToCartesian,
   progressArcSvgPath,
   progressRaySegment,
   progressTipPoint,
+  reorderFormatList,
   sectorSvgPath,
   WHEEL_CENTER,
   WHEEL_DEAD_ZONE_RADIUS,
@@ -315,5 +323,134 @@ describe("router and IPC policy/escaping helpers", () => {
     const second = consumeBatchHandoff();
     expect(second.files).toEqual([]);
     expect(second.results).toBeNull();
+  });
+});
+
+describe("preferred format reorder helpers", () => {
+  test("reorderFormatList moves items earlier and later without mutating input", () => {
+    const initial = ["DOCX", "PDF", "MD", "EPUB"];
+    const movedLeft = reorderFormatList(initial, 2, -1);
+    expect(movedLeft).toEqual(["DOCX", "MD", "PDF", "EPUB"]);
+    expect(initial).toEqual(["DOCX", "PDF", "MD", "EPUB"]);
+
+    const movedRight = reorderFormatList(initial, 1, 1);
+    expect(movedRight).toEqual(["DOCX", "MD", "PDF", "EPUB"]);
+  });
+
+  test("reorderFormatList and moveFormatToIndex clamp boundary moves cleanly", () => {
+    const initial = ["PNG", "JPG", "WEBP"];
+    expect(reorderFormatList(initial, 0, -1)).toEqual(["PNG", "JPG", "WEBP"]);
+    expect(reorderFormatList(initial, 2, 1)).toEqual(["PNG", "JPG", "WEBP"]);
+    expect(reorderFormatList(initial, -1, 1)).toEqual(["PNG", "JPG", "WEBP"]);
+    expect(moveFormatToIndex(initial, 2, 0)).toEqual(["WEBP", "PNG", "JPG"]);
+    expect(moveFormatToIndex(initial, 0, 99)).toEqual(["JPG", "WEBP", "PNG"]);
+    expect(moveFormatToIndex(["ONLY"], 0, 0)).toEqual(["ONLY"]);
+  });
+});
+
+describe("VoiceOver live announcement formatters", () => {
+  test("formatSectorAriaLabel formats action, unavailable, and pagination slots", () => {
+    expect(
+      formatSectorAriaLabel(
+        {
+          kind: "item",
+          globalIndex: 1,
+          item: { subtitle: "Convert to PNG", enabled: true },
+        },
+        1,
+        8,
+      ),
+    ).toBe("Convert to PNG, sector 2 of 8");
+
+    expect(
+      formatSectorAriaLabel(
+        {
+          kind: "item",
+          globalIndex: 0,
+          item: {
+            subtitle: "Convert to MKV",
+            enabled: false,
+            disabledReason: "Install FFmpeg",
+          },
+        },
+        0,
+        6,
+      ),
+    ).toBe("Convert to MKV, sector 1 of 6, unavailable (Install FFmpeg)");
+
+    expect(
+      formatSectorAriaLabel({ kind: "more", targetPage: 1 }, 7, 8),
+    ).toBe("More options, page 2, sector 8 of 8");
+
+    expect(
+      formatSectorAriaLabel({ kind: "back", targetPage: 0 }, 7, 8),
+    ).toBe("Previous options, page 1, sector 8 of 8");
+  });
+
+  test("open mode, page flip, progress milestone, and completion announcements", () => {
+    expect(
+      formatWheelOpenAnnouncement({
+        mode: "convert",
+        fileCount: 2,
+        optionCount: 10,
+        page: 0,
+        totalPages: 2,
+      }),
+    ).toBe("Convert wheel opened for 2 files, 10 options, page 1 of 2.");
+
+    expect(
+      formatWheelOpenAnnouncement({
+        mode: "convert",
+        fileCount: 0,
+        optionCount: 0,
+      }),
+    ).toBe("Convert wheel opened. No files selected yet.");
+
+    expect(
+      formatWheelOpenAnnouncement({
+        mode: "new",
+        fileCount: 0,
+        optionCount: 7,
+      }),
+    ).toBe("Create New File wheel opened, 7 options.");
+
+    expect(formatPageFlipAnnouncement(1, 3)).toBe("Page 2 of 3");
+
+    expect(getProgressMilestoneBucket(0)).toBe(0);
+    expect(getProgressMilestoneBucket(24)).toBe(0);
+    expect(getProgressMilestoneBucket(25)).toBe(25);
+    expect(getProgressMilestoneBucket(55)).toBe(50);
+    expect(getProgressMilestoneBucket(99)).toBe(75);
+    expect(formatProgressMilestoneAnnouncement("epub", 0)).toBe("Converting to EPUB");
+    expect(formatProgressMilestoneAnnouncement("epub", 50)).toBe(
+      "Converting to EPUB, 50% complete",
+    );
+
+    expect(
+      formatCompletionAnnouncement({
+        ok: true,
+        succeeded: 1,
+        outputFormat: "epub",
+      }),
+    ).toBe("Converted 1 file to EPUB.");
+    expect(
+      formatCompletionAnnouncement({
+        ok: false,
+        canceled: true,
+      }),
+    ).toBe("Conversion canceled.");
+    expect(
+      formatCompletionAnnouncement({
+        ok: false,
+        failed: 1,
+        errorMessage: "Pandoc not found",
+      }),
+    ).toBe("Conversion failed: Pandoc not found");
+    expect(
+      formatCompletionAnnouncement({
+        ok: true,
+        createdLabel: "notes.md",
+      }),
+    ).toBe("Created notes.md.");
   });
 });

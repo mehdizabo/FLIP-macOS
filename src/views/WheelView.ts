@@ -33,6 +33,12 @@ import type {
 } from "../types";
 import {
   DRAG_DWELL_MS,
+  formatCompletionAnnouncement,
+  formatPageFlipAnnouncement,
+  formatProgressMilestoneAnnouncement,
+  formatSectorAriaLabel,
+  formatWheelOpenAnnouncement,
+  getProgressMilestoneBucket,
   getSectorAtPoint,
   getSectorCenter,
   orderFormats,
@@ -120,10 +126,14 @@ export function mountWheelView(root: HTMLElement): () => void {
   let conversionInFlight = false;
   let receivedLiveState = false;
   let lastDragCoords: { x: number; y: number } | null = null;
+  let lastAnnouncedMilestone = -1;
+  let activeTargetFormat = "";
+  let currentItemsCount = 0;
 
   // Static shell DOM
   root.innerHTML = `
     <div class="wheel-stage" role="dialog" aria-label="FLIP Radial Wheel">
+      <div class="sr-only" id="wheel-live-announcer" aria-live="polite" aria-atomic="true"></div>
       <div class="wheel-shell" id="wheel-shell">
         <div class="wheel-mode-pill" role="tablist" aria-label="Wheel Mode">
           <button type="button" class="wheel-mode-btn" data-mode="convert" role="tab">
@@ -187,6 +197,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   `;
 
   const stageEl = root.querySelector<HTMLElement>(".wheel-stage")!;
+  const announcerEl = root.querySelector<HTMLElement>("#wheel-live-announcer")!;
   const shellEl = root.querySelector<HTMLElement>("#wheel-shell")!;
   const svgEl = root.querySelector<SVGSVGElement>("#wheel-svg")!;
   const sectorsLayer = root.querySelector<SVGGElement>("#wheel-sectors-layer")!;
@@ -206,6 +217,22 @@ export function mountWheelView(root: HTMLElement): () => void {
       dwellTimer = null;
     }
     dwellSlotIndex = -1;
+  }
+
+  function announce(message: string, options: { force?: boolean } = {}): void {
+    const trimmed = message.trim();
+    if (!trimmed) return;
+    if (announcerEl.textContent === trimmed) {
+      if (!options.force) return;
+      announcerEl.textContent = "";
+      window.requestAnimationFrame(() => {
+        if (!disposed) {
+          announcerEl.textContent = trimmed;
+        }
+      });
+      return;
+    }
+    announcerEl.textContent = trimmed;
   }
 
   function stopProgressLoop(): void {
@@ -328,6 +355,7 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   function renderSectors(): void {
     const items = buildActionItems();
+    currentItemsCount = items.length;
     const paginated = paginateWheelItems(items, page);
     page = paginated.page;
     totalPages = paginated.totalPages;
@@ -357,7 +385,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           const d = sectorSvgPath(i, placeholders.length);
           const pos = getSectorCenter(i, placeholders.length, 124);
           return `
-            <g class="wheel-sector-group is-disabled" data-slot-index="${i}">
+            <g class="wheel-sector-group is-disabled" data-slot-index="${i}" aria-hidden="true">
               <path class="wheel-sector-path" d="${d}" />
               <foreignObject x="${pos.x - 36}" y="${pos.y - 26}" width="72" height="52">
                 <div class="wheel-sector-content">
@@ -396,18 +424,14 @@ export function mountWheelView(root: HTMLElement): () => void {
           slot.kind === "more" || slot.kind === "back"
             ? "#38bdf8"
             : slot.item.accent;
-        const ariaLabel =
-          slot.kind === "more"
-            ? "More options"
-            : slot.kind === "back"
-              ? "Previous options"
-              : slot.item.subtitle;
+        const ariaLabel = formatSectorAriaLabel(slot, i, count);
+        const isActive = activeIndex === i && enabled && phase === "idle";
 
         const classes = [
           "wheel-sector-group",
           isNav ? "is-nav" : "",
           !enabled ? "is-disabled" : "",
-          activeIndex === i && enabled ? "is-active" : "",
+          isActive ? "is-active" : "",
           phase === "converting" && activeActionLabel !== label ? "is-dimmed" : "",
         ]
           .filter(Boolean)
@@ -419,7 +443,9 @@ export function mountWheelView(root: HTMLElement): () => void {
              style="--sector-accent:${escapeHtml(accent)}"
              role="button"
              tabindex="${enabled ? "0" : "-1"}"
-             aria-label="${escapeHtml(ariaLabel)}, ${i + 1} of ${count}">
+             aria-disabled="${enabled ? "false" : "true"}"
+             aria-current="${isActive ? "true" : "false"}"
+             aria-label="${escapeHtml(ariaLabel)}">
             <path class="wheel-sector-path" d="${d}" />
             <path class="wheel-sector-spec" pathLength="100" d="${d}" />
             <foreignObject x="${pos.x - 36}" y="${pos.y - 26}" width="72" height="52">
@@ -444,6 +470,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       const isActive = idx === activeIndex && enabled && phase === "idle";
       group.classList.toggle("is-active", isActive);
       group.classList.toggle("is-dwelling", idx === dwellSlotIndex && dwellTimer !== null);
+      group.setAttribute("aria-current", isActive ? "true" : "false");
     });
   }
 
@@ -694,6 +721,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearDwell();
 
     const slot = bounded >= 0 ? slots[bounded] : undefined;
+    if (slot) {
+      announce(formatSectorAriaLabel(slot, bounded, slots.length));
+    }
     if (slot && isSlotActionable(slot)) {
       void playWheelFeedback("tick");
       if (
@@ -711,6 +741,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           void playWheelFeedback("level");
           renderSectors();
           renderHub();
+          announce(formatPageFlipAnnouncement(page, totalPages), { force: true });
         }, DRAG_DWELL_MS);
       }
     }
@@ -738,6 +769,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     stopProgressLoop();
     phase = "converting";
     activeActionLabel = formatLabel;
+    activeTargetFormat = formatLabel;
+    lastAnnouncedMilestone = 0;
     stepLabel = `→ ${formatLabel}`;
     displayedPercent = 5;
     targetPercent = 14;
@@ -749,6 +782,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     renderSectors();
     updateProgressVisuals();
     renderHub();
+    announce(formatProgressMilestoneAnnouncement(formatLabel, 0), { force: true });
 
     const tick = () => {
       if (disposed || phase !== "converting") return;
@@ -794,6 +828,14 @@ export function mountWheelView(root: HTMLElement): () => void {
       progressArcEl.classList.remove("is-error");
       void playWheelFeedback("success");
       renderHub();
+      announce(
+        formatCompletionAnnouncement({
+          ok: true,
+          succeeded: lastResults.length || state.files.length || 1,
+          outputFormat: activeTargetFormat || activeActionLabel,
+        }),
+        { force: true },
+      );
       clearAutoClose();
       autoCloseTimer = window.setTimeout(() => {
         if (!disposed) requestDismiss("conversion-completed");
@@ -804,11 +846,22 @@ export function mountWheelView(root: HTMLElement): () => void {
       progressArcEl.classList.remove("is-success");
       lastErrorMsg =
         payload.error || failedUnit?.error || "One or more files failed to convert.";
+      const canceled = /cancel/i.test(lastErrorMsg);
+      const failedCount = lastResults.filter((r) => Boolean(r.error)).length || 1;
       void playWheelFeedback("error");
       shellEl.classList.remove("is-error-shake");
       void shellEl.offsetWidth;
       shellEl.classList.add("is-error-shake");
       renderHub();
+      announce(
+        formatCompletionAnnouncement({
+          ok: false,
+          canceled,
+          failed: failedCount,
+          errorMessage: lastErrorMsg,
+        }),
+        { force: true },
+      );
     }
   }
 
@@ -850,6 +903,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     conversionInFlight = false;
     void playWheelFeedback("generic");
     activeActionLabel = kind.label;
+    activeTargetFormat = kind.label;
+    lastAnnouncedMilestone = 0;
     phase = "converting";
     stepLabel = kind.subtitle;
     displayedPercent = 40;
@@ -861,12 +916,14 @@ export function mountWheelView(root: HTMLElement): () => void {
     renderSectors();
     updateProgressVisuals();
     renderHub();
+    announce(`Creating ${kind.label}`, { force: true });
 
     try {
       const res = await executeCreateNew(kind.id, state.targetFolder);
       if (disposed) return;
       phase = "success";
-      activeActionLabel = basename(res.path);
+      const createdName = basename(res.path);
+      activeActionLabel = createdName;
       progressArcEl.classList.remove("is-error");
       progressArcEl.classList.add("is-success");
       progressArcEl.setAttribute("d", progressArcSvgPath(99.9, WHEEL_PROGRESS_RADIUS));
@@ -874,6 +931,10 @@ export function mountWheelView(root: HTMLElement): () => void {
       progressRayEl.style.display = "none";
       void playWheelFeedback("success");
       renderHub();
+      announce(
+        formatCompletionAnnouncement({ ok: true, createdLabel: createdName }),
+        { force: true },
+      );
       clearAutoClose();
       autoCloseTimer = window.setTimeout(() => {
         if (!disposed) requestDismiss("create-new-completed");
@@ -892,6 +953,10 @@ export function mountWheelView(root: HTMLElement): () => void {
       void shellEl.offsetWidth;
       shellEl.classList.add("is-error-shake");
       renderHub();
+      announce(
+        formatCompletionAnnouncement({ ok: false, errorMessage: lastErrorMsg }),
+        { force: true },
+      );
     }
   }
 
@@ -907,6 +972,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       void playWheelFeedback("level");
       renderSectors();
       renderHub();
+      announce(formatPageFlipAnnouncement(page, totalPages), { force: true });
       return;
     }
 
@@ -984,6 +1050,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
     phase = "idle";
     activeActionLabel = "";
+    activeTargetFormat = "";
+    lastAnnouncedMilestone = -1;
     lastErrorMsg = "";
     diagBtnLabel = "Copy Diagnostics";
     diagBtnTitle = "Copy redacted diagnostics report";
@@ -1025,16 +1093,27 @@ export function mountWheelView(root: HTMLElement): () => void {
       updateModePillUI();
       renderSectors();
       renderHub();
-    } else if (wasClosing || modeOrFilesChanged) {
+    } else {
       const latestPrefs = await getPreferences().catch(() => null);
       if (disposed || epoch !== stateEpoch) return;
       if (latestPrefs) {
         prefs = latestPrefs;
-        updateModePillUI();
-        renderSectors();
-        renderHub();
       }
+      updateModePillUI();
+      renderSectors();
+      renderHub();
     }
+
+    announce(
+      formatWheelOpenAnnouncement({
+        mode: state.mode,
+        fileCount: state.files.length,
+        optionCount: currentItemsCount,
+        page,
+        totalPages,
+      }),
+      { force: true },
+    );
   }
 
   async function handleIncomingFiles(paths: string[]): Promise<boolean> {
@@ -1112,12 +1191,32 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
   };
 
+  const onSectorFocusIn = (ev: FocusEvent) => {
+    if (phase !== "idle" || slots.length === 0) return;
+    const targetEl = ev.target instanceof Element ? ev.target : null;
+    const group = targetEl?.closest<SVGGElement>(".wheel-sector-group[data-slot-index]");
+    if (!group) return;
+    const idx = Number(group.dataset.slotIndex ?? "-1");
+    if (Number.isInteger(idx) && idx >= 0 && idx < slots.length && idx !== activeIndex) {
+      setActiveIndex(idx);
+    }
+  };
+
   const onSvgClick = (ev: MouseEvent) => {
     if (phase !== "idle" || slots.length === 0) return;
-    const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
-    const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
-      previousIndex: activeIndex,
-    });
+    const targetEl = ev.target instanceof Element ? ev.target : null;
+    const sectorGroupEl = targetEl?.closest<SVGGElement>(".wheel-sector-group[data-slot-index]");
+    const isSyntheticOrZeroCoord = ev.detail === 0 || (ev.clientX === 0 && ev.clientY === 0);
+    let hit = -1;
+    if (isSyntheticOrZeroCoord && sectorGroupEl) {
+      const idxAttr = Number(sectorGroupEl.dataset.slotIndex ?? "-1");
+      if (Number.isInteger(idxAttr)) hit = idxAttr;
+    } else {
+      const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
+      hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
+        previousIndex: activeIndex,
+      });
+    }
     if (hit < 0) return;
     const slot = slots[hit];
     if (!slot) return;
@@ -1138,6 +1237,7 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   svgEl.addEventListener("pointermove", onPointerMove);
   svgEl.addEventListener("pointerleave", onPointerLeave);
+  svgEl.addEventListener("focusin", onSectorFocusIn);
   svgEl.addEventListener("click", onSvgClick);
 
   const onBackdropClick = (ev: MouseEvent) => {
@@ -1207,9 +1307,19 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
 
     if (ev.key === "Enter" || ev.key === " ") {
+      if (ev.target instanceof HTMLButtonElement) {
+        return;
+      }
+      const focusedGroup =
+        ev.target instanceof Element
+          ? ev.target.closest<SVGGElement>(".wheel-sector-group[data-slot-index]")
+          : null;
+      const targetIdx = focusedGroup
+        ? Number(focusedGroup.dataset.slotIndex ?? "-1")
+        : activeIndex;
       ev.preventDefault();
-      if (activeIndex >= 0 && isSlotActionable(slots[activeIndex])) {
-        activateSlot(activeIndex);
+      if (targetIdx >= 0 && isSlotActionable(slots[targetIdx])) {
+        activateSlot(targetIdx);
       }
       return;
     }
@@ -1371,6 +1481,16 @@ export function mountWheelView(root: HTMLElement): () => void {
         if (disposed || !conversionInFlight || phase !== "converting") return;
         targetPercent = Math.max(targetPercent, Math.min(99, payload.percent));
         if (payload.label) stepLabel = payload.label;
+        const milestone = getProgressMilestoneBucket(payload.percent);
+        if (milestone > lastAnnouncedMilestone) {
+          lastAnnouncedMilestone = milestone;
+          announce(
+            formatProgressMilestoneAnnouncement(
+              activeTargetFormat || activeActionLabel || "output",
+              milestone,
+            ),
+          );
+        }
       }),
       events.onConversionComplete((payload) => {
         if (disposed || !conversionInFlight || phase !== "converting") return;
@@ -1487,6 +1607,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     document.body.classList.remove("wheel-browser-preview");
     svgEl.removeEventListener("pointermove", onPointerMove);
     svgEl.removeEventListener("pointerleave", onPointerLeave);
+    svgEl.removeEventListener("focusin", onSectorFocusIn);
     svgEl.removeEventListener("click", onSvgClick);
     stageEl.removeEventListener("click", onBackdropClick);
     window.removeEventListener("blur", onWindowBlur);

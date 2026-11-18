@@ -98,8 +98,8 @@ pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
     map.insert(
         "document".to_string(),
         vec![
-            "PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP", "EPUB",
-            "FB2", "RST",
+            "PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP", "HEIC",
+            "EPUB", "FB2", "RST",
         ]
         .into_iter()
         .map(String::from)

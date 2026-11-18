@@ -1,0 +1,94 @@
+name: FLIP macOS CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify-and-package:
+    name: Build, Test & Package macOS arm64
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    env:
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI v2 if absent
+        run: |
+          if ! cargo tauri --version >/dev/null 2>&1; then
+            cargo install tauri-cli --version "^2" --locked
+          fi
+          cargo tauri --version
+
+      - name: Build native Swift bridge
+        run: ./native-bridge/build.sh
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Typecheck & build frontend
+        run: |
+          npx tsc --noEmit
+          npm run build
+
+      - name: Run frontend unit tests
+        run: bun test
+
+      - name: Run Rust clippy & test suite
+        working-directory: src-tauri
+        run: |
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+      - name: Build signed macOS .app and .dmg
+        run: ./scripts/build-macos.sh --dmg
+
+      - name: Verify ad-hoc signature, .dmg mount, and native EPUB 3 CLI smoke
+        run: |
+          APP="src-tauri/target/release/bundle/macos/FLIP.app"
+          DMG=$(ls -1 src-tauri/target/release/bundle/dmg/FLIP-*-macOS-*.dmg | head -n 1)
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          TMP_MOUNT=$(mktemp -d)
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint "$TMP_MOUNT"
+          codesign --verify --deep --strict --verbose=2 "$TMP_MOUNT/FLIP.app"
+          hdiutil detach "$TMP_MOUNT"
+          rmdir "$TMP_MOUNT"
+          TMP_WORK=$(mktemp -d)
+          printf '# FLIP CI EPUB Smoke\n\nNative EPUB 3 roundtrip without Pandoc.\n' > "$TMP_WORK/ci-smoke.md"
+          "$APP/Contents/MacOS/flip" convert "$TMP_WORK/ci-smoke.md" --to EPUB
+          "$APP/Contents/MacOS/flip" convert "$TMP_WORK/ci-smoke.epub" --to TXT
+          grep -q "Native EPUB 3 roundtrip without Pandoc." "$TMP_WORK/ci-smoke.txt"
+          rm -rf "$TMP_WORK"
+
+      - name: Upload macOS build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: FLIP-macOS-arm64
+          path: |
+            src-tauri/target/release/bundle/macos/FLIP.app
+            src-tauri/target/release/bundle/dmg/FLIP-*-macOS-*.dmg
+          if-no-files-found: error

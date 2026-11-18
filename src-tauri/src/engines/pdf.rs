@@ -80,21 +80,26 @@ pub fn convert(
         return Ok(vec![out_md]);
     }
 
-    let html = document::plain_text_to_html(
-        source
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Document"),
-        &text,
-    );
+    let title = source
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("Document");
+    let html = document::plain_text_to_html(title, &text);
     let html_path = staging_dir.join("extracted.html");
-    fs::write(&html_path, html)?;
+    fs::write(&html_path, &html)?;
 
     if fmt == "HTML" {
         return Ok(vec![html_path]);
     }
 
-    if matches!(fmt.as_str(), "EPUB" | "FB2" | "RST") {
+    if fmt == "EPUB" {
+        let out_path = staging_dir.join("output.epub");
+        document::write_epub_from_html(title, &html, &out_path)?;
+        return Ok(vec![out_path]);
+    }
+
+    if matches!(fmt.as_str(), "FB2" | "RST") {
         let out_path = staging_dir.join(format!("output.{}", fmt.to_ascii_lowercase()));
         document::convert_via_pandoc(&html_path, "html", &fmt, &out_path, staging_dir, tools, cancel)?;
         return Ok(vec![out_path]);

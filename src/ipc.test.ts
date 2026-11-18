@@ -7,6 +7,8 @@ import {
   copyDiagnosticsToClipboard,
   defaultPreferences,
   dismissWheel,
+  DOC_NATIVE_EXTS,
+  DOC_PANDOC_ONLY_EXTS,
   events,
   executeConversion,
   executeCreateNew,
@@ -20,6 +22,7 @@ import {
   getRecentConversions,
   getWheelState,
   inspectFiles,
+  inspectFilesLocally,
   installFinderQuickActions,
   openBatchWithFiles,
   openReleaseUrl,
@@ -230,5 +233,44 @@ describe("Frontend IPC surface & contract alignment", () => {
       g.localStorage = prevStorage;
       g.window = prevWindow;
     }
+  });
+
+  test("native EPUB 3 policy exposes EPUB without Pandoc and keeps FB2/RST Pandoc-gated", () => {
+    expect(DOC_NATIVE_EXTS.has("epub")).toBe(true);
+    expect(DOC_PANDOC_ONLY_EXTS.has("epub")).toBe(false);
+    expect(DOC_PANDOC_ONLY_EXTS.has("fb2")).toBe(true);
+    expect(DOC_PANDOC_ONLY_EXTS.has("rst")).toBe(true);
+
+    const epubInputNoPandoc = inspectFilesLocally(["/tmp/book.epub"], { pandoc: false });
+    expect(epubInputNoPandoc.compatibleFormats).toContain("TXT");
+    expect(epubInputNoPandoc.compatibleFormats).toContain("MD");
+    expect(epubInputNoPandoc.compatibleFormats).toContain("PDF");
+    expect(epubInputNoPandoc.compatibleFormats).toContain("HEIC");
+    expect(epubInputNoPandoc.compatibleFormats).not.toContain("FB2");
+    expect(epubInputNoPandoc.compatibleFormats).not.toContain("RST");
+
+    const mdInputNoPandoc = inspectFilesLocally(["/tmp/readme.md"], { pandoc: false });
+    expect(mdInputNoPandoc.compatibleFormats).toContain("EPUB");
+    expect(mdInputNoPandoc.compatibleFormats).toContain("HEIC");
+    expect(mdInputNoPandoc.compatibleFormats).not.toContain("FB2");
+
+    const txtInputNoPandoc = inspectFilesLocally(["/tmp/note.txt"], { pandoc: false });
+    expect(txtInputNoPandoc.compatibleFormats).toContain("EPUB");
+
+    const pdfInputNoPandoc = inspectFilesLocally(["/tmp/doc.pdf"], { pandoc: false });
+    expect(pdfInputNoPandoc.compatibleFormats).toContain("EPUB");
+    expect(pdfInputNoPandoc.compatibleFormats).not.toContain("FB2");
+    expect(pdfInputNoPandoc.compatibleFormats).not.toContain("RST");
+
+    const fb2NoPandoc = inspectFilesLocally(["/tmp/book.fb2"], { pandoc: false });
+    expect(fb2NoPandoc.compatibleFormats).toEqual([]);
+
+    const fb2WithPandoc = inspectFilesLocally(["/tmp/book.fb2"], { pandoc: true });
+    expect(fb2WithPandoc.compatibleFormats).toContain("EPUB");
+    expect(fb2WithPandoc.compatibleFormats).toContain("PDF");
+    expect(fb2WithPandoc.compatibleFormats).toContain("RST");
+
+    expect(defaultPreferences().preferredFormats.document).toContain("HEIC");
+    expect(defaultPreferences().preferredFormats.document).toContain("EPUB");
   });
 });

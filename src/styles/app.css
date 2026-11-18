@@ -557,6 +557,18 @@ html[data-route="onboarding"] body {
   border: 1px solid var(--border-hairline);
   font-size: 12px;
   font-weight: 600;
+  cursor: grab;
+  transition: border-color 140ms ease, background-color 140ms ease, opacity 140ms ease;
+}
+
+.format-order-chip.is-dragging {
+  opacity: 0.45;
+  cursor: grabbing;
+}
+
+.format-order-chip.is-drag-over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .format-order-chip button {

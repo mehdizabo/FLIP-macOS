@@ -10,7 +10,7 @@ FLIP porta una ruota radiale veloce centrata sul cursore (ispirata all'Actions R
 
 ## Funzionalità principali
 
-- **Ruota Radiale Liquid Glass**: settori in vetro traslucido stratificato, riflessi speculari direzionali, animazioni a molla, anteprima QuickLook nell'hub centrale, selettore modalità `Convert` / `New File` (`Tab`), arco radiale di avanzamento con percentuale, feedback acustico (`flip-tick.wav`) e aptico sul trackpad.
+- **Ruota Radiale Liquid Glass**: settori in vetro traslucido stratificato, riflessi speculari direzionali, animazioni a molla, anteprima QuickLook nell'hub centrale, selettore modalità `Convert` / `New File` (`Tab`), arco radiale di avanzamento con percentuale, **annunci VoiceOver live**, feedback acustico (`flip-tick.wav`) e aptico sul trackpad.
 - **App Menu Bar (`LSUIElement`)**: vive nella barra dei menu senza ingombrare il Dock (`Open FLIP Wheel`, `New File in Finder Folder…`, `Batch / Multiple Formats…`, `Settings & Shortcuts…`, `Open Templates Folder`, `Reveal Diagnostic Logs`, `Quit FLIP`).
 - **Convertitore Batch & Multi-Formato**: converte più file verso uno o più formati contemporaneamente (`Shift+Click` su un settore, pulsante `Multi` al centro o dal menu nella menu bar).
 - **Naming senza sovrascrittura**:
@@ -47,14 +47,14 @@ FLIP aggiunge la creazione immediata di nuovi file nella cartella del Finder in 
 | Famiglia | Input | Output | Motori |
 |---|---|---|---|
 | **Immagini** | `PNG`, `JPG/JPEG`, `WEBP`, `HEIC/HEIF`, `AVIF`, `TIFF`, `GIF`, `BMP`, `ICNS`, `ICO` | `PNG`, `JPG`, `WEBP`, `HEIC`, `PDF`, `TIFF`, `GIF`, `BMP`, più `Combine into PDF` | `ImageIO` nativo (EXIF & rimozione GPS opzionale) + `image` Rust + `PDFKit` |
-| **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (con **Apple Vision** OCR per PDF scansionati), `DOCX`, `MD`, `HTML`, `RTF`, `ODT` (+ `EPUB`/`FB2`/`RST` con Pandoc), `Merge PDFs` | `PDFKit` nativo + `Vision` (`VNRecognizeTextRequest`) |
-| **Documenti** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT` (+ `EPUB`, `FB2`, `RST` con Pandoc) | `PDF` (A4/Letter impaginato), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `PNG`, `JPG`, `WEBP` (+ `EPUB`/`FB2`/`RST` con Pandoc) | `NSAttributedString` / CoreText nativo + `pulldown-cmark` + `Pandoc` opzionale |
+| **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (con **Apple Vision** OCR per PDF scansionati), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo) (+ `FB2`/`RST` con Pandoc), `Merge PDFs` | `PDFKit` nativo + `Vision` (`VNRecognizeTextRequest`) + writer EPUB 3 in Rust |
+| **Documenti** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB` (+ `FB2`, `RST` con Pandoc) | `PDF` (A4/Letter impaginato), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `PNG`, `JPG`, `WEBP`, `HEIC` (+ `FB2`/`RST` con Pandoc) | `NSAttributedString` / CoreText nativo + `pulldown-cmark` + EPUB 3 nativo + `Pandoc` opzionale |
 | **Apple iWork** | `.pages`, `.numbers`, `.key` | `PDF` (+ `DOCX`/`RTF`/`TXT`/`EPUB` per Pages, `XLSX`/`CSV` per Numbers, `PPTX` per Keynote) | Anteprima QuickLook + AppleScript verso app Apple |
 | **Dati strutturati** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (appiattimento chiavi con punto), `TXT`, `MD`, `HTML`, `PDF` | Parser Rust nativi + CoreText PDF |
 | **Audio** | `MP3`, `WAV`, `M4A`, `AAC`, `AIFF`, `ALAC`, `CAF`, `FLAC`, `OGG`, `OPUS`, `WMA` | Nativi: `M4A`, `WAV`, `AIFF`, `ALAC` · Con FFmpeg: `MP3`, `M4A`, `WAV`, `FLAC`, `AIFF`, `ALAC`, `OGG`, `OPUS`, `AAC` | `AVFoundation` nativo + `afconvert` + `FFmpeg` opzionale |
 | **Video** | `MP4`, `MOV`, `M4V`, `MKV`, `WEBM`, `AVI`, `WMV` | Nativi: `MP4`, `MOV`, `M4V`, `M4A`, `WAV`, `GIF` animata · Con FFmpeg: + `MKV`, `WEBM`, `AVI`, `MP3` | `AVFoundation` nativo + `FFmpeg` opzionale (progresso in tempo reale & `Esc`) |
 
-> **Nota sui tool opzionali**: FFmpeg e Pandoc **non** sono inclusi nel bundle. Installali via Homebrew (`brew install ffmpeg pandoc`) o indica i percorsi in **Settings → Engines & Permissions**.
+> **Nota sui tool opzionali**: FFmpeg e Pandoc **non** sono inclusi nel bundle. Installali via Homebrew (`brew install ffmpeg pandoc`) o indica i percorsi in **Settings → Engines & Permissions** per sbloccare formati extra (`MKV`/`WebM`/`MP3`/`FLAC`/`OGG` con FFmpeg e libri `FB2`/`RST` con Pandoc — **EPUB 3 è integrato nativamente senza Pandoc**).
 
 ---
 

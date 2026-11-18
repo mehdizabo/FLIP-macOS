@@ -1,7 +1,7 @@
 # Test & Compatibility Results (`FLIP-macOS-port` v0.1.0)
 
-Date: 2026-11-17  
-Commit Scope: Steps A & B complete (Update Checker, Redacted Diagnostics, Compliance Docs, DMG Packager)
+Date: 2026-11-18  
+Commit Scope: Steps A–D complete (Native Pure-Rust EPUB 3 Engine, Interactive Preferred Format Ordering, VoiceOver Live Announcer, CI Workflow, Porting & Acceptance Docs, DMG Packager)
 
 ---
 
@@ -12,16 +12,16 @@ Verified host hardware & OS:
 - **Architecture**: Apple Silicon (`arm64`)
 - **Toolchain**:
   - Swift: `Apple Swift 6.3.2` (`swift-driver 1.148.6`, target `arm64-apple-macosx15.0` binary)
-  - Rust / Cargo: `rustc 1.100.0` / `cargo 1.100.0`
+  - Rust / Cargo: `rustc 1.100.0` / `cargo 1.100.0`, `tauri-cli 2.12.4`
   - Node.js: `v26.11.1`, Bun: `1.4.4`
 - **Optional External Engines on Test Host**:
   - `FFmpeg`: Present (`/opt/homebrew/bin/ffmpeg` `8.1.1`)
-  - `Pandoc`: Not installed on host
+  - `Pandoc`: Not installed on host (built-in EPUB 3 runs completely Pandoc-free; Pandoc is only required for `FB2`/`RST`)
   - `Pages.app` / `Numbers.app` / `Keynote.app`: Not installed in `/Applications` on host
 
 | Target Platform | Architecture | Status | Notes |
 |---|---|---|---|
-| **macOS 27.2.1 (`26B131`)** | Apple Silicon (`arm64`) | **Verified (Automated Tests + `.app`/`.dmg` Build + CLI Smoke)** | Primary target; native `flip-macos-bridge`, Tauri v2 `.app`, and `.dmg` built and verified here. Live WindowServer GUI drag-drop remains unexecuted in this headless/CLI run. |
+| **macOS 27.2.1 (`26B131`)** | Apple Silicon (`arm64`) | **Verified (Automated Tests + `.app`/`.dmg` Build + CLI Smoke)** | Primary target; native `flip-macos-bridge`, Tauri v2 `.app`, and `.dmg` built and verified here. Live WindowServer GUI drag-drop & VoiceOver walkthrough checklist documented in [`ACCEPTANCE.md`](ACCEPTANCE.md). |
 | **macOS 26 (Tahoe / Liquid Glass)** | Apple Silicon (`arm64`) | **Not Executed on Host** | Deployment target is macOS 15.0+; CSS/WebKit Liquid Glass properties align, not tested on physical macOS 26 hardware. |
 | **macOS 15 (Sequoia fallback)** | Apple Silicon (`arm64`) | **Not Executed on Host** | Minimum deployment target (`-target arm64-apple-macosx15.0`, `minimumSystemVersion: 15.0`); not booted on physical macOS 15 hardware. |
 | **Intel (`x86_64`)** | `x86_64` | **Not Supported / Not Tested** | Current bridge and DMG build target `arm64` only. |
@@ -32,66 +32,59 @@ Verified host hardware & OS:
 
 ### 2.1 Native Swift/AppKit Bridge (`./native-bridge/build.sh`)
 - **Result**: Passed (`exit 0`)
-- **Artifact**: `native-bridge/bin/flip-macos-bridge` (`420,080` bytes, `arm64`, `-rwxr-xr-x`)
+- **Artifact**: `native-bridge/bin/flip-macos-bridge` (`437,312` bytes, `arm64`, `-rwxr-xr-x@`)
 - Compiled via `/usr/bin/swiftc -O -target arm64-apple-macosx15.0` using Command Line Tools only.
 
 ### 2.2 TypeScript, Vite Production Build, and Bun Unit Tests
 Command: `npx tsc --noEmit && npm run build && bun test`
 - **TypeScript (`tsc --noEmit`)**: 0 errors
-- **Vite Production Build (`npm run build`)**: 20 modules transformed (`dist/index.html` 0.39 kB, CSS 24.56 kB, JS 135.19 kB)
-- **Bun Test Suite (`bun test`)**: **24 passed, 0 failed** across 2 files (`468` `expect()` assertions):
-  - `src/ipc.test.ts`: **2/2 passed** (Rust `AppPreferences` schema alignment, mock IPC commands & events, `checkForUpdates`, `openReleaseUrl` validation, `consumeSettingsNavigation`, `getDiagnosticsReport`, `onSettingsNavigate`, `copyDiagnosticsToClipboard` clipboard + manual fallback)
-  - `src/wheelGeometry.test.ts`: **22/22 passed** (wheel format ordering, SVG chamfered sector geometry for 1–8 sectors, 3° angular hysteresis + 0°/360° wraparound, progress arc geometry, pagination, hash routing, HTML escaping, Option-modified key token mapping, batch handoff)
+- **Vite Production Build (`npm run build`)**: 20 modules transformed (`dist/index.html` 0.39 kB, CSS 25.06 kB, JS 141.87 kB)
+- **Bun Test Suite (`bun test`)**: **29 passed, 0 failed** across 2 files (`521` `expect()` assertions):
+  - `src/ipc.test.ts`: **3/3 passed** (Rust `AppPreferences` schema alignment including `HEIC` in document preferences, mock IPC commands & events, and `DOC_NATIVE_EXTS` / `DOC_PANDOC_ONLY_EXTS` / `inspectFilesLocally` verifying `EPUB` works without Pandoc while `FB2`/`RST` remain Pandoc-gated)
+  - `src/wheelGeometry.test.ts`: **26/26 passed** (wheel format ordering, `reorderFormatList` / `moveFormatToIndex` clamping, SVG chamfered sector geometry for 1–8 sectors, 3° angular hysteresis + 0°/360° wraparound, progress arc geometry, pagination, hash routing, HTML escaping, Option-modified key token mapping, batch handoff, and VoiceOver live announcement formatters for `formatSectorAriaLabel`, open mode, page flips, 25/50/75% progress milestones, and completion/error/cancel states)
 
-### 2.3 Rust Unit & Integration Test Suite (`cd src-tauri && cargo test`)
-- **Total (offline default suite)**: **62 passed, 0 failed** (1 `#[ignore]` live network test)
-  - **`flip_lib` unit tests**: **46/46 passed** (+ 1 `#[ignore]` live network test, verified separately)
-    - Includes `core::updater` (SemVer + prerelease comparison matching `FLIP-windows`, URL normalization/HTTPS validation, `validate_release_html_url`, JSON release & tag parsing, macOS curl HTTP/2 exit `56` & HTTP/1.1 exit `22` 404/403/429 error classification and `/tags?per_page=1` fallback)
-    - Includes `core::logging` (2 MiB log rotation, `/Users/<username>`, `/private/var/folders/...`, `/var/mobile`, custom home, JSON-escaped `\n/Users/...`, and percent-encoded `%2FUsers%2F...` redaction to `~`, bounded 60-line `events.jsonl` tail & Markdown bundle formatting)
-    - Includes `core::input_gate`, `core::naming`, `core::policy` (40 MP / 256 MiB / 4,096 zip entry / symlink / Finder alias / iCloud stub guards), `core::preferences`, `core::quick_actions`, `core::staging`, `core::startup`, `cli`, `engines::data`, `engines::document`, `host`, `host::monitor`, `host::tray` (including `"Check for Updates…"` menu item & mnemonic escaping)
-  - **Live Network Update Check (`cargo test live_github_update_check_and_tags_fallback -- --ignored`)**: **1/1 passed**
-    - Verified live `/usr/bin/curl -fsSL --max-time 8 --proto =https` against `https://api.github.com/repos/thetinyfoundry/FLIP/releases/latest`, live HTTP 404 (curl exit `56`) → `/tags?per_page=1` fallback against `https://github.com/git/git`, and clean offline/DNS failure handling against `https://nonexistent.invalid/owner/repo`
-  - **`tests/engines_integration.rs`**: **9/9 passed**
-    - Image matrix (`PNG`, `JPG`, `WEBP`, `HEIC`, `BMP`, `TIFF`, `GIF`, `COMBINE_PDF`, alpha flattening, EXIF orientation, GPS strip, collision preservation)
-    - Structured data matrix (`JSON`, `YAML`, `TOML`, `XML`, `CSV`, `HTML`, `MD`, `PDF`)
-    - Documents & PDF (`A4`/`Letter` pagination, multi-page PDF rasterization, `Apple Vision` OCR + EXIF-oriented OCR + 0-byte empty OCR guard, PDF merge, > 40 MP rejection, > 256 MiB container & iWork zip bomb rejection, HTML LFI & `@import` sanitization)
-    - Media (`FFmpeg 8.1.1` + native `AVFoundation` MP4→MOV/GIF + mid-flight cancellation)
-    - Create New File built-in OOXML/scripts/templates & read-only/symlink guards
+### 2.3 Rust Clippy, Unit & Integration Test Suite (`cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test`)
+- **Clippy (`cargo clippy --all-targets -- -D warnings`)**: **Passed with 0 warnings**
+- **Cargo Test Suite (`cargo test` offline default suite)**: **68 passed, 0 failed, 1 ignored**
+  - **`flip_lib` unit tests**: **50/50 passed** (+ 1 `#[ignore]` live network test `live_github_update_check_and_tags_fallback`)
+    - Includes `engines::document::tests::epub3_writer_and_reader_produce_valid_container_and_wellformed_xhtml5` and `epub_reader_respects_spine_order_and_lexical_fallback_when_spine_incomplete`
+    - Includes `core::policy::tests::txt_and_document_outputs_with_and_without_pandoc` (asserting `DOC_NATIVE_EXTS` contains `epub` and `DOC_PANDOC_ONLY_EXTS` keeps only `fb2`, `rst`)
+    - Includes `core::updater`, `core::logging` (redacted diagnostic bundle), `core::input_gate`, `core::naming`, `core::policy`, `core::preferences`, `core::quick_actions`, `core::staging`, `core::startup`, `cli`, `engines::data`, `host`, `host::monitor`, `host::tray`
+  - **`tests/engines_integration.rs`**: **11/11 passed**
+    - Includes `native_epub3_md_epub_txt_and_pdf_epub_roundtrips_without_pandoc` verifying Pandoc-free `MD -> EPUB -> TXT` and `PDF -> EPUB` roundtrips plus ZIP entry `0` = `mimetype` (`CompressionMethod::Stored`, exact `application/epub+zip` payload)
+    - Includes image matrix (`PNG`, `JPG`, `WEBP`, `HEIC`, `BMP`, `TIFF`, `GIF`, `COMBINE_PDF`, alpha flattening, EXIF orientation, GPS strip), structured data matrix (`JSON`, `YAML`, `TOML`, `XML`, `CSV`, `HTML`, `MD`, `PDF`), PDF multi-page rasterization + Vision OCR + merge, > 40 MP / > 256 MiB / zip-bomb / HTML LFI guards, media/FFmpeg + cancellation, read-only fallback, and Create New File OOXML + templates
   - **`tests/host_ipc_integration.rs`**: **7/7 passed**
-    - Verifies exact command & camelCase parameter alignment across all **27** Tauri commands and all **9** host-emitted events between Rust and `src/ipc.ts`
-    - Verifies `UpdateCheckResult`, `SettingsNavigatePayload`, deterministic cold `pending_settings_nav` handoff, `validate_release_html_url`, `is_curl_http_404`, `AppPreferences`, `WheelStatePayload`, `EngineStatusPayload`, `QuickActionsStatus`, and `redact_user_paths`
-    - Verifies `flip-macos-bridge` & `flip-tick.wav` resolution in both dev and relocated/symlinked `.app` layouts, plus `plutil -lint` on `src-tauri/Info.plist`
+    - Verifies exact command & camelCase parameter alignment across all **27** Tauri commands and all **10** host-emitted events between Rust and `src/ipc.ts`
+    - Verifies bridge & WAV resource resolution in dev and relocated `.app` layouts, `Info.plist` `plutil -lint`, screen clamping, and config/capabilities consistency
 
 ---
 
 ## 3. Release Bundle, Signing, DMG Packaging & Bundled CLI Verification
 
 1. **Release `.app` Build (`./scripts/build-macos.sh --dmg`)**:
-   - Built `src-tauri/target/release/bundle/macos/FLIP.app` (`21.72 MiB`), embedded `Contents/Resources/flip-macos-bridge` (`420,080` bytes, executable) and `flip-tick.wav`.
+   - Built `src-tauri/target/release/bundle/macos/FLIP.app` (`22.05 MiB`), embedded `Contents/Resources/flip-macos-bridge` (`437,312` bytes, `-rwxr-xr-x@`) and `flip-tick.wav`.
 2. **Code Signing (`codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/FLIP.app`)**:
    - **Passed**: `valid on disk`, `satisfies its Designated Requirement` (ad-hoc local signature).
-3. **DMG Packager (`./scripts/package-dmg.sh`)**:
-   - Created `src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg` (`8.3 MiB`), ad-hoc signed and verified via `codesign --verify --verbose=2` (including `--out` suffix normalization test when `.dmg` is omitted).
-   - Mounted with `hdiutil attach -readonly -nobrowse`: verified `FLIP.app` and `Applications -> /Applications` symlink inside mounted volume, verified `codesign --verify --deep --strict --verbose=2` on mounted `FLIP.app`, detached cleanly with `hdiutil detach`.
-4. **Live Bundled CLI Smoke Test (`FLIP.app/Contents/MacOS/flip`)**:
-   - `flip --version` -> `flip 0.1.0`
-   - `flip new md --in <temp> --no-rename --no-reveal` -> created `Untitled.md` (`12` bytes), JSON `kindId: "md"`
-   - `flip convert <temp>/Untitled.md --to PDF,DOCX` -> resolved bundled `Contents/Resources/flip-macos-bridge` cleanly and produced `Untitled.pdf` (`8.9K` / `9,084` bytes) and `Untitled.docx` (`3.4K` / `3,515` bytes)
-   - `flip convert <temp>/Untitled.pdf --to PNG` -> rendered `Untitled-p001.png` (`44K` / `44,721` bytes) via bundled `PDFKit` bridge
+3. **DMG Packager & Mount Verification (`src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg`, `8.4M`)**:
+   - `codesign --verify --strict --verbose=2` on `.dmg`: **Passed** (`valid on disk`, `satisfies its Designated Requirement`).
+   - Mounted with `hdiutil attach -nobrowse -readonly -mountpoint ...`: verified `FLIP.app` and `Applications -> /Applications` symlink inside mounted volume, verified `codesign --verify --deep --strict --verbose=2` on mounted `FLIP.app`, and detached cleanly with `hdiutil detach`.
+4. **Live Bundled CLI Native EPUB 3 Smoke Test (`FLIP.app/Contents/MacOS/flip`)**:
+   - `FLIP.app/Contents/MacOS/flip convert <tmp>/sample.md --to EPUB`: converted Markdown to EPUB 3 cleanly with **no Pandoc installed**; Python `zipfile` inspection confirmed entry `0` is `mimetype` (`compress_type: 0` = `ZIP_STORED`, `20` bytes `application/epub+zip`) alongside `META-INF/container.xml`, `OEBPS/content.opf`, `OEBPS/nav.xhtml`, `OEBPS/style.css`, and `OEBPS/chapter.xhtml`.
+   - `FLIP.app/Contents/MacOS/flip convert <tmp>/sample.epub --to TXT`: extracted `sample.txt` preserving heading, paragraph, and bullet list text cleanly.
 
 ---
 
 ## 4. Unexecuted / Unverified Scenarios on This Host
 
-The following paths were **not** exercised live on this machine and remain open for interactive/external QA:
+The following paths were **not** executed live on this machine and are tracked for physical desktop verification in [`ACCEPTANCE.md`](ACCEPTANCE.md):
 
-- **Live WindowServer GUI & Finder Interaction**:
-  - Interactive Finder file drag with `CGEventTap` drag-trigger key (`Down Arrow`) and `NSPasteboard(name: .drag)` inspection
-  - Global idle shortcut (`Option+Shift+Space`), mouse-button hold-and-release trigger, live `NSAccessibility` / `Automation (Finder)` OS permission prompts, and Finder inline rename (`Return` key injection)
-  - Visual/accessibility acceptance in a live desktop session: multi-monitor mixed-DPI clamping, Stage Manager, Light/Dark appearance, `Reduce Motion`, `Reduce Transparency`, `VoiceOver`, and menu bar tray interaction (including `"Check for Updates…"`, `"Open Release on GitHub"` via `/usr/bin/open`, and 132px circular Wheel error hub visual spacing)
-  - Clipboard UI copy flows inside live `WKWebView` (`SettingsView`, `WheelView`, `BatchView` — verified via `bun test` mocks + TypeScript build, not clicked in a live `WKWebView` window)
+- **Live WindowServer GUI, Finder & Accessibility Walkthrough**:
+  - Interactive Finder drag + trigger in both orders (`Drag -> Trigger` and `Trigger -> Drag`), `NSPasteboard(name: .drag)` live drag inspection, Mouse Button `2`/`3`/`4` triggers, global Idle shortcut (`Option+Shift+Space`), full-screen Spaces overlay, multi-monitor mixed-DPI clamping, live Finder inline rename (`Return`), Light/Dark appearance, `Reduce Motion`, `Reduce Transparency`, and live **VoiceOver** navigation + live announcements (`aria-live="polite"`)
+  - Live `WKWebView` clicks/drag-drop inside Settings (`Preferred Format Order` chips + `Reset to Default`), Wheel, Onboarding, and Batch windows (logic covered by TypeScript build + `bun test` mocks; unexecuted in a live desktop WebView)
 - **Missing Optional External Apps / Tools on Host**:
-  - **Pandoc** (`EPUB`, `FB2`, `RST` conversions): Not installed on host (`pandoc not found`); capability gating verified via unit tests, runtime Pandoc subprocess execution unverified here.
-  - **Apple iWork** (`Pages.app`, `Numbers.app`, `Keynote.app` AppleScript automation): Not installed in `/Applications`; package-bundle `.pages` QuickLook PDF extraction and missing-app error paths were tested instead.
+  - **Pandoc** (`FB2` and `RST` conversions): Not installed on host (`pandoc not found`); capability gating verified via Rust & Bun unit tests, runtime Pandoc subprocess execution unverified here.
+  - **Apple iWork** (`Pages.app`, `Numbers.app`, `Keynote.app` AppleScript automation): Not installed in `/Applications`; missing-app errors and `.pages` QuickLook extraction tested instead.
+- **GitHub Actions CI Execution**:
+  - `.github/workflows/ci.yml` created and aligned with all verified local steps, not yet triggered on a live GitHub `macos-15` runner.
 - **Developer ID Signing & Apple Notarization**:
   - Scripts (`scripts/sign-local.sh`, `scripts/package-dmg.sh`) support `APPLE_SIGNING_IDENTITY` and `xcrun notarytool` / `stapler`, but only ad-hoc local signing (`--sign -`) was executed because no paid Apple Developer certificate is configured.
