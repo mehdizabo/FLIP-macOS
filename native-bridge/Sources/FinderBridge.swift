@@ -421,4 +421,90 @@ enum FinderBridge {
             "inputMonitoring": inputMonitoring
         ]
     }
+
+    static func sendNotification(title: String, body: String, revealPath: String?) -> [String: Any] {
+        let cleanTitle = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160))
+        let cleanBody = String(body.trimmingCharacters(in: .whitespacesAndNewlines).prefix(320))
+        guard !cleanTitle.isEmpty, !cleanBody.isEmpty else {
+            return [
+                "ok": false,
+                "method": "osascript",
+                "error": "Notification title and body must be non-empty"
+            ]
+        }
+
+        let trimmedReveal = revealPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveReveal = (trimmedReveal?.isEmpty == false) ? trimmedReveal : nil
+        let subtitle: String = {
+            guard let rp = effectiveReveal else { return "" }
+            let url = URL(fileURLWithPath: rp)
+            let folder = url.deletingLastPathComponent().lastPathComponent
+            return folder.isEmpty ? url.lastPathComponent : "Saved in \(folder)"
+        }()
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        if subtitle.isEmpty {
+            proc.arguments = [
+                "-e", "on run argv",
+                "-e", "display notification (item 2 of argv) with title (item 1 of argv)",
+                "-e", "end run",
+                "--", cleanTitle, cleanBody
+            ]
+        } else {
+            proc.arguments = [
+                "-e", "on run argv",
+                "-e", "display notification (item 2 of argv) with title (item 1 of argv) subtitle (item 3 of argv)",
+                "-e", "end run",
+                "--", cleanTitle, cleanBody, subtitle
+            ]
+        }
+
+        let errPipe = Pipe()
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = errPipe
+
+        let sem = DispatchSemaphore(value: 0)
+        proc.terminationHandler = { _ in
+            sem.signal()
+        }
+
+        do {
+            try proc.run()
+        } catch {
+            return [
+                "ok": false,
+                "method": "osascript",
+                "error": error.localizedDescription
+            ]
+        }
+
+        if sem.wait(timeout: .now() + 5.0) == .timedOut {
+            proc.terminate()
+            return [
+                "ok": false,
+                "method": "osascript",
+                "error": "osascript notification timed out"
+            ]
+        }
+
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        let errStr = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if proc.terminationStatus != 0 {
+            return [
+                "ok": false,
+                "method": "osascript",
+                "error": errStr.isEmpty ? "osascript exited with status \(proc.terminationStatus)" : errStr
+            ]
+        }
+
+        return [
+            "ok": true,
+            "method": "osascript",
+            "title": cleanTitle,
+            "body": cleanBody,
+            "revealPath": effectiveReveal as Any? ?? NSNull()
+        ]
+    }
 }

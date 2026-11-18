@@ -1,7 +1,9 @@
 use crate::core::logging::{global_logger, log_event};
 use crate::core::preferences::{AppPreferences, RecentConversion};
 use crate::engines::bridge;
-use crate::engines::create_new::{create_new_item, ensure_templates_dir_initialized};
+use crate::engines::create_new::{
+    create_new_item, ensure_templates_dir_initialized, scan_user_templates, UserTemplateInfo,
+};
 use crate::host::{
     present_wheel_at, query_finder_context_or_fallback, show_standard_window, HostState,
     SettingsNavigatePayload,
@@ -43,6 +45,39 @@ pub struct RecentMenuEntry {
     pub id: String,
     pub label: String,
     pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateMenuEntry {
+    pub id: String,
+    pub label: String,
+    pub group: Option<String>,
+}
+
+pub fn format_template_menu_label(tmpl: &UserTemplateInfo) -> String {
+    let ext_suffix = tmpl
+        .extension
+        .as_deref()
+        .filter(|e| !e.is_empty())
+        .map(|e| format!(" (.{e})"))
+        .unwrap_or_default();
+    let full = match tmpl.group.as_deref().filter(|g| !g.is_empty()) {
+        Some(group) => format!("{group} / {}{ext_suffix}", tmpl.name),
+        None => format!("{}{ext_suffix}", tmpl.name),
+    };
+    truncate_chars(&full, 64)
+}
+
+pub fn template_menu_entries_from_dir(templates_dir: &Path) -> Vec<TemplateMenuEntry> {
+    let _ = ensure_templates_dir_initialized(templates_dir);
+    scan_user_templates(templates_dir)
+        .into_iter()
+        .map(|t| TemplateMenuEntry {
+            id: format!("new_kind:{}", t.id),
+            label: format_template_menu_label(&t),
+            group: t.group,
+        })
+        .collect()
 }
 
 fn truncate_chars(raw: &str, max_chars: usize) -> String {
@@ -158,6 +193,15 @@ pub fn reveal_logs_in_finder() -> Result<(), String> {
 }
 
 pub fn build_tray_menu(app: &AppHandle, recent: &[RecentConversion]) -> tauri::Result<Menu<Wry>> {
+    let templates = template_menu_entries_from_dir(&AppPreferences::templates_dir());
+    build_tray_menu_with_templates(app, recent, &templates)
+}
+
+pub fn build_tray_menu_with_templates(
+    app: &AppHandle,
+    recent: &[RecentConversion],
+    templates: &[TemplateMenuEntry],
+) -> tauri::Result<Menu<Wry>> {
     let open_wheel = MenuItem::with_id(app, "open_wheel", "Open FLIP Wheel", true, None::<&str>)?;
 
     let mut new_file_builder =
@@ -181,6 +225,27 @@ pub fn build_tray_menu(app: &AppHandle, recent: &[RecentConversion]) -> tauri::R
         )?;
         new_file_builder = new_file_builder.item(&item);
     }
+
+    if !templates.is_empty() {
+        new_file_builder = new_file_builder.separator().item(&MenuItem::with_id(
+            app,
+            "templates_section",
+            "Templates",
+            false,
+            None::<&str>,
+        )?);
+        for entry in templates {
+            let item = MenuItem::with_id(
+                app,
+                entry.id.clone(),
+                escape_menu_mnemonic(&entry.label),
+                true,
+                None::<&str>,
+            )?;
+            new_file_builder = new_file_builder.item(&item);
+        }
+    }
+
     let new_file_submenu = new_file_builder.build()?;
 
     let mut recent_builder = SubmenuBuilder::with_id(app, "recent_menu", "Recent Conversions");
@@ -247,8 +312,17 @@ pub fn build_tray_menu(app: &AppHandle, recent: &[RecentConversion]) -> tauri::R
 }
 
 pub fn refresh_tray_menu(app: &AppHandle, recent: &[RecentConversion]) {
+    let templates = template_menu_entries_from_dir(&AppPreferences::templates_dir());
+    refresh_tray_menu_with_templates(app, recent, &templates);
+}
+
+pub fn refresh_tray_menu_with_templates(
+    app: &AppHandle,
+    recent: &[RecentConversion],
+    templates: &[TemplateMenuEntry],
+) {
     if let Some(tray) = app.tray_by_id("flip-tray") {
-        match build_tray_menu(app, recent) {
+        match build_tray_menu_with_templates(app, recent, templates) {
             Ok(menu) => {
                 if let Err(err) = tray.set_menu(Some(menu)) {
                     log_event(
@@ -264,15 +338,68 @@ pub fn refresh_tray_menu(app: &AppHandle, recent: &[RecentConversion]) {
     }
 }
 
+pub fn sync_tray_and_windows(
+    app: &AppHandle,
+    state: &HostState,
+    templates_dir: &Path,
+    force_tray_rebuild: bool,
+) -> bool {
+    let templates = template_menu_entries_from_dir(templates_dir);
+    let templates_changed = if let Ok(mut guard) = state.last_tray_templates.lock() {
+        if *guard != templates {
+            *guard = templates.clone();
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if force_tray_rebuild || templates_changed {
+        let recent = state
+            .prefs
+            .lock()
+            .map(|g| g.recent_conversions.clone())
+            .unwrap_or_default();
+        refresh_tray_menu_with_templates(app, &recent, &templates);
+    }
+
+    if templates_changed {
+        let _ = app.emit("templates:changed", json!({ "count": templates.len() }));
+    }
+
+    templates_changed
+}
+
+pub fn start_templates_watcher(app: AppHandle, state: Arc<HostState>) {
+    std::thread::spawn(move || {
+        let templates_dir = AppPreferences::templates_dir();
+        while !state.shutting_down.load(Ordering::Relaxed) {
+            for _ in 0..8 {
+                if state.shutting_down.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            sync_tray_and_windows(&app, &state, &templates_dir, false);
+        }
+    });
+}
+
 pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
-    let recent = app
-        .state::<Arc<HostState>>()
+    let state = app.state::<Arc<HostState>>();
+    let recent = state
         .prefs
         .lock()
         .map(|g| g.recent_conversions.clone())
         .unwrap_or_default();
+    let templates = template_menu_entries_from_dir(&AppPreferences::templates_dir());
+    if let Ok(mut guard) = state.last_tray_templates.lock() {
+        *guard = templates.clone();
+    }
 
-    let menu = build_tray_menu(app, &recent)?;
+    let menu = build_tray_menu_with_templates(app, &recent, &templates)?;
     let icon = build_tray_template_icon();
 
     TrayIconBuilder::with_id("flip-tray")
@@ -416,7 +543,16 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     }
                 }
                 "templates" => {
-                    let _ = open_templates_folder_in_finder();
+                    let app_h = app.clone();
+                    std::thread::spawn(move || {
+                        let _ = open_templates_folder_in_finder();
+                        sync_tray_and_windows(
+                            &app_h,
+                            &state,
+                            &AppPreferences::templates_dir(),
+                            false,
+                        );
+                    });
                 }
                 "logs" => {
                     let _ = reveal_logs_in_finder();
@@ -530,5 +666,37 @@ mod tests {
         assert!(TRAY_UTILITY_ITEMS
             .iter()
             .any(|(id, label)| *id == "check_updates" && *label == "Check for Updates…"));
+
+        // Dynamic user templates scanning & non-destructive README seeding
+        let dir = tempfile::tempdir().unwrap();
+        let tmpl_dir = dir.path().join("Templates");
+        assert!(template_menu_entries_from_dir(&tmpl_dir).is_empty());
+        let readme = tmpl_dir.join("README.txt");
+        let readme_txt = fs::read_to_string(&readme).unwrap();
+        assert!(readme_txt.contains("{{date}}"));
+        assert!(readme_txt.contains("{{time}}"));
+        assert!(readme_txt.contains("{{user}}"));
+        assert!(readme_txt.contains("{{folder}}"));
+
+        // Custom README edits must never be overwritten
+        fs::write(&readme, "CUSTOM README CONTENT").unwrap();
+        let notes_dir = tmpl_dir.join("Meeting & Notes");
+        fs::create_dir_all(&notes_dir).unwrap();
+        fs::write(notes_dir.join("Agenda.md"), "# {{date}}").unwrap();
+        fs::write(tmpl_dir.join("Quick Checklist.txt"), "- [ ] Todo").unwrap();
+
+        let entries = template_menu_entries_from_dir(&tmpl_dir);
+        assert_eq!(
+            fs::read_to_string(&readme).unwrap(),
+            "CUSTOM README CONTENT"
+        );
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].label, "Quick Checklist (.txt)");
+        assert!(entries[0].id.starts_with("new_kind:template:"));
+        assert_eq!(entries[1].label, "Meeting & Notes / Agenda (.md)");
+        assert_eq!(
+            escape_menu_mnemonic(&entries[1].label),
+            "Meeting && Notes / Agenda (.md)"
+        );
     }
 }

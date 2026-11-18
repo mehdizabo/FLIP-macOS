@@ -1376,6 +1376,20 @@ export function mountWheelView(root: HTMLElement): () => void {
         if (disposed || !conversionInFlight || phase !== "converting") return;
         handleConversionComplete(payload);
       }),
+      events.onTemplatesChanged(() => {
+        if (disposed) return;
+        void getNewFileKinds()
+          .then((latestKinds) => {
+            if (disposed) return;
+            builtInKinds = latestKinds.kinds;
+            userTemplates = latestKinds.templates;
+            if (state.mode === "new" && phase === "idle") {
+              renderSectors();
+              renderHub();
+            }
+          })
+          .catch(() => {});
+      }),
       subscribeNativeDragDrop({
         onEnter: (paths, lx, ly) => {
           if (disposed || phase !== "idle") return;

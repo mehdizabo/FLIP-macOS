@@ -21,6 +21,7 @@ func printUsage() {
       convert-av <input> <format> <output>
       create-iwork <pages|numbers|key> <output>
       feedback <tick|alignment|level|generic|error> [wav-path]
+      notify <title> <body> [reveal-path]
     """
     print(usage)
 }
@@ -185,6 +186,13 @@ func runCLI() {
             RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         }
         writeJSON(["ok": true])
+
+    case "notify":
+        guard args.count >= 3 else { failExit("notify <title> <body> [reveal-path]") }
+        let revealPath = args.count >= 4 ? args[3] : nil
+        let res = FinderBridge.sendNotification(title: args[1], body: args[2], revealPath: revealPath)
+        writeJSON(res)
+        if (res["ok"] as? Bool) != true { exit(1) }
 
     default:
         printUsage()

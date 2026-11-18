@@ -11,8 +11,10 @@ use crate::engines::bridge;
 use crate::engines::convert_files;
 use crate::engines::create_new::{create_new_item, ensure_templates_dir_initialized};
 use host::{
-    attach_window_close_guard, commands::record_recent_conversion, monitor, present_wheel_at,
-    query_finder_context_or_fallback, resolve_wav_path, show_standard_window, tray, HostState,
+    attach_window_close_guard,
+    commands::{record_recent_conversion, spawn_completion_notification},
+    configure_wheel_overlay, monitor, present_wheel_at, query_finder_context_or_fallback,
+    resolve_wav_path, show_standard_window, tray, wheel_overlay_config, HostState,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -189,18 +191,36 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
                 };
                 let prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
                 let path_bufs: Vec<PathBuf> = files.iter().map(PathBuf::from).collect();
+                let started = std::time::Instant::now();
                 match convert_files(&path_bufs, &formats, &prefs, &cancel, None) {
                     Ok(results) => {
                         record_recent_conversion(&app_h, &state_arc, &results);
-                        let has_err = results.iter().any(|r| r.error.is_some());
-                        let _ = bridge::feedback(if has_err { "error" } else { "success" }, None);
+                        let first_err = results.iter().find_map(|r| r.error.as_deref());
+                        let _ = bridge::feedback(if first_err.is_some() { "error" } else { "success" }, None);
+                        spawn_completion_notification(
+                            &prefs,
+                            &results,
+                            first_err,
+                            false,
+                            started.elapsed(),
+                            true,
+                        );
                     }
                     Err(err) => {
+                        let msg = err.to_string();
                         log_event(
                             "url.convert.error",
-                            Some(json!({ "error": err.to_string() })),
+                            Some(json!({ "error": msg })),
                         );
                         let _ = bridge::feedback("error", None);
+                        spawn_completion_notification(
+                            &prefs,
+                            &[],
+                            Some(&msg),
+                            matches!(err, crate::engines::EngineError::Cancelled),
+                            started.elapsed(),
+                            true,
+                        );
                     }
                 }
             });
@@ -297,12 +317,13 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
             }
 
             tray::setup_tray(app.handle())?;
+            tray::start_templates_watcher(app.handle().clone(), Arc::clone(&state_for_setup));
 
             for label in ["wheel", "settings", "batch", "onboarding"] {
                 if let Some(win) = app.get_webview_window(label) {
                     attach_window_close_guard(&win, app.handle(), &state_for_setup);
                     if label == "wheel" {
-                        let _ = win.set_visible_on_all_workspaces(true);
+                        configure_wheel_overlay(&win, wheel_overlay_config(true, false));
                     }
                 }
             }

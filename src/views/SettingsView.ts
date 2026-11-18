@@ -262,6 +262,16 @@ export function mountSettingsView(root: HTMLElement): () => void {
             <span class="mac-switch-track"></span>
           </label>
         </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">Completion notifications</div>
+            <div class="setting-desc">Show a macOS notification when long conversions or batch jobs finish.</div>
+          </div>
+          <label class="mac-switch">
+            <input type="checkbox" id="pref-notificationsEnabled" ${prefs.notificationsEnabled ? "checked" : ""} />
+            <span class="mac-switch-track"></span>
+          </label>
+        </div>
       </section>
 
       <section class="glass-card">
@@ -904,6 +914,10 @@ export function mountSettingsView(root: HTMLElement): () => void {
       const checked = (e.target as HTMLInputElement).checked;
       void persistPrefs((d) => { d.hapticsEnabled = checked; });
     });
+    mainEl.querySelector<HTMLInputElement>("#pref-notificationsEnabled")?.addEventListener("change", (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      void persistPrefs((d) => { d.notificationsEnabled = checked; });
+    });
     mainEl.querySelector<HTMLInputElement>("#pref-autoRenameOnCreate")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
       void persistPrefs((d) => { d.autoRenameOnCreate = checked; });
@@ -1328,13 +1342,23 @@ export function mountSettingsView(root: HTMLElement): () => void {
   }
 
   let unlistenNavigate: (() => void) | null = null;
+  let unlistenTemplates: (() => void) | null = null;
   void (async () => {
-    const navFn = await events.onSettingsNavigate((payload) => handleSettingsNavigate(payload, true));
+    const [navFn, tmplFn] = await Promise.all([
+      events.onSettingsNavigate((payload) => handleSettingsNavigate(payload, true)),
+      events.onTemplatesChanged(() => {
+        if (!disposed && activeTab === "newfile") {
+          void refreshDiagnostics();
+        }
+      }),
+    ]);
     if (disposed) {
       navFn();
+      tmplFn();
       return;
     }
     unlistenNavigate = navFn;
+    unlistenTemplates = tmplFn;
 
     const pendingNav = await consumeSettingsNavigation().catch(() => null);
     if (disposed) return;
@@ -1356,6 +1380,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
     if (saveToastTimer !== null) window.clearTimeout(saveToastTimer);
     if (diagCopyTimer !== null) window.clearTimeout(diagCopyTimer);
     if (unlistenNavigate) unlistenNavigate();
+    if (unlistenTemplates) unlistenTemplates();
     window.removeEventListener("keydown", onRecorderKeyDown, true);
   };
 }

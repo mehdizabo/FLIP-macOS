@@ -448,3 +448,15 @@ pub fn feedback(kind: &str, wav_path: Option<&Path>) -> Result<(), BridgeError> 
     let _ = run_bridge_json(&args, 5, None)?;
     Ok(())
 }
+
+pub fn notify(title: &str, body: &str, reveal_path: Option<&Path>) -> Result<Value, BridgeError> {
+    let mut args = vec![
+        "notify".to_string(),
+        title.to_string(),
+        body.to_string(),
+    ];
+    if let Some(path) = reveal_path {
+        args.push(path.to_string_lossy().into_owned());
+    }
+    run_bridge_json(&args, 8, None)
+}

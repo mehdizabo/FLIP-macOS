@@ -87,6 +87,7 @@ export function defaultPreferences(): AppPreferences {
     version: 1,
     soundEnabled: true,
     hapticsEnabled: true,
+    notificationsEnabled: true,
     dragTrigger: "Down",
     idleShortcut: "Option+Shift+Space",
     mouseTriggerButton: null,
@@ -1018,6 +1019,8 @@ export const events = {
     subscribeEvent<{ files: string[]; results?: ConversionResult[] | null }>("batch:files", cb),
   onSettingsNavigate: (cb: (p: SettingsNavigatePayload) => void) =>
     subscribeEvent<SettingsNavigatePayload>("settings:navigate", cb),
+  onTemplatesChanged: (cb: (p: { count: number }) => void) =>
+    subscribeEvent<{ count: number }>("templates:changed", cb),
 };
 
 export interface NativeDragDropCallbacks {

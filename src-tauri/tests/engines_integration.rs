@@ -3,7 +3,7 @@ use flip_lib::core::preferences::AppPreferences;
 use flip_lib::engines::create_new::{
     built_in_kinds, create_new_item, ensure_templates_dir_initialized, scan_user_templates,
 };
-use flip_lib::engines::{bridge, convert_files, detect_tools, media, EngineError};
+use flip_lib::engines::{bridge, convert_files, detect_tools, media, resolve_target_dir, EngineError};
 use image::{GenericImageView, ImageBuffer, ImageFormat, Rgba};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -79,7 +79,7 @@ fn image_matrix_exif_alpha_collisions_and_combine_pdf() {
         .map(String::from)
         .collect();
 
-    let res = convert_files(&[png.clone()], &formats, &prefs, &cancel, None).unwrap();
+    let res = convert_files(std::slice::from_ref(&png), &formats, &prefs, &cancel, None).unwrap();
     for r in &res {
         assert!(r.error.is_none(), "error for {}: {:?}", r.format, r.error);
         assert!(!r.outputs.is_empty());
@@ -103,7 +103,7 @@ fn image_matrix_exif_alpha_collisions_and_combine_pdf() {
 
     // WebP -> PNG, JPG, HEIC
     let webp_res = convert_files(
-        &[webp.clone()],
+        std::slice::from_ref(&webp),
         &["PNG".into(), "JPG".into(), "HEIC".into()],
         &prefs,
         &cancel,
@@ -126,7 +126,7 @@ fn image_matrix_exif_alpha_collisions_and_combine_pdf() {
     fs::write(&rotated, rot_bytes).unwrap();
     hashes.insert(rotated.clone(), sha256_file(&rotated));
 
-    let rot_res = convert_files(&[rotated.clone()], &["PNG".into()], &prefs, &cancel, None).unwrap();
+    let rot_res = convert_files(std::slice::from_ref(&rotated), &["PNG".into()], &prefs, &cancel, None).unwrap();
     assert!(rot_res[0].error.is_none());
     let rot_png = PathBuf::from(&rot_res[0].outputs[0]);
     let oriented = image::open(&rot_png).unwrap();
@@ -180,7 +180,7 @@ fn structured_data_full_matrix_json_yaml_toml_xml_csv_html_md_pdf() {
         .into_iter()
         .map(String::from)
         .collect();
-    let res = convert_files(&[json_path.clone()], &targets, &prefs, &cancel, None).unwrap();
+    let res = convert_files(std::slice::from_ref(&json_path), &targets, &prefs, &cancel, None).unwrap();
     for r in &res {
         assert!(r.error.is_none(), "data {} failed: {:?}", r.format, r.error);
         assert_eq!(r.outputs.len(), 1);
@@ -193,7 +193,7 @@ fn structured_data_full_matrix_json_yaml_toml_xml_csv_html_md_pdf() {
     assert!(csv_text.contains("Milano") && csv_text.contains("Giulia"));
 
     // CSV -> JSON roundtrip
-    let csv_to_json = convert_files(&[csv_out.clone()], &["JSON".into()], &prefs, &cancel, None).unwrap();
+    let csv_to_json = convert_files(std::slice::from_ref(&csv_out), &["JSON".into()], &prefs, &cancel, None).unwrap();
     assert!(csv_to_json[0].error.is_none());
     let round_json = fs::read_to_string(&csv_to_json[0].outputs[0]).unwrap();
     assert!(round_json.contains("Milano") && round_json.contains("Giulia"));
@@ -243,7 +243,7 @@ fn documents_and_pdf_multipage_ocr_merge_and_container_bomb() {
         doc_targets.extend(["EPUB", "FB2", "RST"].into_iter().map(String::from));
     }
 
-    let doc_res = convert_files(&[txt.clone()], &doc_targets, &prefs, &cancel, None).unwrap();
+    let doc_res = convert_files(std::slice::from_ref(&txt), &doc_targets, &prefs, &cancel, None).unwrap();
     for r in &doc_res {
         assert!(r.error.is_none(), "doc {} failed: {:?}", r.format, r.error);
         assert!(!r.outputs.is_empty());
@@ -256,7 +256,7 @@ fn documents_and_pdf_multipage_ocr_merge_and_container_bomb() {
     assert!(png_pages[0].contains("-p001.png"));
 
     let pdf_res = convert_files(
-        &[pdf_path.clone()],
+        std::slice::from_ref(&pdf_path),
         &["PNG".into(), "JPG".into(), "WEBP".into(), "HEIC".into(), "TXT".into(), "DOCX".into(), "MD".into(), "HTML".into()],
         &prefs,
         &cancel,
@@ -293,7 +293,7 @@ fn documents_and_pdf_multipage_ocr_merge_and_container_bomb() {
     let cover_png = repo_root().join("docs/assets/flip-cover.png");
     let scanned_text_pdf = dir.path().join("scanned-text.pdf");
     bridge::convert_pdf_from_images(&scanned_text_pdf, &[cover_png], None).unwrap();
-    let ocr_pdf_res = convert_files(&[scanned_text_pdf.clone()], &["TXT".into()], &prefs, &cancel, None).unwrap();
+    let ocr_pdf_res = convert_files(std::slice::from_ref(&scanned_text_pdf), &["TXT".into()], &prefs, &cancel, None).unwrap();
     assert!(ocr_pdf_res[0].error.is_none(), "OCR PDF failed: {:?}", ocr_pdf_res[0].error);
     let ocr_text = fs::read_to_string(&ocr_pdf_res[0].outputs[0]).unwrap();
     assert!(ocr_text.contains("FLIP"), "OCR PDF missed FLIP: {ocr_text}");
@@ -303,7 +303,7 @@ fn documents_and_pdf_multipage_ocr_merge_and_container_bomb() {
     make_transparent_test_png(&blank_img);
     let blank_pdf = dir.path().join("shape.pdf");
     bridge::convert_pdf_from_images(&blank_pdf, &[blank_img], None).unwrap();
-    let blank_res = convert_files(&[blank_pdf.clone()], &["TXT".into()], &prefs, &cancel, None).unwrap();
+    let blank_res = convert_files(std::slice::from_ref(&blank_pdf), &["TXT".into()], &prefs, &cancel, None).unwrap();
     assert!(blank_res[0].error.as_deref().unwrap_or("").contains("OCR"));
 
     // Merge PDFs
@@ -353,7 +353,7 @@ fn media_native_and_ffmpeg_conversions_and_cancellation() {
     // Full FFmpeg pipeline when ffmpeg is installed
     if let Some(ref ffmpeg) = tools.ffmpeg {
         let res = convert_files(
-            &[tick_wav.clone()],
+            std::slice::from_ref(&tick_wav),
             &[
                 "MP3".into(),
                 "FLAC".into(),
@@ -412,7 +412,7 @@ fn media_native_and_ffmpeg_conversions_and_cancellation() {
         assert!(fs::metadata(&native_vm4a).unwrap().len() > 0);
 
         let vres = convert_files(
-            &[mp4.clone()],
+            std::slice::from_ref(&mp4),
             &["MOV".into(), "M4V".into(), "M4A".into(), "WAV".into(), "MKV".into(), "WEBM".into(), "AVI".into(), "GIF".into()],
             &prefs,
             &cancel,
@@ -563,8 +563,10 @@ fn policy_capabilities_match_detected_tools() {
 fn output_subfolder_and_corrupt_data_edge_cases() {
     let dir = tempdir().unwrap();
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut prefs = AppPreferences::default();
-    prefs.output_subfolder = Some("Converted".to_string());
+    let prefs = AppPreferences {
+        output_subfolder: Some("Converted".to_string()),
+        ..Default::default()
+    };
 
     let src = dir.path().join("item.json");
     fs::write(&src, r#"{"hello":"world"}"#).unwrap();
@@ -686,7 +688,7 @@ doc2.write(toFile: "{}", withOptions: [
         "rotated PDF OCR clipped text: {ocr_text}"
     );
 
-    let locked_png = convert_files(&[locked_pdf.clone()], &["PNG".into()], &prefs, &cancel, None).unwrap();
+    let locked_png = convert_files(std::slice::from_ref(&locked_pdf), &["PNG".into()], &prefs, &cancel, None).unwrap();
     assert!(
         locked_png[0]
             .error
@@ -733,7 +735,7 @@ CGImageDestinationFinalize(dest)
     let mut no_gps_prefs = prefs.clone();
     no_gps_prefs.preserve_exif = true;
     no_gps_prefs.strip_gps_exif = true;
-    let jpg_nogps = convert_files(&[exif_src.clone()], &["TIFF".into()], &no_gps_prefs, &cancel, None).unwrap();
+    let jpg_nogps = convert_files(std::slice::from_ref(&exif_src), &["TIFF".into()], &no_gps_prefs, &cancel, None).unwrap();
     assert!(jpg_nogps[0].error.is_none());
     let tiff_nogps_path = PathBuf::from(&jpg_nogps[0].outputs[0]);
 
@@ -785,7 +787,7 @@ print("exif=\(p[kCGImagePropertyExifDictionary] != nil) tiff=\(p[kCGImagePropert
             .unwrap();
         assert!(gen_odd.status.success());
 
-        let mov_res = convert_files(&[odd_mp4.clone()], &["MOV".into()], &prefs, &cancel, None).unwrap();
+        let mov_res = convert_files(std::slice::from_ref(&odd_mp4), &["MOV".into()], &prefs, &cancel, None).unwrap();
         assert!(mov_res[0].error.is_none(), "odd dimension MP4->MOV failed: {:?}", mov_res[0].error);
 
         // Native GIF without FFmpeg (matching Policy::outputs for native_only!)
@@ -961,7 +963,7 @@ CGImageDestinationFinalize(jpgDest)
     assert!(!blank_ocr_txt.exists(), "0-byte TXT must NOT be written on empty OCR");
 
     let blank_pdf = dir.path().join("blank_shape.pdf");
-    bridge::convert_pdf_from_images(&blank_pdf, &[blank_img.clone()], None).unwrap();
+    bridge::convert_pdf_from_images(&blank_pdf, std::slice::from_ref(&blank_img), None).unwrap();
     let blank_pdf_txt = dir.path().join("blank_pdf.txt");
     let blank_pdf_err = bridge::convert_pdf_extract_text(&blank_pdf, &blank_pdf_txt, None).unwrap_err();
     assert!(blank_pdf_err.to_string().contains("OCR"));
@@ -971,7 +973,7 @@ CGImageDestinationFinalize(jpgDest)
     let combined_a4 = dir.path().join("combined_a4.pdf");
     bridge::convert_pdf_from_images(&combined_a4, &[rotated_ocr_jpg, blank_img.clone()], None).unwrap();
     // Overwrite refusal
-    assert!(bridge::convert_pdf_from_images(&combined_a4, &[blank_img.clone()], None).is_err());
+    assert!(bridge::convert_pdf_from_images(&combined_a4, std::slice::from_ref(&blank_img), None).is_err());
     // >128 file refusal
     let too_many_imgs: Vec<PathBuf> = vec![blank_img; 129];
     assert!(bridge::convert_pdf_from_images(&dir.path().join("too_many.pdf"), &too_many_imgs, None).is_err());
@@ -1125,4 +1127,125 @@ print("PDF_LAYOUT_OK")
     let clip_save_res = bridge::clipboard_save(&existing_clip);
     assert!(clip_save_res.is_err(), "clipboard_save must refuse overwriting existing file");
     assert_eq!(fs::read(&existing_clip).unwrap(), b"KEEP_ME_SAFE");
+}
+
+struct RestoreDirPermissions(PathBuf);
+
+impl Drop for RestoreDirPermissions {
+    fn drop(&mut self) {
+        if let Ok(meta) = fs::metadata(&self.0) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&self.0, perms);
+        }
+    }
+}
+
+#[test]
+fn readonly_source_directory_falls_back_to_fallback_folder() {
+    let dir = tempdir().unwrap();
+    let ro_dir = dir.path().join("ReadOnlyMount");
+    fs::create_dir(&ro_dir).unwrap();
+
+    let ro_png = ro_dir.join("mounted.png");
+    let ro_json = ro_dir.join("mounted.json");
+    make_transparent_test_png(&ro_png);
+    fs::write(&ro_json, r#"{"readonly":true,"count":42}"#).unwrap();
+
+    let png_hash = sha256_file(&ro_png);
+    let json_hash = sha256_file(&ro_json);
+
+    let _ro_guard = RestoreDirPermissions(ro_dir.clone());
+    let mut ro_perms = fs::metadata(&ro_dir).unwrap().permissions();
+    ro_perms.set_mode(0o555);
+    fs::set_permissions(&ro_dir, ro_perms).unwrap();
+
+    // Non-existent nested fallback_folder should be created automatically
+    let fallback_dir = dir.path().join("FallbackOut/Nested");
+    let prefs = AppPreferences {
+        fallback_folder: Some(fallback_dir.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let img_res = convert_files(
+        std::slice::from_ref(&ro_png),
+        &["JPG".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(img_res[0].error.is_none(), "ro png->jpg error: {:?}", img_res[0].error);
+    let jpg_out = PathBuf::from(&img_res[0].outputs[0]);
+    assert_eq!(jpg_out.parent(), Some(fallback_dir.as_path()));
+    assert_eq!(jpg_out.file_name().unwrap().to_str().unwrap(), "mounted.jpg");
+    assert!(jpg_out.is_file());
+
+    // Even with output_subfolder configured, a read-only source directory falls back cleanly
+    let prefs_with_sub = AppPreferences {
+        fallback_folder: Some(fallback_dir.to_string_lossy().into_owned()),
+        output_subfolder: Some("Converted".to_string()),
+        ..Default::default()
+    };
+    let data_res = convert_files(
+        std::slice::from_ref(&ro_json),
+        &["YAML".into()],
+        &prefs_with_sub,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(data_res[0].error.is_none(), "ro json->yaml error: {:?}", data_res[0].error);
+    let yaml_out = PathBuf::from(&data_res[0].outputs[0]);
+    assert_eq!(yaml_out.parent(), Some(fallback_dir.as_path()));
+    assert_eq!(yaml_out.file_name().unwrap().to_str().unwrap(), "mounted.yaml");
+    assert!(fs::read_to_string(&yaml_out).unwrap().contains("readonly: true"));
+
+    // Combine-PDF batch action from read-only folder also lands in fallback_folder
+    let ro_png2 = dir.path().join("writable.png");
+    make_transparent_test_png(&ro_png2);
+    let merge_res = convert_files(
+        &[ro_png.clone(), ro_png2],
+        &["COMBINE_PDF".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(merge_res[0].error.is_none(), "ro combine error: {:?}", merge_res[0].error);
+    let comb_out = PathBuf::from(&merge_res[0].outputs[0]);
+    assert_eq!(comb_out.parent(), Some(fallback_dir.as_path()));
+    assert!(fs::read(&comb_out).unwrap().starts_with(b"%PDF-"));
+
+    // Read-only source folder must remain completely untouched
+    let mut ro_entries: Vec<String> = fs::read_dir(&ro_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    ro_entries.sort();
+    assert_eq!(ro_entries, vec!["mounted.json", "mounted.png"]);
+    assert_eq!(sha256_file(&ro_png), png_hash);
+    assert_eq!(sha256_file(&ro_json), json_hash);
+
+    // If fallback_folder itself is also read-only, resolve_target_dir falls back to ~/Downloads
+    let ro_fallback = dir.path().join("ReadOnlyFallback");
+    fs::create_dir(&ro_fallback).unwrap();
+    let _fb_guard = RestoreDirPermissions(ro_fallback.clone());
+    let mut fb_perms = fs::metadata(&ro_fallback).unwrap().permissions();
+    fb_perms.set_mode(0o555);
+    fs::set_permissions(&ro_fallback, fb_perms).unwrap();
+
+    let prefs_ro_fb = AppPreferences {
+        fallback_folder: Some(ro_fallback.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let resolved_secondary = resolve_target_dir(&ro_png, &prefs_ro_fb).unwrap();
+    let expected_downloads = dirs::download_dir().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Downloads")
+    });
+    assert_eq!(resolved_secondary, expected_downloads);
 }

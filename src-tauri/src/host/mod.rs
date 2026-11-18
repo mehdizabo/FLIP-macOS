@@ -21,6 +21,92 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position,
 
 pub const WHEEL_WINDOW_SIZE: i32 = 440;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WheelOverlayConfig {
+    pub focusable: bool,
+    pub order_front: bool,
+    pub make_key: bool,
+    pub window_level: isize,
+    pub hides_on_deactivate: bool,
+    pub can_join_all_spaces: bool,
+    pub full_screen_auxiliary: bool,
+    pub ignores_cycle: bool,
+    pub transient: bool,
+}
+
+pub fn wheel_overlay_config(is_drag: bool, order_front: bool) -> WheelOverlayConfig {
+    WheelOverlayConfig {
+        focusable: !is_drag,
+        order_front,
+        make_key: !is_drag,
+        window_level: 101, // NSPopUpMenuWindowLevel
+        hides_on_deactivate: false,
+        can_join_all_spaces: true,
+        full_screen_auxiliary: true,
+        ignores_cycle: true,
+        transient: true,
+    }
+}
+
+pub fn configure_wheel_overlay(win: &WebviewWindow, cfg: WheelOverlayConfig) {
+    let _ = win.set_visible_on_all_workspaces(cfg.can_join_all_spaces);
+    let _ = win.set_focusable(cfg.focusable);
+
+    #[cfg(target_os = "macos")]
+    {
+        let _ = win.with_webview(move |webview| {
+            use objc2_app_kit::{
+                NSPopUpMenuWindowLevel, NSWindow, NSWindowAnimationBehavior,
+                NSWindowCollectionBehavior,
+            };
+            let ptr = webview.ns_window().cast::<NSWindow>();
+            if ptr.is_null() {
+                return;
+            }
+            // SAFETY: `with_webview` runs on the macOS main thread with a live NSWindow handle.
+            unsafe {
+                let ns_win = &*ptr;
+                let mut behavior = NSWindowCollectionBehavior::empty();
+                if cfg.can_join_all_spaces {
+                    behavior |= NSWindowCollectionBehavior::CanJoinAllSpaces;
+                }
+                if cfg.full_screen_auxiliary {
+                    behavior |= NSWindowCollectionBehavior::FullScreenAuxiliary;
+                }
+                if cfg.ignores_cycle {
+                    behavior |= NSWindowCollectionBehavior::IgnoresCycle;
+                }
+                if cfg.transient {
+                    behavior |= NSWindowCollectionBehavior::Transient;
+                }
+                ns_win.setCollectionBehavior(behavior);
+                let level = if cfg.window_level == 101 {
+                    NSPopUpMenuWindowLevel
+                } else {
+                    cfg.window_level
+                };
+                ns_win.setLevel(level);
+                ns_win.setHidesOnDeactivate(cfg.hides_on_deactivate);
+                ns_win.setAnimationBehavior(NSWindowAnimationBehavior::None);
+                if cfg.order_front {
+                    if cfg.make_key {
+                        ns_win.makeKeyAndOrderFront(None);
+                    } else {
+                        ns_win.orderFrontRegardless();
+                    }
+                }
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        if cfg.order_front {
+            let _ = win.show();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WheelStatePayload {
@@ -74,6 +160,7 @@ pub struct HostState {
     pub settings_mounted: AtomicBool,
     pub pending_settings_nav: Mutex<Option<SettingsNavigatePayload>>,
     pub wav_path: Mutex<Option<PathBuf>>,
+    pub last_tray_templates: Mutex<Vec<tray::TemplateMenuEntry>>,
     pub order_gate: Mutex<ShortcutOrderGate>,
     pub press_gate: Mutex<ShortcutPressGate>,
 }
@@ -110,6 +197,7 @@ impl HostState {
             settings_mounted: AtomicBool::new(false),
             pending_settings_nav: Mutex::new(None),
             wav_path: Mutex::new(None),
+            last_tray_templates: Mutex::new(Vec::new()),
             order_gate: Mutex::new(ShortcutOrderGate::default()),
             press_gate: Mutex::new(ShortcutPressGate::default()),
         }
@@ -309,7 +397,7 @@ pub fn ensure_window(
         .map_err(|e| e.to_string())?;
     attach_window_close_guard(&built, app, state);
     if label == "wheel" {
-        let _ = built.set_visible_on_all_workspaces(true);
+        configure_wheel_overlay(&built, wheel_overlay_config(true, false));
     }
     Ok(built)
 }
@@ -444,9 +532,11 @@ pub fn present_wheel_at(
         win_x as f64,
         win_y as f64,
     )));
-    let _ = win.set_visible_on_all_workspaces(true);
+    let overlay_cfg = wheel_overlay_config(is_drag, true);
+    let _ = win.set_visible_on_all_workspaces(overlay_cfg.can_join_all_spaces);
+    let _ = win.set_focusable(overlay_cfg.focusable);
     let _ = win.emit("wheel:state", &payload);
-    let _ = win.show();
+    configure_wheel_overlay(&win, overlay_cfg);
     if !is_drag {
         let _ = win.set_focus();
     }
@@ -481,6 +571,7 @@ pub fn hide_wheel(app: &AppHandle, state: &Arc<HostState>, reason: &str) {
     }));
     if let Some(win) = app.get_webview_window("wheel") {
         let _ = win.hide();
+        let _ = win.set_focusable(false);
     }
     log_event("wheel.dismiss", Some(json!({ "reason": reason })));
 }

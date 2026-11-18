@@ -57,14 +57,19 @@ fn normalize_to_png(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct ImageEncodeOptions {
+    pub quality_pct: u8,
+    pub preserve_exif: bool,
+    pub strip_gps_exif: bool,
+}
+
 pub fn convert(
     source: &Path,
     format: &str,
     output: &Path,
     staging_dir: &Path,
-    quality_pct: u8,
-    preserve_exif: bool,
-    strip_gps_exif: bool,
+    options: ImageEncodeOptions,
     cancel: &Arc<AtomicBool>,
 ) -> Result<(), EngineError> {
     let fmt = format.trim().to_ascii_uppercase();
@@ -99,14 +104,14 @@ pub fn convert(
         return Ok(());
     }
 
-    let quality_01 = (quality_pct.clamp(10, 100) as f64) / 100.0;
+    let quality_01 = (options.quality_pct.clamp(10, 100) as f64) / 100.0;
     match bridge::convert_image(
         source,
         &fmt,
         output,
         quality_01,
-        preserve_exif,
-        strip_gps_exif,
+        options.preserve_exif,
+        options.strip_gps_exif,
         Some(cancel),
     ) {
         Ok(_) => Ok(()),
@@ -121,8 +126,8 @@ pub fn convert(
                     &fmt,
                     output,
                     quality_01,
-                    preserve_exif,
-                    strip_gps_exif,
+                    options.preserve_exif,
+                    options.strip_gps_exif,
                     Some(cancel),
                 )?;
                 Ok(())

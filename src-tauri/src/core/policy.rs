@@ -399,7 +399,7 @@ fn is_finder_alias(path: &Path) -> bool {
     let rc = unsafe {
         libc::getxattr(
             cstr.as_ptr(),
-            b"com.apple.FinderInfo\0".as_ptr() as *const libc::c_char,
+            c"com.apple.FinderInfo".as_ptr(),
             buf.as_mut_ptr() as *mut libc::c_void,
             buf.len(),
             0,
@@ -724,7 +724,7 @@ mod tests {
             let rc = unsafe {
                 libc::setxattr(
                     cstr.as_ptr(),
-                    b"com.apple.FinderInfo\0".as_ptr() as *const libc::c_char,
+                    c"com.apple.FinderInfo".as_ptr(),
                     finfo.as_ptr() as *const libc::c_void,
                     finfo.len(),
                     0,

@@ -451,7 +451,7 @@ pub fn format_diagnostics_markdown(input: &DiagnosticsReportInput<'_>) -> String
         - **Drag Trigger**: {}\n\
         - **Idle Shortcut**: {}\n\
         - **Mouse Trigger**: {}\n\
-        - **Sound / Haptics**: {} / {}\n\
+        - **Sound / Haptics / Notifications**: {} / {} / {}\n\
         - **Launch at Login**: {}\n\
         - **Auto Rename on Create / Open After Creating**: {} / {}\n\
         - **Image Quality / Preserve EXIF / Strip GPS**: {}% / {} / {}\n\
@@ -479,6 +479,7 @@ pub fn format_diagnostics_markdown(input: &DiagnosticsReportInput<'_>) -> String
         mouse_desc,
         input.prefs.sound_enabled,
         input.prefs.haptics_enabled,
+        input.prefs.notifications_enabled,
         input.prefs.launch_at_login,
         input.prefs.auto_rename_on_create,
         input.prefs.open_after_creating,
@@ -606,9 +607,11 @@ mod tests {
             assert!(line.contains("~/T/.flip-job-123/out.jpg"));
         }
 
-        let mut prefs = AppPreferences::default();
-        prefs.fallback_folder = Some("/Users/secretuser/Inbox".to_string());
-        prefs.ffmpeg_path = Some("/Users/secretuser/.local/bin/ffmpeg".to_string());
+        let prefs = AppPreferences {
+            fallback_folder: Some("/Users/secretuser/Inbox".to_string()),
+            ffmpeg_path: Some("/Users/secretuser/.local/bin/ffmpeg".to_string()),
+            ..Default::default()
+        };
         let tools = DetectedTools {
             ffmpeg: Some(PathBuf::from("/opt/homebrew/bin/ffmpeg")),
             ffprobe: Some(PathBuf::from("/opt/homebrew/bin/ffprobe")),

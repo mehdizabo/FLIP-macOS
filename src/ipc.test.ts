@@ -35,6 +35,7 @@ describe("Frontend IPC surface & contract alignment", () => {
     expect(prefs.version).toBe(1);
     expect(prefs.soundEnabled).toBe(true);
     expect(prefs.hapticsEnabled).toBe(true);
+    expect(prefs.notificationsEnabled).toBe(true);
     expect(prefs.dragTrigger).toBe("Down");
     expect(prefs.idleShortcut).toBe("Option+Shift+Space");
     expect(prefs.mouseTriggerButton).toBeNull();
@@ -169,6 +170,9 @@ describe("Frontend IPC surface & contract alignment", () => {
       const uNav = await events.onSettingsNavigate((p) => navEvents.push(p));
       expect(typeof uNav).toBe("function");
       uNav();
+      const uTmpl = await events.onTemplatesChanged(() => {});
+      expect(typeof uTmpl).toBe("function");
+      uTmpl();
 
       const upd = await checkForUpdates();
       expect(upd.currentVersion).toBe("0.1.0");

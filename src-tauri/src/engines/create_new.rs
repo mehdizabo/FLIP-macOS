@@ -215,16 +215,20 @@ pub fn ensure_templates_dir_initialized(templates_dir: &Path) -> Result<(), Engi
         fs::create_dir_all(templates_dir)?;
     }
     let readme = templates_dir.join("README.txt");
-    if !readme.exists() {
+    if fs::symlink_metadata(&readme).is_err() {
         let body = "FLIP User Templates\n\
             ===================\n\n\
-            Drop any file into this folder to add it to FLIP's New File wheel.\n\
-            Subfolders become template groups.\n\n\
-            Supported placeholders inside plain-text templates:\n\
-              {{date}}   - Current date (YYYY-MM-DD)\n\
-              {{time}}   - Current time (HH:MM)\n\
+            Drop any file into this folder to add it to FLIP's New File wheel\n\
+            and the Menu Bar 'New File in Finder Folder' submenu.\n\n\
+            Organization:\n\
+              - Files in this root folder appear directly under Custom Templates.\n\
+              - Subfolders become template groups (e.g. Notes/Meeting Note.md).\n\
+              - Executable scripts (.sh or +x) preserve executable permissions.\n\n\
+            Supported placeholders inside plain-text templates (.txt, .md, .html, .json, .sh, .py, .swift, etc.):\n\
+              {{date}}   - Current local date (YYYY-MM-DD)\n\
+              {{time}}   - Current local time (HH:MM)\n\
               {{user}}   - Current macOS username\n\
-              {{folder}} - Target folder name\n";
+              {{folder}} - Active Finder destination folder name\n";
         fs::write(&readme, body)?;
     }
     Ok(())

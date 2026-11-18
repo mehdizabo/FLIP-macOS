@@ -16,8 +16,8 @@ use flip_lib::host::commands::{
 };
 use flip_lib::host::monitor::{clamp_to_screen, should_hide_on_drag_end, MonitorScreenGeom};
 use flip_lib::host::{
-    inspect_paths_with_prefs, resolve_wav_path_from, HostState, SettingsNavigatePayload,
-    WheelStatePayload,
+    inspect_paths_with_prefs, resolve_wav_path_from, wheel_overlay_config, HostState,
+    SettingsNavigatePayload, WheelStatePayload,
 };
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -76,6 +76,26 @@ fn tauri_config_and_capabilities_match_window_labels_and_resources() {
         .filter_map(|v| v.as_str())
         .collect();
     assert!(perms.contains(&"core:default"));
+
+    let wheel_win = windows.iter().find(|w| w["label"] == "wheel").unwrap();
+    assert_eq!(wheel_win["visibleOnAllWorkspaces"], true);
+    assert_eq!(wheel_win["alwaysOnTop"], true);
+    assert_eq!(wheel_win["focus"], false);
+    assert_eq!(wheel_win["focusable"], false);
+
+    let drag_cfg = wheel_overlay_config(true, true);
+    assert!(!drag_cfg.focusable);
+    assert!(!drag_cfg.make_key);
+    assert!(drag_cfg.can_join_all_spaces);
+    assert!(drag_cfg.full_screen_auxiliary);
+    assert!(!drag_cfg.hides_on_deactivate);
+    assert_eq!(drag_cfg.window_level, 101);
+
+    let idle_cfg = wheel_overlay_config(false, true);
+    assert!(idle_cfg.focusable);
+    assert!(idle_cfg.make_key);
+    assert!(idle_cfg.can_join_all_spaces);
+    assert!(idle_cfg.full_screen_auxiliary);
 }
 
 #[test]
@@ -238,6 +258,7 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
         "version",
         "soundEnabled",
         "hapticsEnabled",
+        "notificationsEnabled",
         "dragTrigger",
         "idleShortcut",
         "mouseTriggerButton",
@@ -363,8 +384,12 @@ fn bridge_and_wav_resolve_in_both_dev_and_app_bundle_layouts() {
         resolve_bridge_binary_from(Some(&fake_exe), &fake_manifest, None).unwrap();
     assert_eq!(resolved_bridge, bundled_bridge);
 
-    let resolved_wav =
-        resolve_wav_path_from(&[bundled_wav.clone()], Some(&fake_exe), &fake_manifest).unwrap();
+    let resolved_wav = resolve_wav_path_from(
+        std::slice::from_ref(&bundled_wav),
+        Some(&fake_exe),
+        &fake_manifest,
+    )
+    .unwrap();
     assert_eq!(resolved_wav, bundled_wav);
 
     // Also resolves via exe-relative Contents/Resources when BaseDirectory list is empty
@@ -482,6 +507,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         "conversion:complete",
         "batch:files",
         "settings:navigate",
+        "templates:changed",
     ] {
         assert!(
             ipc_ts.contains(&format!("\"{ev_name}\"")),
@@ -571,8 +597,10 @@ fn fallback_folder_tilde_expansion_and_save_preferences_history_preservation() {
     assert_eq!(expand_tilde_path("~"), home);
     assert_eq!(expand_tilde_path("~/Desktop"), home.join("Desktop"));
 
-    let mut prefs = AppPreferences::default();
-    prefs.fallback_folder = Some(" ~/Documents/FlipInbox ".to_string());
+    let prefs = AppPreferences {
+        fallback_folder: Some(" ~/Documents/FlipInbox ".to_string()),
+        ..Default::default()
+    };
     assert_eq!(
         prefs.resolved_fallback_folder(),
         home.join("Documents/FlipInbox")
@@ -580,32 +608,36 @@ fn fallback_folder_tilde_expansion_and_save_preferences_history_preservation() {
 
     // Server-recorded recent conversions and onboarding flag must never be erased
     // by stale non-empty recentConversions coming from an already-open Settings view.
-    let mut server_prefs = AppPreferences::default();
-    server_prefs.onboarding_completed = true;
-    server_prefs.recent_conversions = vec![
-        RecentConversion {
-            source_name: "new.png".into(),
-            target_format: "JPG".into(),
-            output_path: "/tmp/new.jpg".into(),
-            timestamp_utc: "2026-11-17T12:05:00Z".into(),
-        },
-        RecentConversion {
+    let server_prefs = AppPreferences {
+        onboarding_completed: true,
+        recent_conversions: vec![
+            RecentConversion {
+                source_name: "new.png".into(),
+                target_format: "JPG".into(),
+                output_path: "/tmp/new.jpg".into(),
+                timestamp_utc: "2026-11-17T12:05:00Z".into(),
+            },
+            RecentConversion {
+                source_name: "old.png".into(),
+                target_format: "JPG".into(),
+                output_path: "/tmp/old.jpg".into(),
+                timestamp_utc: "2026-11-17T12:00:00Z".into(),
+            },
+        ],
+        ..Default::default()
+    };
+
+    let stale_settings = AppPreferences {
+        sound_enabled: false,
+        onboarding_completed: false,
+        recent_conversions: vec![RecentConversion {
             source_name: "old.png".into(),
             target_format: "JPG".into(),
             output_path: "/tmp/old.jpg".into(),
             timestamp_utc: "2026-11-17T12:00:00Z".into(),
-        },
-    ];
-
-    let mut stale_settings = AppPreferences::default();
-    stale_settings.sound_enabled = false;
-    stale_settings.onboarding_completed = false;
-    stale_settings.recent_conversions = vec![RecentConversion {
-        source_name: "old.png".into(),
-        target_format: "JPG".into(),
-        output_path: "/tmp/old.jpg".into(),
-        timestamp_utc: "2026-11-17T12:00:00Z".into(),
-    }];
+        }],
+        ..Default::default()
+    };
 
     let merged = merge_and_validate_preferences(stale_settings, &server_prefs).unwrap();
     assert!(!merged.sound_enabled);
@@ -614,8 +646,10 @@ fn fallback_folder_tilde_expansion_and_save_preferences_history_preservation() {
     assert_eq!(merged.recent_conversions[0].source_name, "new.png");
 
     // Invalid shortcuts must still be rejected cleanly
-    let mut bad_prefs = AppPreferences::default();
-    bad_prefs.drag_trigger = "Return".into();
+    let bad_prefs = AppPreferences {
+        drag_trigger: "Return".into(),
+        ..Default::default()
+    };
     assert!(merge_and_validate_preferences(bad_prefs, &server_prefs).is_err());
 }
 

@@ -16,7 +16,7 @@ use crate::engines::create_new::{
     CreateNewResult, NewFileKindInfo, UserTemplateInfo,
 };
 use crate::engines::{convert_files, detect_tools, ConversionResult, DetectedTools, EngineError};
-use crate::host::tray::{open_templates_folder_in_finder, refresh_tray_menu, reveal_logs_in_finder};
+use crate::host::tray::{open_templates_folder_in_finder, reveal_logs_in_finder, sync_tray_and_windows};
 use crate::host::{
     hide_wheel, inspect_paths_with_prefs, present_wheel_at, query_finder_context_or_fallback,
     show_standard_window, HostState, InspectFilesResult, SettingsNavigatePayload,
@@ -184,6 +184,111 @@ pub async fn get_thumbnail(path: String, size: Option<u32>) -> Result<ThumbnailR
         .map_err(|e| e.to_string())
 }
 
+pub const LONG_CONVERSION_NOTIFY_THRESHOLD_SECS: u64 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationContent {
+    pub title: String,
+    pub body: String,
+    pub reveal_path: Option<PathBuf>,
+}
+
+pub fn build_conversion_notification(
+    prefs: &AppPreferences,
+    results: &[ConversionResult],
+    top_level_error: Option<&str>,
+    cancelled: bool,
+    elapsed: std::time::Duration,
+    from_batch_or_tray: bool,
+) -> Option<NotificationContent> {
+    if !prefs.notifications_enabled || cancelled {
+        return None;
+    }
+    if !from_batch_or_tray && elapsed.as_secs() < LONG_CONVERSION_NOTIFY_THRESHOLD_SECS {
+        return None;
+    }
+
+    let outputs: Vec<&str> = results
+        .iter()
+        .flat_map(|r| r.outputs.iter().map(String::as_str))
+        .collect();
+    let err_count = results.iter().filter(|r| r.error.is_some()).count();
+
+    if outputs.is_empty() && (top_level_error.is_some() || err_count > 0) {
+        let msg = top_level_error
+            .or_else(|| results.iter().find_map(|r| r.error.as_deref()))
+            .unwrap_or("Conversion failed.");
+        let short_msg: String = msg.chars().take(180).collect();
+        return Some(NotificationContent {
+            title: "FLIP Conversion Failed".to_string(),
+            body: short_msg,
+            reveal_path: None,
+        });
+    }
+
+    if outputs.is_empty() {
+        return None;
+    }
+
+    let first_out = PathBuf::from(outputs[0]);
+    let first_name = first_out
+        .file_name()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("converted file");
+
+    let (title, body) = if err_count > 0 {
+        (
+            "FLIP Conversion Finished with Errors".to_string(),
+            format!("{} succeeded, {} failed", outputs.len(), err_count),
+        )
+    } else if outputs.len() == 1 {
+        (
+            "FLIP Conversion Complete".to_string(),
+            format!("Saved {first_name}"),
+        )
+    } else {
+        (
+            "FLIP Conversion Complete".to_string(),
+            format!("Created {} files (e.g. {first_name})", outputs.len()),
+        )
+    };
+
+    Some(NotificationContent {
+        title,
+        body,
+        reveal_path: Some(first_out),
+    })
+}
+
+pub fn spawn_completion_notification(
+    prefs: &AppPreferences,
+    results: &[ConversionResult],
+    top_level_error: Option<&str>,
+    cancelled: bool,
+    elapsed: std::time::Duration,
+    from_batch_or_tray: bool,
+) {
+    let Some(content) = build_conversion_notification(
+        prefs,
+        results,
+        top_level_error,
+        cancelled,
+        elapsed,
+        from_batch_or_tray,
+    ) else {
+        return;
+    };
+
+    std::thread::spawn(move || {
+        let _ = bridge::notify(
+            &content.title,
+            &content.body,
+            content.reveal_path.as_deref(),
+        );
+    });
+}
+
 #[tauri::command]
 pub async fn execute_conversion(
     paths: Vec<String>,
@@ -203,11 +308,16 @@ pub async fn execute_conversion(
     if let Ok(mut guard) = state.active_cancel.lock() {
         *guard = Some(Arc::clone(&cancel));
     }
-    if let Ok(mut wheel_guard) = state.wheel.lock() {
+    let wheel_was_open = if let Ok(mut wheel_guard) = state.wheel.lock() {
         if wheel_guard.is_open {
             wheel_guard.acted_epoch = wheel_guard.open_epoch;
+            true
+        } else {
+            false
         }
-    }
+    } else {
+        false
+    };
 
     let state_arc = Arc::clone(&*state);
     let _busy_guard = ConversionBusyGuard {
@@ -215,9 +325,11 @@ pub async fn execute_conversion(
     };
 
     let prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
+    let prefs_for_notify = prefs.clone();
     let path_bufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     let app_for_progress = app.clone();
     let cancel_for_job = Arc::clone(&cancel);
+    let started = std::time::Instant::now();
 
     let outcome = tokio::task::spawn_blocking(move || {
         convert_files(
@@ -238,6 +350,9 @@ pub async fn execute_conversion(
     })
     .await
     .map_err(|e| e.to_string())?;
+
+    let elapsed = started.elapsed();
+    let was_cancelled = matches!(outcome, Err(EngineError::Cancelled));
 
     let payload = match outcome {
         Ok(results) => {
@@ -264,6 +379,14 @@ pub async fn execute_conversion(
     };
 
     let _ = app.emit("conversion:complete", &payload);
+    spawn_completion_notification(
+        &prefs_for_notify,
+        &payload.results,
+        payload.error.as_deref(),
+        was_cancelled,
+        elapsed,
+        !wheel_was_open,
+    );
     Ok(payload)
 }
 
@@ -306,7 +429,11 @@ pub async fn execute_create_new(
 }
 
 #[tauri::command]
-pub async fn get_new_file_kinds(_state: State<'_, Arc<HostState>>) -> Result<NewFileKindsResponse, String> {
+pub async fn get_new_file_kinds(
+    app: AppHandle,
+    state: State<'_, Arc<HostState>>,
+) -> Result<NewFileKindsResponse, String> {
+    let state_arc = Arc::clone(&*state);
     tokio::task::spawn_blocking(move || {
         let clip = bridge::clipboard_inspect().unwrap_or(ClipboardInspect {
             available: false,
@@ -318,6 +445,7 @@ pub async fn get_new_file_kinds(_state: State<'_, Arc<HostState>>) -> Result<New
         let tmpl_dir = AppPreferences::templates_dir();
         let _ = ensure_templates_dir_initialized(&tmpl_dir);
         let templates = scan_user_templates(&tmpl_dir);
+        sync_tray_and_windows(&app, &state_arc, &tmpl_dir, false);
         NewFileKindsResponse {
             kinds,
             templates,
@@ -333,7 +461,7 @@ pub fn record_recent_conversion(
     state: &HostState,
     results: &[ConversionResult],
 ) {
-    let updated_recent = if let Ok(mut prefs_guard) = state.prefs.lock() {
+    let added = if let Ok(mut prefs_guard) = state.prefs.lock() {
         let now = Utc::now().to_rfc3339();
         let mut added = false;
         for r in results {
@@ -356,16 +484,14 @@ pub fn record_recent_conversion(
         }
         if added {
             let _ = prefs_guard.save();
-            Some(prefs_guard.recent_conversions.clone())
-        } else {
-            None
         }
+        added
     } else {
-        None
+        false
     };
 
-    if let Some(recent) = updated_recent {
-        refresh_tray_menu(app, &recent);
+    if added {
+        sync_tray_and_windows(app, state, &AppPreferences::templates_dir(), true);
     }
 }
 
@@ -510,13 +636,8 @@ pub fn play_wheel_feedback(kind: String, state: State<'_, Arc<HostState>>) -> Re
                 return Ok(());
             }
         }
-        "alignment" | "level" | "generic" | "success" => {
-            if haptics_on {
-                normalized
-            } else {
-                return Ok(());
-            }
-        }
+        "alignment" | "level" | "generic" | "success" if haptics_on => normalized,
+        "alignment" | "level" | "generic" | "success" => return Ok(()),
         _ => return Ok(()),
     };
 
@@ -546,7 +667,7 @@ pub fn dismiss_wheel(
     app: AppHandle,
     state: State<'_, Arc<HostState>>,
 ) -> Result<(), String> {
-    hide_wheel(&app, &*state, &reason);
+    hide_wheel(&app, &state, &reason);
     Ok(())
 }
 
@@ -583,8 +704,13 @@ pub async fn open_window(
 }
 
 #[tauri::command]
-pub fn open_templates_folder() -> Result<(), String> {
-    open_templates_folder_in_finder()
+pub fn open_templates_folder(
+    app: AppHandle,
+    state: State<'_, Arc<HostState>>,
+) -> Result<(), String> {
+    open_templates_folder_in_finder()?;
+    sync_tray_and_windows(&app, &state, &AppPreferences::templates_dir(), false);
+    Ok(())
 }
 
 #[tauri::command]
@@ -682,4 +808,120 @@ pub async fn get_diagnostics_report(state: State<'_, Arc<HostState>>) -> Result<
     })
     .await
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn completion_notification_threshold_and_preference_logic() {
+        let mut prefs = AppPreferences::default();
+        let ok_one = vec![ConversionResult {
+            source: "/tmp/photo.heic".to_string(),
+            format: "PNG".to_string(),
+            outputs: vec!["/tmp/photo.png".to_string()],
+            error: None,
+        }];
+
+        // Wheel quick conversion (< 3s) stays silent
+        assert!(build_conversion_notification(
+            &prefs,
+            &ok_one,
+            None,
+            false,
+            Duration::from_millis(2999),
+            false
+        )
+        .is_none());
+
+        // Wheel long conversion (>= 3s) triggers notification with output reveal path
+        let long_wheel = build_conversion_notification(
+            &prefs,
+            &ok_one,
+            None,
+            false,
+            Duration::from_secs(3),
+            false,
+        )
+        .unwrap();
+        assert_eq!(long_wheel.title, "FLIP Conversion Complete");
+        assert_eq!(long_wheel.body, "Saved photo.png");
+        assert_eq!(long_wheel.reveal_path, Some(PathBuf::from("/tmp/photo.png")));
+
+        // Batch / Tray quick conversion still notifies when enabled
+        let batch_quick = build_conversion_notification(
+            &prefs,
+            &ok_one,
+            None,
+            false,
+            Duration::from_millis(120),
+            true,
+        )
+        .unwrap();
+        assert_eq!(batch_quick.title, "FLIP Conversion Complete");
+
+        // Cancelled job never notifies
+        assert!(build_conversion_notification(
+            &prefs,
+            &ok_one,
+            Some("Conversion cancelled"),
+            true,
+            Duration::from_secs(10),
+            true
+        )
+        .is_none());
+
+        // Multi-output and failure cases
+        let multi = vec![
+            ConversionResult {
+                source: "/tmp/a.png".to_string(),
+                format: "JPG".to_string(),
+                outputs: vec!["/tmp/a.jpg".to_string(), "/tmp/b.jpg".to_string()],
+                error: None,
+            },
+        ];
+        let multi_note = build_conversion_notification(
+            &prefs,
+            &multi,
+            None,
+            false,
+            Duration::from_secs(4),
+            true,
+        )
+        .unwrap();
+        assert!(multi_note.body.contains("Created 2 files"));
+
+        let err_res = vec![ConversionResult {
+            source: "/tmp/bad.png".to_string(),
+            format: "JPG".to_string(),
+            outputs: Vec::new(),
+            error: Some("Corrupt image".to_string()),
+        }];
+        let err_note = build_conversion_notification(
+            &prefs,
+            &err_res,
+            Some("Corrupt image"),
+            false,
+            Duration::from_secs(4),
+            true,
+        )
+        .unwrap();
+        assert_eq!(err_note.title, "FLIP Conversion Failed");
+        assert_eq!(err_note.body, "Corrupt image");
+        assert!(err_note.reveal_path.is_none());
+
+        // Disabled preference suppresses all notifications
+        prefs.notifications_enabled = false;
+        assert!(build_conversion_notification(
+            &prefs,
+            &ok_one,
+            None,
+            false,
+            Duration::from_secs(10),
+            true
+        )
+        .is_none());
+    }
 }

@@ -337,19 +337,103 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
     Ok(())
 }
 
-fn resolve_target_dir(source: &Path, prefs: &AppPreferences) -> Result<PathBuf, EngineError> {
+fn is_unwritable_dir_error(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+    ) || matches!(
+        err.raw_os_error(),
+        Some(libc::EACCES | libc::EPERM | libc::EROFS)
+    )
+}
+
+fn probe_dir_writable(dir: &Path) -> std::io::Result<()> {
+    if !dir.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Not a directory: {}", dir.display()),
+        ));
+    }
+    let meta = fs::metadata(dir)?;
+    if meta.permissions().readonly() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("Directory is read-only: {}", dir.display()),
+        ));
+    }
+    let probe = dir.join(format!(".flip-probe-{}", uuid::Uuid::new_v4().simple()));
+    fs::create_dir(&probe)?;
+    let _ = fs::remove_dir(&probe);
+    Ok(())
+}
+
+fn ensure_writable_dir(dir: &Path) -> std::io::Result<()> {
+    if !dir.exists() {
+        fs::create_dir_all(dir)?;
+    }
+    probe_dir_writable(dir)
+}
+
+fn default_downloads_dir() -> PathBuf {
+    dirs::download_dir().unwrap_or_else(|| {
+        dirs::home_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join("Downloads")
+    })
+}
+
+pub fn resolve_target_dir(source: &Path, prefs: &AppPreferences) -> Result<PathBuf, EngineError> {
     let parent = source.parent().ok_or_else(|| {
         EngineError::ConversionFailed(format!("Source has no parent folder: {}", source.display()))
     })?;
-    if let Some(sub) = &prefs.output_subfolder {
-        let trimmed = sub.trim().trim_matches('/');
-        if !trimmed.is_empty() && !trimmed.contains("..") {
-            let dir = parent.join(trimmed);
-            fs::create_dir_all(&dir)?;
-            return Ok(dir);
+    let subfolder = prefs
+        .output_subfolder
+        .as_deref()
+        .map(|s| s.trim().trim_matches('/'))
+        .filter(|s| !s.is_empty() && !s.contains(".."));
+
+    let primary = match subfolder {
+        Some(sub) => parent.join(sub),
+        None => parent.to_path_buf(),
+    };
+
+    let primary_res = if subfolder.is_some() {
+        ensure_writable_dir(&primary)
+    } else {
+        probe_dir_writable(&primary)
+    };
+
+    match primary_res {
+        Ok(()) => Ok(primary),
+        Err(primary_err) if is_unwritable_dir_error(&primary_err) => {
+            let fallback = prefs.resolved_fallback_folder();
+            if ensure_writable_dir(&fallback).is_ok() {
+                log_event(
+                    "conversion.target_fallback",
+                    Some(json!({
+                        "sourceParent": parent.to_string_lossy(),
+                        "targetDir": fallback.to_string_lossy(),
+                        "reason": primary_err.to_string(),
+                    })),
+                );
+                return Ok(fallback);
+            }
+            let downloads = default_downloads_dir();
+            if downloads != fallback && ensure_writable_dir(&downloads).is_ok() {
+                log_event(
+                    "conversion.target_fallback",
+                    Some(json!({
+                        "sourceParent": parent.to_string_lossy(),
+                        "targetDir": downloads.to_string_lossy(),
+                        "reason": primary_err.to_string(),
+                    })),
+                );
+                return Ok(downloads);
+            }
+            Err(EngineError::Io(primary_err))
         }
+        Err(err) => Err(EngineError::Io(err)),
     }
-    Ok(parent.to_path_buf())
 }
 
 pub fn convert_files(
@@ -570,9 +654,11 @@ fn convert_single_unit(
             format,
             &out,
             staging.dir(),
-            prefs.image_quality,
-            prefs.preserve_exif,
-            prefs.strip_gps_exif,
+            image::ImageEncodeOptions {
+                quality_pct: prefs.image_quality,
+                preserve_exif: prefs.preserve_exif,
+                strip_gps_exif: prefs.strip_gps_exif,
+            },
             cancel,
         )?;
         vec![out]

@@ -36,6 +36,7 @@ export interface AppPreferences {
   version: number;
   soundEnabled: boolean;
   hapticsEnabled: boolean;
+  notificationsEnabled: boolean;
   dragTrigger: string;
   idleShortcut: string;
   mouseTriggerButton: number | null;

@@ -22,6 +22,7 @@ pub struct AppPreferences {
     #[serde(alias = "SoundEnabled")]
     pub sound_enabled: bool,
     pub haptics_enabled: bool,
+    pub notifications_enabled: bool,
     #[serde(alias = "Trigger")]
     pub drag_trigger: String,
     pub idle_shortcut: String,
@@ -51,6 +52,7 @@ impl Default for AppPreferences {
             version: 1,
             sound_enabled: true,
             haptics_enabled: true,
+            notifications_enabled: true,
             drag_trigger: "Down".to_string(),
             idle_shortcut: "Option+Shift+Space".to_string(),
             mouse_trigger_button: None,
@@ -284,16 +286,23 @@ mod tests {
     fn atomic_save_and_load_roundtrip() {
         let dir = tempdir().unwrap();
         let path = dir.path().join("settings.json");
-        let mut prefs = AppPreferences::default();
-        prefs.sound_enabled = false;
-        prefs.drag_trigger = "F8".to_string();
-        prefs.image_quality = 85;
+        let prefs = AppPreferences {
+            sound_enabled: false,
+            notifications_enabled: false,
+            drag_trigger: "F8".to_string(),
+            image_quality: 85,
+            ..Default::default()
+        };
         prefs.save_to(&path).unwrap();
 
         let loaded = AppPreferences::load_from(&path);
-        assert_eq!(loaded.sound_enabled, false);
+        assert!(!loaded.sound_enabled);
+        assert!(!loaded.notifications_enabled);
         assert_eq!(loaded.drag_trigger, "F8");
         assert_eq!(loaded.image_quality, 85);
+
+        let legacy: AppPreferences = serde_json::from_str(r#"{"soundEnabled":true}"#).unwrap();
+        assert!(legacy.notifications_enabled);
     }
 
     #[test]

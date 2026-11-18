@@ -1104,6 +1104,8 @@ dependencies = [
  "dirs 5.0.1",
  "image",
  "libc",
+ "objc2",
+ "objc2-app-kit",
  "pulldown-cmark",
  "quick-xml 0.37.5",
  "serde",
