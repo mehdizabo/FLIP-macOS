@@ -2729,6 +2729,90 @@ fn svg_input_rasterization_ico_output_and_animate_gif_batch() {
     assert!(bad_svg_res[0].error.is_some());
     assert!(!dir.path().join("corrupt.png").exists());
 
+    // ViewBox-only SVG (without width/height attributes) -> PNG & ICO
+    let vb_svg = dir.path().join("viewbox_only.svg");
+    fs::write(
+        &vb_svg,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200"><rect x="0" y="0" width="400" height="200" fill="#10b981"/></svg>"##,
+    )
+    .unwrap();
+    let vb_res = convert_files(
+        std::slice::from_ref(&vb_svg),
+        &["PNG".into(), "ICO".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(vb_res.iter().all(|r| r.error.is_none()), "viewBox-only SVG failed: {vb_res:?}");
+    let vb_png = image::open(&vb_res.iter().find(|r| r.format == "PNG").unwrap().outputs[0]).unwrap();
+    assert_eq!(vb_png.dimensions(), (1024, 512));
+    let vb_ico = image::open(&vb_res.iter().find(|r| r.format == "ICO").unwrap().outputs[0]).unwrap();
+    assert_eq!(vb_ico.dimensions(), (256, 256));
+
+    // SVG LFI blocking: external file:// <image href> and CSS url(file://) must be neutralized while #id fragments keep working
+    let secret_png = dir.path().join("secret_blue.png");
+    let secret_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_pixel(128, 128, Rgba([0, 0, 255, 255]));
+    secret_buf.save_with_format(&secret_png, ImageFormat::Png).unwrap();
+    let lfi_svg = dir.path().join("lfi_probe.svg");
+    fs::write(
+        &lfi_svg,
+        format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="200" height="200">
+  <defs>
+    <linearGradient id="safeGrad"><stop offset="0%" stop-color="#22c55e"/><stop offset="100%" stop-color="#16a34a"/></linearGradient>
+    <rect id="safeRect" x="0" y="0" width="200" height="200" fill="url(#safeGrad)"/>
+  </defs>
+  <use href="#safeRect"/>
+  <image href="file://{}" x="0" y="0" width="200" height="200"/>
+  <image xlink:href="file://{}" x="0" y="0" width="200" height="200"/>
+</svg>"##,
+            secret_png.display(),
+            secret_png.display(),
+        ),
+    )
+    .unwrap();
+    let lfi_res = convert_files(std::slice::from_ref(&lfi_svg), &["PNG".into()], &prefs, &cancel, None).unwrap();
+    assert!(lfi_res[0].error.is_none(), "LFI SVG failed: {:?}", lfi_res[0].error);
+    let lfi_img = image::open(&lfi_res[0].outputs[0]).unwrap();
+    let mid_px = lfi_img.get_pixel(512, 512);
+    assert!(mid_px[1] > 120 && mid_px[2] < 120, "SVG LFI leaked secret blue image or broke #safeGrad: {mid_px:?}");
+
+    // SVG -> REMOVE_BG with embedded safe data:image/png;base64 subject
+    let cover_bytes = fs::read(repo_root().join("docs/assets/flip-cover.png")).unwrap();
+    let b64_chars = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut cover_b64 = String::with_capacity(cover_bytes.len().div_ceil(3) * 4);
+    for chunk in cover_bytes.chunks(3) {
+        let b0 = chunk[0] as usize;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+        cover_b64.push(b64_chars[b0 >> 2] as char);
+        cover_b64.push(b64_chars[((b0 & 0x03) << 4) | (b1 >> 4)] as char);
+        cover_b64.push(if chunk.len() > 1 { b64_chars[((b1 & 0x0f) << 2) | (b2 >> 6)] as char } else { '=' });
+        cover_b64.push(if chunk.len() > 2 { b64_chars[b2 & 0x3f] as char } else { '=' });
+    }
+    let subject_svg = dir.path().join("subject.svg");
+    fs::write(
+        &subject_svg,
+        format!(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="512" height="512" fill="#f8fafc"/><image href="data:image/png;base64,{cover_b64}" x="64" y="64" width="384" height="384"/></svg>"##
+        ),
+    )
+    .unwrap();
+    let svg_rmbg = convert_files(
+        std::slice::from_ref(&subject_svg),
+        &["REMOVE_BG".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(svg_rmbg[0].error.is_none(), "SVG -> REMOVE_BG failed: {:?}", svg_rmbg[0].error);
+    let rmbg_out = PathBuf::from(&svg_rmbg[0].outputs[0]);
+    assert!(validate_output(&rmbg_out, "REMOVE_BG").is_ok());
+    assert_eq!(image::open(&rmbg_out).unwrap().get_pixel(0, 0)[3], 0);
+
     // 2) ICO output sizing, aspect-fit square RGBA padding, header magic, and .ico -> .png roundtrip
     let wide_png = dir.path().join("wide.png");
     let wide_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
@@ -2806,6 +2890,22 @@ fn svg_input_rasterization_ico_output_and_animate_gif_batch() {
         assert!(fw <= 640 && fh <= 640, "GIF frame exceeded 640px: {fw}x{fh}");
         assert_eq!(frame.delay().numer_denom_ms(), (400, 1));
     }
+    let anim_bytes = fs::read(&anim_gif).unwrap();
+    assert!(anim_bytes.windows(11).any(|w| w == b"NETSCAPE2.0"), "animated GIF must encode infinite loop");
+    assert!(anim_bytes.ends_with(&[0x3B]), "animated GIF must end with trailer");
+
+    // WebP -> ICO conversion check
+    let svg_webp = PathBuf::from(&svg_res.iter().find(|r| r.format == "WEBP").unwrap().outputs[0]);
+    let webp_to_ico = convert_files(
+        std::slice::from_ref(&svg_webp),
+        &["ICO".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(webp_to_ico[0].error.is_none(), "WEBP -> ICO failed: {:?}", webp_to_ico[0].error);
+    assert!(validate_output(Path::new(&webp_to_ico[0].outputs[0]), "ICO").is_ok());
 
     // Second run must create non-overwriting `frame_large 2.gif`
     let anim_res2 = convert_files(&anim_sources, &["ANIMATE_GIF".into()], &prefs, &cancel, None).unwrap();

@@ -1,7 +1,7 @@
 use crate::core::policy::ext_lower;
 use crate::engines::{bridge, EngineError};
 use image::codecs::gif::{GifEncoder, Repeat};
-use image::imageops::{overlay, FilterType};
+use image::imageops::{replace, FilterType};
 use image::{Delay, DynamicImage, Frame, GenericImageView, ImageBuffer, ImageFormat, Rgba};
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -70,14 +70,22 @@ fn decode_via_bridge_or_rust(
 ) -> Result<DynamicImage, EngineError> {
     check_dimensions_with_image(source)?;
     let ext = ext_lower(source);
-    let readable = if ext == "webp" || ext == "ico" {
-        source.to_path_buf()
+    let img = if ext == "ico" {
+        match image::open(source) {
+            Ok(decoded) => decoded,
+            Err(_) => {
+                let norm = normalize_to_png(source, staging_dir, cancel)?;
+                image::open(&norm).map_err(|e| {
+                    EngineError::ConversionFailed(format!("Failed to decode image: {e}"))
+                })?
+            }
+        }
     } else {
-        normalize_to_png(source, staging_dir, cancel)?
+        let readable = normalize_to_png(source, staging_dir, cancel)?;
+        image::open(&readable).map_err(|e| {
+            EngineError::ConversionFailed(format!("Failed to decode image: {e}"))
+        })?
     };
-    let img = image::open(&readable).map_err(|e| {
-        EngineError::ConversionFailed(format!("Failed to decode image: {e}"))
-    })?;
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 || (w as u64) * (h as u64) > MAX_MEGAPIXELS {
         return Err(EngineError::ConversionFailed(
@@ -181,7 +189,7 @@ pub fn convert(
                 ImageBuffer::from_pixel(side, side, Rgba([0, 0, 0, 0]));
             let x_off = ((side.saturating_sub(rw)) / 2) as i64;
             let y_off = ((side.saturating_sub(rh)) / 2) as i64;
-            overlay(&mut canvas, &rgba, x_off, y_off);
+            replace(&mut canvas, &rgba, x_off, y_off);
             canvas
         };
         DynamicImage::ImageRgba8(fitted)
@@ -299,7 +307,7 @@ pub fn animate_into_gif(
             ImageBuffer::from_pixel(canvas_w, canvas_h, Rgba([0, 0, 0, 0]));
         let x_off = ((canvas_w.saturating_sub(rw)) / 2) as i64;
         let y_off = ((canvas_h.saturating_sub(rh)) / 2) as i64;
-        overlay(&mut canvas, &rgba, x_off, y_off);
+        replace(&mut canvas, &rgba, x_off, y_off);
 
         let frame = Frame::from_parts(canvas, 0, 0, delay);
         encoder

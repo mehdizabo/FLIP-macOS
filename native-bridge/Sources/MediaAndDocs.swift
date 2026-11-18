@@ -56,6 +56,7 @@ enum MediaAndDocs {
     private static let maxImagePixels: Int64 = 40_000_000
     private static let maxContainerBytes: Int = 256 * 1024 * 1024
     private static let maxHtmlInputBytes: Int = 20 * 1024 * 1024
+    private static let maxSvgInputBytes: Int = 20 * 1024 * 1024
 
     private static func inspectImagePropertiesPreDecode(
         _ src: CGImageSource,
@@ -170,9 +171,83 @@ enum MediaAndDocs {
         return accurateText
     }
 
-    private static func rasterizeSVGToCGImage(path: String) throws -> CGImage {
+    private static func sanitizeSVGForOfflineRasterization(_ svg: String) -> String {
+        var out = svg
+        let stripPatterns = [
+            "<!DOCTYPE\\b[^>]*\\[[\\s\\S]*?\\]\\s*>",
+            "<!DOCTYPE\\b[^>]*>",
+            "<!ENTITY\\b[^>]*>",
+            "<\\?xml-stylesheet\\b[\\s\\S]*?\\?>",
+            "<script\\b[^>]*>[\\s\\S]*?</script>",
+            "<script\\b[^>]*>",
+            "<foreignObject\\b[^>]*>[\\s\\S]*?</foreignObject>",
+            "<foreignObject\\b[^>]*>",
+            "<iframe\\b[^>]*>[\\s\\S]*?</iframe>",
+            "<iframe\\b[^>]*>",
+            "<object\\b[^>]*>[\\s\\S]*?</object>",
+            "<embed\\b[^>]*>"
+        ]
+        for pattern in stripPatterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                out = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "")
+            }
+        }
+
+        // Preserve local SVG fragment refs (#id) and safe inline raster data:image/ URIs; block file://, http(s)://, and relative paths.
+        let transparent1x1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        let safePrefix = "(?!\\s*(?:#|data:image/(?:png|jpe?g|gif|webp|bmp|tiff)\\b))"
+        let refDoubleQuoted = "((?:\\bxlink:)?\\b(?:href|src|srcset|poster|data)\\s*=\\s*\")\(safePrefix)([^\"]*)(\")"
+        let refSingleQuoted = "((?:\\bxlink:)?\\b(?:href|src|srcset|poster|data)\\s*=\\s*')\(safePrefix)([^']*)(')"
+        let refUnquoted = "((?:\\bxlink:)?\\b(?:href|src|srcset|poster|data)\\s*=\\s*)(?!\"|'|\(safePrefix.dropFirst(3).dropLast(1)))([^\\s>]+)"
+        for (idx, pattern) in [refDoubleQuoted, refSingleQuoted, refUnquoted].enumerated() {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) {
+                let template = idx == 2 ? "$1\"\(transparent1x1)\"" : "$1\(transparent1x1)$3"
+                out = regex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: template)
+            }
+        }
+
+        if let cssImportRegex = try? NSRegularExpression(pattern: "@import\\b[^;<\\n]*[;\\n]?", options: [.caseInsensitive]) {
+            out = cssImportRegex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "")
+        }
+        if let cssUrlRegex = try? NSRegularExpression(pattern: "url\\(\\s*(?![\"']?(?:#|data:image/(?:png|jpe?g|gif|webp|bmp|tiff)\\b))[^)]*\\)", options: [.caseInsensitive]) {
+            out = cssUrlRegex.stringByReplacingMatches(in: out, range: NSRange(out.startIndex..., in: out), withTemplate: "url()")
+        }
+        return out
+    }
+
+    private static func loadSanitizedSVGData(path: String) throws -> Data {
         let url = URL(fileURLWithPath: path)
-        if let nsImg = NSImage(contentsOfFile: path), !nsImg.representations.isEmpty {
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: path) {
+            if let ftype = attrs[.type] as? FileAttributeType, ftype == .typeSymbolicLink {
+                throw BridgeError.operationFailed("Refusing symlinked SVG image: \(path)")
+            }
+            let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
+            if size <= 0 {
+                throw BridgeError.operationFailed("SVG image is empty: \(path)")
+            }
+            if size > maxSvgInputBytes {
+                throw BridgeError.operationFailed("SVG image exceeds 20 MiB safety limit")
+            }
+        }
+        let rawData = try Data(contentsOf: url)
+        if rawData.count > maxSvgInputBytes {
+            throw BridgeError.operationFailed("SVG image exceeds 20 MiB safety limit")
+        }
+        let rawStr: String
+        if let utf8 = String(data: rawData, encoding: .utf8) {
+            rawStr = utf8
+        } else if let latin1 = String(data: rawData, encoding: .isoLatin1) {
+            rawStr = latin1
+        } else {
+            throw BridgeError.operationFailed("Could not decode SVG text encoding: \(path)")
+        }
+        let sanitized = sanitizeSVGForOfflineRasterization(rawStr)
+        return Data(sanitized.utf8)
+    }
+
+    private static func rasterizeSVGToCGImage(path: String) throws -> CGImage {
+        let sanitizedData = try loadSanitizedSVGData(path: path)
+        if let nsImg = NSImage(data: sanitizedData), !nsImg.representations.isEmpty {
             let srcSize = nsImg.size
             let rawW = srcSize.width > 0 ? srcSize.width : 1024.0
             let rawH = srcSize.height > 0 ? srcSize.height : 1024.0
@@ -212,25 +287,28 @@ enum MediaAndDocs {
             }
         }
 
-        if url.pathExtension.lowercased() == "svg" {
-            let semaphore = DispatchSemaphore(value: 0)
-            var qlImage: CGImage?
-            let request = QLThumbnailGenerator.Request(
-                fileAt: url,
-                size: CGSize(width: 1024, height: 1024),
-                scale: 1.0,
-                representationTypes: .thumbnail
-            )
-            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, _ in
-                qlImage = rep?.cgImage
-                semaphore.signal()
-            }
-            _ = semaphore.wait(timeout: .now() + 3.0)
-            if let cgImg = qlImage {
-                let (pixels, overflow) = Int64(cgImg.width).multipliedReportingOverflow(by: Int64(cgImg.height))
-                if cgImg.width > 0 && cgImg.height > 0 && !overflow && pixels <= maxImagePixels {
-                    return cgImg
-                }
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flip-svg-\(UUID().uuidString).svg")
+        try sanitizedData.write(to: tmpURL, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: tmpURL) }
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var qlImage: CGImage?
+        let request = QLThumbnailGenerator.Request(
+            fileAt: tmpURL,
+            size: CGSize(width: 1024, height: 1024),
+            scale: 1.0,
+            representationTypes: .thumbnail
+        )
+        QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, _ in
+            qlImage = rep?.cgImage
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 3.0)
+        if let cgImg = qlImage {
+            let (pixels, overflow) = Int64(cgImg.width).multipliedReportingOverflow(by: Int64(cgImg.height))
+            if cgImg.width > 0 && cgImg.height > 0 && !overflow && pixels <= maxImagePixels {
+                return cgImg
             }
         }
 
@@ -426,10 +504,8 @@ enum MediaAndDocs {
         for path in imagePaths {
             let url = URL(fileURLWithPath: path)
             if url.pathExtension.lowercased() == "svg" {
-                guard FileManager.default.isReadableFile(atPath: path),
-                      let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-                      ((attrs[.size] as? NSNumber)?.int64Value ?? 0) > 0,
-                      NSImage(contentsOfFile: path) != nil else {
+                let sanitizedData = try loadSanitizedSVGData(path: path)
+                guard let nsImg = NSImage(data: sanitizedData), !nsImg.representations.isEmpty else {
                     throw BridgeError.operationFailed("Could not open SVG image for PDF: \(path)")
                 }
                 preparedSources.append(.svgPath(path: path))
