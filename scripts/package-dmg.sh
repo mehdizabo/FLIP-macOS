@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_PATH="$ROOT_DIR/src-tauri/target/release/bundle/macos/FLIP.app"
 DMG_PATH=""
+UPDATE_CASK=0
+CASK_PATH="$ROOT_DIR/packaging/homebrew/flip.rb"
 
 if [[ -n "${FLIP_VERSION:-}" ]]; then
   VERSION="$FLIP_VERSION"
@@ -24,6 +26,7 @@ Usage:
 Options:
   --app <path>    Path to built FLIP.app bundle
   --out <path>    Output .dmg path (default: src-tauri/target/release/bundle/dmg/FLIP-<version>-macOS-<arch>.dmg)
+  --update-cask   Update version and sha256 in packaging/homebrew/flip.rb
   -h, --help      Show this help message
 EOF
 }
@@ -39,6 +42,10 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "Error: --out requires a path" >&2; exit 1; }
       DMG_PATH="$2"
       shift 2
+      ;;
+    --update-cask)
+      UPDATE_CASK=1
+      shift
       ;;
     -h|--help)
       usage
@@ -128,6 +135,36 @@ else
   codesign --verify --verbose=2 "$DMG_PATH"
 fi
 
+DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | awk '{print $1}')"
+
+if [[ "$UPDATE_CASK" -eq 1 ]]; then
+  if [[ ! -f "$CASK_PATH" ]]; then
+    echo "Error: Homebrew Cask file not found at: $CASK_PATH" >&2
+    exit 1
+  fi
+  echo "==> Updating Homebrew Cask SHA-256 in $CASK_PATH"
+  /usr/bin/python3 - "$CASK_PATH" "$VERSION" "$DMG_SHA256" <<'PY'
+import re
+import sys
+
+cask_path, version, sha = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(cask_path, "r", encoding="utf-8") as f:
+    text = f.read()
+
+text_new, v_count = re.subn(r'^(\s*version\s+)"[^"]+"', rf'\1"{version}"', text, count=1, flags=re.MULTILINE)
+text_new, s_count = re.subn(r'^(\s*sha256\s+)"[^"]+"', rf'\1"{sha}"', text_new, count=1, flags=re.MULTILINE)
+if v_count != 1 or s_count != 1:
+    raise SystemExit(f"Failed to update cask version/sha256 in {cask_path} (v={v_count}, s={s_count})")
+
+with open(cask_path, "w", encoding="utf-8") as f:
+    f.write(text_new)
+PY
+fi
+
 echo ""
 echo "DMG created:"
-echo "  Path: $DMG_PATH ($(ls -lh "$DMG_PATH" | awk '{print $5}'))"
+echo "  Path:    $DMG_PATH ($(ls -lh "$DMG_PATH" | awk '{print $5}'))"
+echo "  SHA-256: $DMG_SHA256"
+if [[ "$UPDATE_CASK" -eq 1 ]]; then
+  echo "  Cask:    $CASK_PATH (updated)"
+fi

@@ -1,0 +1,42 @@
+# Changelog
+
+All notable changes to **FLIP for macOS** are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.0] - 2026-11-18
+
+Initial open-source release of **FLIP for macOS** (Apple Silicon `arm64`, macOS 15.0+ Sequoia / macOS 26 Tahoe / macOS 27 Golden Gate).
+
+### Added
+
+- **Liquid Glass Radial Wheel & UI Surfaces**:
+  - Cursor-centered `440x440` Liquid Glass radial wheel (`#wheel`) with translucent chamfered SVG sectors, directional specular rim highlights, `68 px` QuickLook center hub dead-zone, `3°` angular hysteresis, and `<= 8` sectors per page with `300 ms` drag-dwell `More ▸` / `Back ◂` pagination.
+  - Radial progress arc with percentage readout, `Convert` / `New File` mode pill (`Tab`), keyboard (`1`–`8`, Arrows, `Enter`/`Space`, `Esc`) and full **VoiceOver** `aria-live` announcements.
+  - Native **English / Italiano (`EN` / `IT`)** live UI switcher (`Settings → General`).
+  - Acoustic tick (`flip-tick.wav` via `NSSound`) + Force Touch trackpad haptics (`NSHapticFeedbackManager`) with live **Test Wheel Sound & Haptics** preview button.
+  - `prefers-reduced-motion` and `prefers-reduced-transparency` accessibility fallbacks.
+  - Multi-tab **Settings** (`#settings`) including interactive **Preferred Format Order** editor, **Batch / Multi-Format Converter** (`#batch`), and **First-Run Onboarding** (`#onboarding`).
+- **Native macOS Host, Triggers & IPC**:
+  - Accessory menu bar app (`LSUIElement`) with `TrayIconBuilder` menu and zero Dock clutter.
+  - Single-instance `flock` lock + `0600` owner-only Unix domain socket IPC (`flip-instance.sock`) with stale socket recovery.
+  - Persistent Swift/AppKit helper (`flip-macos-bridge`) using `CGEventTap` + `NSEvent` for Drag + Trigger (`DownArrow` default, Mouse Buttons `2`/`3`/`4`/`5`), both drag-first and trigger-first orderings, Idle global shortcut (`Option+Shift+Space`), full-screen Spaces overlay, and multi-monitor mixed-DPI clamping.
+  - Finder Quick Actions (`~/Library/Services/Convert with FLIP.workflow` and `New File with FLIP.workflow`), `flip://` URL scheme routing, and `LaunchAgents` auto-start support.
+- **100% Local Conversions & Apple Framework Integrations**:
+  - **Images**: `PNG`, `JPG/JPEG`, `WEBP`, `HEIC/HEIF`, `AVIF`, `TIFF`, `GIF`, `BMP`, `ICNS`, `ICO`, and offline-sanitized `SVG` input rasterization -> `PNG`, `JPG`, `WEBP`, `HEIC`, `PDF`, `TIFF`, `GIF`, `BMP`, `ICO`, `ICNS`, `TXT` (Vision OCR), `REMOVE_BG` (`Vision` `VNGenerateForegroundInstanceMaskRequest`), `ZIP`, plus multi-image `COMBINE_PDF` and **`ANIMATE_GIF` (`GIF+`)**. Includes EXIF orientation baking and optional GPS metadata stripping.
+  - **PDF**: `PDFKit` / Quartz rasterization (`144`/`200`/`300` DPI), Apple `Vision` OCR (`VNRecognizeTextRequest`), `OPTIMIZE_PDF` (text-preserving compression), `Merge PDFs`, and export to `TXT`, `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB`, `FB2`, `RST`, `ZIP`.
+  - **Documents**: `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB`, **`FB2`**, **`RST`** -> paginated A4/Letter `PDF` (`NSAttributedString` / CoreText), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, native Pure-Rust **`EPUB 3`**, native Pure-Rust **`FB2`**, native Pure-Rust **`RST`**, image exports (`PNG`/`JPG`/`WEBP`/`HEIC`), and `ZIP`. Optional `Pandoc` support when installed, plus `FLIP_DISABLE_PANDOC` / `FLIP_DISABLE_FFMPEG` environment overrides.
+  - **Structured Data**: Native Rust cross-converter across `JSON` (JSON5-tolerant), `YAML`, `TOML`, `XML`, `CSV` (dot-flattening), `TXT`, `MD`, `HTML`, `PDF`, `ZIP`.
+  - **Audio & Video**: Zero-FFmpeg native `AVFoundation` + CoreAudio `ExtAudioFile` + `/usr/bin/afconvert` conversions (`M4A`, `WAV`, `FLAC`, `AIFF`, `ALAC`, `CAF`, plus video `MP4`/`MOV`/`M4V`/animated `GIF`), with optional `FFmpeg` support for `MP3`, `OGG`, `OPUS`, `AAC`, `MKV`, `WEBM`, `AVI`.
+  - **Apple iWork**: `.pages`, `.numbers`, `.key` export via QuickLook + AppleScript app automation.
+  - **Archives**: Pure-Rust `ZIP` creation and collision-safe `UNZIP` subfolder extraction.
+- **Create New File**:
+  - Instant creation in the active Finder folder (`~/Desktop` fallback) with automatic Finder reveal and inline rename (`Return` — strictly suppressed on conversions).
+  - Built-in kinds: Folder, `.txt`, `.md`, `.rtf`, `.docx`, `.xlsx`, `.pptx`, `.html`, `.json`, `.csv`, executable `.sh` (`chmod +x`), `.py`, `.swift`, **From Clipboard** (`.png`, `.pdf`, `.rtf`, `.webloc`, `.txt`), Apple iWork (`.pages`, `.numbers`, `.key`), and custom templates (`~/Library/Application Support/FLIP/Templates`) with `{{date}}`, `{{time}}`, `{{user}}`, `{{folder}}` expansion.
+- **Atomic Safety & Defensive Guards**:
+  - Isolated `.flip-job-<uuid>` staging, `renamex_np(RENAME_EXCL)` collision-free commits with Finder counters (`stem 2.ext`), refusal of symlinks/Finder aliases/undownloaded `.icloud` placeholders/network volumes, 128-file batch ceiling, `40 MP` / `200-page` / `256 MiB` / `4,096`-entry Zip-Slip limits, XXE/DOCTYPE stripping, and offline SVG/HTML LFI sanitization.
+- **Integrated CLI & Testing**:
+  - `flip` CLI (`convert`, `new`, `wheel`, `settings`, `batch`, `preview --out <path.svg>`, `quit`, `--help`, `--version`).
+  - Automated DOM + SVG shim E2E test suite (`src/views.e2e.test.ts`), frontend unit tests (`bun test`), Rust unit/integration/IPC suites, and 50-cycle + 20+10 stress/latency benchmarks (`tests/stress_and_perf.rs`).
+- **Packaging, Local Installer & Distribution**:
+  - One-command build & ad-hoc/Developer ID signing (`scripts/build-macos.sh --dmg`, `scripts/sign-local.sh`), compressed `.dmg` packager with SHA-256 & Homebrew Cask sync (`scripts/package-dmg.sh --update-cask`), macOS local installer (`scripts/install-local.sh`), Quick Actions installer (`scripts/install-quick-actions.sh`), Homebrew Cask (`packaging/homebrew/flip.rb`), and GitHub Actions `macos-15` CI (`.github/workflows/ci.yml`).

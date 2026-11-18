@@ -7,7 +7,7 @@ This checklist covers manual live-desktop QA on **macOS 27.2.1 (`26B131`) Golden
 ---
 
 ## 1. Bundle Installation, Launch & Permissions Gate
-- [ ] Mount `src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg`, verify `FLIP.app` and the `/Applications` symlink appear cleanly, and drag `FLIP.app` to `/Applications`.
+- [ ] Mount `src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg`, verify `FLIP.app` and the `/Applications` symlink appear cleanly, and drag `FLIP.app` to `/Applications` (or run `./scripts/install-local.sh` to install `FLIP.app`, clear `com.apple.quarantine`, register Quick Actions, and link `~/.local/bin/flip`).
 - [ ] Launch `/Applications/FLIP.app` (on first launch of ad-hoc signed build, use Control-click -> Open or **System Settings -> Privacy & Security -> Open Anyway**).
 - [ ] Confirm FLIP stays accessory/menu-bar only (`LSUIElement`): menu bar icon appears, Dock icon does **not** appear, and duplicate launch (`open -a FLIP`) brings Settings / focuses cleanly instead of spawning a second instance (`flock`).
 - [ ] Walk through First-Run **Onboarding** (`#onboarding`):
@@ -103,3 +103,9 @@ This checklist covers manual live-desktop QA on **macOS 27.2.1 (`26B131`) Golden
   - Toggle `Wheel tick sound` OFF and `Trackpad haptics` ON -> click preview -> confirm haptic-only pulse (no audio).
   - Toggle `Wheel tick sound` ON and `Trackpad haptics` OFF -> click preview -> confirm acoustic tick only (no Force Touch pulse).
   - Toggle both OFF -> click preview -> confirm muted feedback message (`"Sound & haptics are muted"`).
+
+## 12. Native `FB2`/`RST`, `SVG` -> `ICO`, `ANIMATE_GIF`, `flip preview` & Local Installer (Steps I–L)
+- [ ] **Zero-Pandoc `FB2` & `RST`**: With `FLIP_DISABLE_PANDOC=1` (or without Pandoc installed), drop `.md` or `.pdf` on the wheel and convert to `FB2` and `RST`; drop `.fb2` or `.rst` and convert back to `EPUB` / `HTML` / `PDF`.
+- [ ] **`SVG` Input, `ICO` Output & `ANIMATE_GIF` (`GIF+`)**: Drop `.svg` -> convert to `ICO` and `PNG` (confirming offline sanitization strips external/file URLs cleanly); select 2+ `.png`/`.jpg` files -> trigger `GIF+` (`ANIMATE_GIF`) in Wheel/Batch and verify animated `.gif` playback in Preview/QuickLook.
+- [ ] **CLI SVG Wheel Preview**: Run `flip preview --out /tmp/flip-wheel.svg --files photo.png --hover 0` and open in Safari/QuickLook to inspect the Liquid Glass ring layout.
+- [ ] **Local Installer (`scripts/install-local.sh`)**: Run `./scripts/install-local.sh --dry-run`, then `./scripts/install-local.sh`, verify `FLIP.app` launches without Gatekeeper quarantine issues, `which flip` resolves `~/.local/bin/flip`, and Quick Actions appear in Finder.

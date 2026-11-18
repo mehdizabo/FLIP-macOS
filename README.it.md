@@ -15,7 +15,7 @@ FLIP porta una ruota radiale veloce centrata sul cursore (ispirata all'Actions R
 - **Convertitore Batch & Multi-Formato**: converte più file verso uno o più formati contemporaneamente (`Shift+Click` su un settore, pulsante `Multi` al centro o dal menu nella menu bar).
 - **Naming senza sovrascrittura**:
   - **Conversioni**: ereditano direttamente il nome base del file originale (`photo.heic` → `photo.png`). In caso di collisione aggiunge il contatore stile Finder (`photo 2.png`, `photo 3.png`). Le esportazioni multipagina usano `<nome>-p001.<ext>`. Non attiva **mai** la rinomina inline sulle conversioni.
-  - **Staging atomico e protezioni**: ogni job lavora in `.flip-job-<uuid>`, valida gli output prima del commit atomico (`renamex_np(RENAME_EXCL)`), rifiuta symlink, alias del Finder, file iCloud non scaricati localmente e volumi di rete, limita i batch a 128 file, blocca immagini > 40 MP, ottimizzazioni PDF oltre 200 pagine e archivi ZIP > 256 MiB / 4.096 entry / Zip-Slip, e sanitizza HTML offline.
+  - **Staging atomico e protezioni**: ogni job lavora in `.flip-job-<uuid>`, valida gli output prima del commit atomico (`renamex_np(RENAME_EXCL)`), rifiuta symlink, alias del Finder, file iCloud non scaricati localmente e volumi di rete, limita i batch a 128 file, blocca immagini > 40 MP, ottimizzazioni PDF oltre 200 pagine e archivi ZIP > 256 MiB / 4.096 entry / Zip-Slip, e sanitizza HTML e SVG offline.
 
 ---
 
@@ -46,16 +46,16 @@ FLIP aggiunge la creazione immediata di nuovi file nella cartella del Finder in 
 
 | Famiglia | Input | Output | Motori |
 |---|---|---|---|
-| **Immagini** | `PNG`, `JPG/JPEG`, `WEBP`, `HEIC/HEIF`, `AVIF`, `TIFF`, `GIF`, `BMP`, `ICNS`, `ICO` | `PNG`, `JPG`, `WEBP`, `HEIC`, `PDF`, `TIFF`, `GIF`, `BMP`, `REMOVE_BG`, `ZIP`, più `Combine into PDF` | `ImageIO` nativo (EXIF & rimozione GPS opzionale) + `Vision` (`VNGenerateForegroundInstanceMaskRequest` `REMOVE_BG`) + `image` Rust + `PDFKit` |
-| **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (con **Apple Vision** OCR per PDF scansionati), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `OPTIMIZE_PDF` (compressione PDF preservando testo selezionabile), `ZIP` (+ `FB2`/`RST` con Pandoc), `Merge PDFs` | `PDFKit` / Quartz nativo + `Vision` (`VNRecognizeTextRequest`) + writer EPUB 3 in Rust |
-| **Documenti** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB` (+ `FB2`, `RST` con Pandoc) | `PDF` (A4/Letter impaginato), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `PNG`, `JPG`, `WEBP`, `HEIC`, `ZIP` (+ `FB2`/`RST` con Pandoc) | `NSAttributedString` / CoreText nativo + `pulldown-cmark` + EPUB 3 nativo + `Pandoc` opzionale |
+| **Immagini** | `PNG`, `JPG/JPEG`, `WEBP`, `HEIC/HEIF`, `AVIF`, `TIFF`, `GIF`, `BMP`, `ICNS`, `ICO`, `SVG` (sanitizzato offline) | `PNG`, `JPG`, `WEBP`, `HEIC`, `PDF`, `TIFF`, `GIF`, `BMP`, `ICO`, `ICNS`, `TXT` (OCR), `REMOVE_BG`, `ZIP`, più `COMBINE_PDF` e `ANIMATE_GIF` (`GIF+`) | `ImageIO` nativo (EXIF & rimozione GPS opzionale) + `Vision` (`VNGenerateForegroundInstanceMaskRequest` `REMOVE_BG`) + `image` Rust + `PDFKit` |
+| **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (con **Apple Vision** OCR per PDF scansionati), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `FB2`, `RST` (nativi zero-Pandoc o Pandoc), `OPTIMIZE_PDF` (compressione PDF preservando testo selezionabile), `ZIP`, `Merge PDFs` | `PDFKit` / Quartz nativo + `Vision` (`VNRecognizeTextRequest`) + writer EPUB 3 / FB2 / RST in Rust |
+| **Documenti** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB`, `FB2`, `RST` | `PDF` (A4/Letter impaginato), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `FB2`, `RST` (nativi zero-Pandoc o Pandoc), `PNG`, `JPG`, `WEBP`, `HEIC`, `ZIP` | `NSAttributedString` / CoreText nativo + `pulldown-cmark` + EPUB 3 / FB2 / RST nativi + `Pandoc` opzionale |
 | **Apple iWork** | `.pages`, `.numbers`, `.key` | `PDF`, `ZIP` (+ `DOCX`/`RTF`/`TXT`/`EPUB` per Pages, `XLSX`/`CSV` per Numbers, `PPTX` per Keynote) | Anteprima QuickLook + AppleScript verso app Apple |
 | **Dati strutturati** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (appiattimento chiavi con punto), `TXT`, `MD`, `HTML`, `PDF`, `ZIP` | Parser Rust nativi + CoreText PDF |
 | **Audio** | `MP3`, `WAV`, `M4A`, `AAC`, `AIFF`, `ALAC`, `CAF`, `FLAC`, `OGG`, `OPUS`, `WMA` | **Nativi (zero FFmpeg)**: `M4A`, `WAV`, `FLAC`, `AIFF`, `ALAC`, `CAF` · Con FFmpeg: + `MP3`, `OGG`, `OPUS`, `AAC`, più `ZIP` | `AVFoundation` nativo + CoreAudio `ExtAudioFile` + `/usr/bin/afconvert` + `FFmpeg` opzionale |
 | **Video** | `MP4`, `MOV`, `M4V`, `MKV`, `WEBM`, `AVI`, `WMV` | Nativi: `MP4`, `MOV`, `M4V`, `M4A`, `WAV`, `GIF` animata, `ZIP` · Con FFmpeg: + `MKV`, `WEBM`, `AVI`, `MP3` | `AVFoundation` nativo + `FFmpeg` opzionale (progresso in tempo reale & `Esc`) |
 | **Archivi** | `ZIP` (e qualsiasi selezione di file) | `UNZIP` (estrazione sicura in sottocartella) · `ZIP` (creazione archivio senza sovrascritture) | Motore Rust `zip` (`archive.rs` con blocchi Zip-Slip e >256 MiB / 4.096 entry) |
 
-> **Nota sui tool opzionali**: FFmpeg e Pandoc **non** sono inclusi nel bundle. **EPUB 3 e le conversioni audio lossless `CAF` e `FLAC` funzionano nativamente senza FFmpeg e senza Pandoc.** Installa `brew install ffmpeg pandoc` (o indica i percorsi in **Settings → Engines & Permissions**) per sbloccare formati extra (`MKV`/`WebM`/`AVI`/`MP3`/`OGG`/`OPUS`/`AAC` con FFmpeg e libri `FB2`/`RST` con Pandoc).
+> **Nota sui tool opzionali**: FFmpeg e Pandoc **non** sono inclusi nel bundle. **EPUB 3, `FB2`, `RST` e le conversioni audio lossless `CAF` e `FLAC` funzionano nativamente senza FFmpeg e senza Pandoc.** Installa `brew install ffmpeg pandoc` (o indica i percorsi in **Settings → Engines & Permissions**) per sbloccare formati extra (`MKV`/`WebM`/`AVI`/`MP3`/`OGG`/`OPUS`/`AAC` con FFmpeg) o preferire Pandoc quando installato. Imposta `FLIP_DISABLE_FFMPEG=1` o `FLIP_DISABLE_PANDOC=1` per forzare i soli motori nativi integrati.
 
 ---
 
@@ -70,6 +70,8 @@ flip new <kind> [--in <folder>] [--no-rename] # Crea nuovo file/cartella
 flip wheel [--mode convert|new] [files...]    # Apre la ruota via Unix socket IPC
 flip settings                                 # Apre la finestra Impostazioni
 flip batch [files...]                         # Apre il convertitore Batch & Multi-Formato
+flip preview --out <path.svg> [--files f1,f2] [--mode convert|new] [--hover N]
+                                              # Genera anteprima SVG standalone della ruota
 flip quit                                     # Chiude in modo pulito l'istanza attiva
 flip --help                                   # Guida rapida CLI
 flip --version                                # Mostra versione
@@ -118,9 +120,15 @@ src-tauri/target/release/bundle/macos/FLIP.app
 src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg
 ```
 
-Per firmare nuovamente o usare un certificato Developer ID / notarizzazione:
+Per installare localmente `FLIP.app` (copia in `/Applications` o `~/Applications`, rimozione `com.apple.quarantine`, installazione Azioni Rapide e symlink `~/.local/bin/flip`), aggiornare lo SHA-256 della Homebrew Cask (`packaging/homebrew/flip.rb`) o firmare nuovamente:
 
 ```bash
+# Installazione locale completa (app + Azioni Rapide + CLI ~/.local/bin/flip)
+./scripts/install-local.sh
+
+# Rigenera DMG e aggiorna SHA-256 in packaging/homebrew/flip.rb
+./scripts/package-dmg.sh --update-cask
+
 # Firma ad-hoc locale (nessun certificato a pagamento richiesto)
 ./scripts/sign-local.sh
 

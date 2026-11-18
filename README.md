@@ -15,7 +15,7 @@ FLIP brings a fast, cursor-centered radial actions wheel (inspired by Logi Optio
 - **Batch & Multi-Format Converter**: Convert multiple files into one or more output formats simultaneously (`Shift+Click` any sector, click `Multi` in the hub, or open from the menu bar).
 - **Zero-Overwrite Naming**:
   - **Conversions** directly inherit the original filename stem (`photo.heic` → `photo.png`). On collision, FLIP appends a Finder-style counter (`photo 2.png`, `photo 3.png`). Multi-page exports use `<stem>-p001.<ext>`. Original files are never modified or overwritten, and inline rename is **not** triggered on conversions.
-  - **Atomic Staging & Safety Guards**: Every job executes inside an isolated `.flip-job-<uuid>` folder, validates outputs before committing with `renamex_np(RENAME_EXCL)`, rejects symlinks/Finder aliases/undownloaded iCloud stubs/network volumes, caps batches at 128 files, blocks > 40 MP image bombs, > 200-page PDF optimization bombs, and > 256 MiB / 4,096-entry ZIP / Zip-Slip containers, and strips external/local-file inclusions from offline HTML imports.
+  - **Atomic Staging & Safety Guards**: Every job executes inside an isolated `.flip-job-<uuid>` folder, validates outputs before committing with `renamex_np(RENAME_EXCL)`, rejects symlinks/Finder aliases/undownloaded iCloud stubs/network volumes, caps batches at 128 files, blocks > 40 MP image bombs, > 200-page PDF optimization bombs, and > 256 MiB / 4,096-entry ZIP / Zip-Slip containers, and strips external/local-file inclusions from offline HTML and SVG inputs.
 
 ---
 
@@ -46,16 +46,16 @@ macOS Finder has no built-in "New File" menu. FLIP adds instant creation in the 
 
 | Family | Inputs | Outputs | Engines |
 |---|---|---|---|
-| **Images** | `PNG`, `JPG/JPEG`, `WEBP`, `HEIC/HEIF`, `AVIF`, `TIFF`, `GIF`, `BMP`, `ICNS`, `ICO` | `PNG`, `JPG`, `WEBP`, `HEIC`, `PDF`, `TIFF`, `GIF`, `BMP`, `REMOVE_BG`, `ZIP`, plus `Combine into PDF` | Native `ImageIO` (EXIF orientation & optional GPS strip) + `Vision` (`VNGenerateForegroundInstanceMaskRequest` `REMOVE_BG`) + Rust `image` + `PDFKit` |
-| **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (with **Apple Vision** OCR for scanned pages), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (native EPUB 3), `OPTIMIZE_PDF` (text-preserving PDF compression), `ZIP` (+ `FB2`/`RST` via Pandoc), `Merge PDFs` | Native `PDFKit` / Quartz + `Vision` (`VNRecognizeTextRequest`) + pure-Rust EPUB 3 writer |
-| **Documents** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB` (+ `FB2`, `RST` via Pandoc) | `PDF` (A4/Letter paginated), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (native EPUB 3), `PNG`, `JPG`, `WEBP`, `HEIC`, `ZIP` (+ `FB2`/`RST` via Pandoc) | Native `NSAttributedString` / CoreText + `pulldown-cmark` + pure-Rust EPUB 3 + optional `Pandoc` |
+| **Images** | `PNG`, `JPG/JPEG`, `WEBP`, `HEIC/HEIF`, `AVIF`, `TIFF`, `GIF`, `BMP`, `ICNS`, `ICO`, `SVG` (offline-sanitized) | `PNG`, `JPG`, `WEBP`, `HEIC`, `PDF`, `TIFF`, `GIF`, `BMP`, `ICO`, `ICNS`, `TXT` (OCR), `REMOVE_BG`, `ZIP`, plus `COMBINE_PDF` & `ANIMATE_GIF` (`GIF+`) | Native `ImageIO` (EXIF orientation & optional GPS strip) + `Vision` (`VNGenerateForegroundInstanceMaskRequest` `REMOVE_BG`) + Rust `image` + `PDFKit` |
+| **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (with **Apple Vision** OCR for scanned pages), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (native EPUB 3), `FB2`, `RST` (native zero-Pandoc or Pandoc), `OPTIMIZE_PDF` (text-preserving PDF compression), `ZIP`, `Merge PDFs` | Native `PDFKit` / Quartz + `Vision` (`VNRecognizeTextRequest`) + pure-Rust EPUB 3 / FB2 / RST writers |
+| **Documents** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB`, `FB2`, `RST` | `PDF` (A4/Letter paginated), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (native EPUB 3), `FB2`, `RST` (native zero-Pandoc or Pandoc), `PNG`, `JPG`, `WEBP`, `HEIC`, `ZIP` | Native `NSAttributedString` / CoreText + `pulldown-cmark` + pure-Rust EPUB 3 / FB2 / RST + optional `Pandoc` |
 | **Apple iWork** | `.pages`, `.numbers`, `.key` | `PDF`, `ZIP` (+ `DOCX`/`RTF`/`TXT`/`EPUB` for Pages, `XLSX`/`CSV` for Numbers, `PPTX` for Keynote) | QuickLook preview + AppleScript app automation |
 | **Structured Data** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (nested dot-flattening), `TXT`, `MD`, `HTML`, `PDF`, `ZIP` | Native Rust parsers + CoreText PDF |
 | **Audio** | `MP3`, `WAV`, `M4A`, `AAC`, `AIFF`, `ALAC`, `CAF`, `FLAC`, `OGG`, `OPUS`, `WMA` | **Native (zero FFmpeg)**: `M4A`, `WAV`, `FLAC`, `AIFF`, `ALAC`, `CAF` · With FFmpeg: + `MP3`, `OGG`, `OPUS`, `AAC`, plus `ZIP` | Native `AVFoundation` + CoreAudio `ExtAudioFile` + `/usr/bin/afconvert` + optional `FFmpeg` |
 | **Video** | `MP4`, `MOV`, `M4V`, `MKV`, `WEBM`, `AVI`, `WMV` | Native: `MP4`, `MOV`, `M4V`, `M4A`, `WAV`, animated `GIF`, `ZIP` · With FFmpeg: + `MKV`, `WEBM`, `AVI`, `MP3` | Native `AVFoundation` + optional `FFmpeg` (real-time progress & `Esc` cancel) |
 | **Archives** | `ZIP` (and any single/multi-file selection) | `UNZIP` (safe subfolder extraction) · `ZIP` (collision-safe archive creation) | Pure-Rust `zip` engine (`archive.rs` with Zip-Slip & >256 MiB / 4,096-entry guards) |
 
-> **Note on Optional Tools**: FFmpeg and Pandoc are **not** bundled inside FLIP. **EPUB 3 books and lossless `CAF`/`FLAC` audio conversions work out of the box with zero FFmpeg and zero Pandoc installed.** Install `brew install ffmpeg pandoc` (or set custom paths in **Settings → Engines & Permissions**) to unlock extra formats (`MKV`/`WebM`/`AVI`/`MP3`/`OGG`/`OPUS`/`AAC` with FFmpeg, and `FB2`/`RST` books with Pandoc).
+> **Note on Optional Tools**: FFmpeg and Pandoc are **not** bundled inside FLIP. **EPUB 3, `FB2`, `RST` books, and lossless `CAF`/`FLAC` audio conversions work out of the box with zero FFmpeg and zero Pandoc installed.** Install `brew install ffmpeg pandoc` (or set custom paths in **Settings → Engines & Permissions**) to unlock extra media formats (`MKV`/`WebM`/`AVI`/`MP3`/`OGG`/`OPUS`/`AAC` with FFmpeg) or prefer Pandoc when available. Set `FLIP_DISABLE_FFMPEG=1` or `FLIP_DISABLE_PANDOC=1` in the environment to force built-in native engines only.
 
 ---
 
@@ -70,6 +70,8 @@ flip new <kind> [--in <folder>] [--no-rename] # Create new file/folder in target
 flip wheel [--mode convert|new] [files...]    # Open radial wheel via Unix socket IPC
 flip settings                                 # Open FLIP Settings window
 flip batch [files...]                         # Open Batch & Multi-Format Converter
+flip preview --out <path.svg> [--files f1,f2] [--mode convert|new] [--hover N]
+                                              # Render standalone radial wheel SVG preview
 flip quit                                     # Quit active menu bar instance cleanly
 flip --help                                   # Show CLI usage
 flip --version                                # Show version
@@ -118,9 +120,15 @@ src-tauri/target/release/bundle/macos/FLIP.app
 src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg
 ```
 
-You can also sign or re-sign an existing bundle with `./scripts/sign-local.sh`:
+You can also install a built `FLIP.app` locally (copies to `/Applications` or `~/Applications`, clears `com.apple.quarantine`, installs Finder Quick Actions, and links `~/.local/bin/flip`), package/update the Homebrew Cask SHA-256 (`packaging/homebrew/flip.rb`), or re-sign with `./scripts/sign-local.sh`:
 
 ```bash
+# Install built FLIP.app + Quick Actions + ~/.local/bin/flip symlink
+./scripts/install-local.sh
+
+# Repackage DMG and sync SHA-256 into packaging/homebrew/flip.rb
+./scripts/package-dmg.sh --update-cask
+
 # Default ad-hoc signature (no Apple Developer account required)
 ./scripts/sign-local.sh
 
@@ -147,8 +155,10 @@ See [`TEST_RESULTS.md`](TEST_RESULTS.md) for verified unit, integration, 50-cycl
 ## Architecture Overview
 
 - `native-bridge/` — Swift CLI & daemon helper (`flip-macos-bridge`, compiled via `/usr/bin/swiftc`) handling real-time `NSPasteboard(name: .drag)` monitoring, `CGEventTap`/`NSEvent` triggers, Finder Apple Events, `QuickLookThumbnailing`, `PDFKit` & Quartz `OPTIMIZE_PDF`, `Vision` (`VNRecognizeTextRequest` OCR & `VNGenerateForegroundInstanceMaskRequest` `REMOVE_BG`), `NSAttributedString` A4/Letter PDF pagination, `AVFoundation` / CoreAudio `ExtAudioFile` + `/usr/bin/afconvert` zero-FFmpeg `CAF`/`FLAC`, `NSSound`, and `NSHapticFeedbackManager`.
-- `src-tauri/` — Rust core policies (`policy.rs`), preferences (`en`/`it`), atomic `.flip-job-<uuid>` staging, conversion engines (`archive.rs` `ZIP`/`UNZIP`, `document.rs` EPUB 3, `data.rs`, `media.rs`), single-instance `flock` + Unix domain socket IPC (`ipc_socket.rs`), `tauri::tray::TrayIconBuilder` accessory host, multi-monitor clamping, Tauri v2 IPC commands, and `tests/stress_and_perf.rs`.
-- `src/` — Vite + TypeScript Liquid Glass radial wheel (`#wheel` with VoiceOver live announcer), bilingual `src/i18n.ts` (`EN` / `IT`), Settings & Shortcut/Format Order/Feedback Test editor (`#settings`), Batch & Multi-Format converter (`#batch`), and Onboarding wizard (`#onboarding`).
+- `src-tauri/` — Rust core policies (`policy.rs`), preferences (`en`/`it`), atomic `.flip-job-<uuid>` staging, conversion engines (`archive.rs` `ZIP`/`UNZIP`, `document.rs` native EPUB 3 / FB2 / RST, `image.rs` incl. `ICO` & `ANIMATE_GIF`, `data.rs`, `media.rs`), single-instance `flock` + Unix domain socket IPC (`ipc_socket.rs`), `tauri::tray::TrayIconBuilder` accessory host, multi-monitor clamping, Tauri v2 IPC commands, `flip preview` SVG generator (`cli.rs`), and `tests/stress_and_perf.rs`.
+- `src/` — Vite + TypeScript Liquid Glass radial wheel (`#wheel` with VoiceOver live announcer), bilingual `src/i18n.ts` (`EN` / `IT`), Settings & Shortcut/Format Order/Feedback Test editor (`#settings`), Batch & Multi-Format converter (`#batch`), Onboarding wizard (`#onboarding`), and automated DOM E2E suite (`src/views.e2e.test.ts`).
+- `packaging/homebrew/flip.rb` — Homebrew Cask manifest for `FLIP-<version>-macOS-arm64.dmg` synced via `scripts/package-dmg.sh --update-cask`.
+- `CHANGELOG.md` — Release notes for FLIP for macOS (`v0.1.0`).
 - `docs/PORTING-NOTES.md` — Module-by-module mapping from `FLIP-windows/src/Flip/*.cs` and macOS deltas.
 - `ACCEPTANCE.md` — Physical desktop GUI QA checklist for macOS releases.
 - `TEST_RESULTS.md` — Recorded toolchain versions, stress/latency metrics, and `.app`/`.dmg`/CLI verification results.
