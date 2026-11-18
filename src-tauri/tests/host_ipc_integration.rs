@@ -90,6 +90,7 @@ fn tauri_config_and_capabilities_match_window_labels_and_resources() {
     assert!(drag_cfg.full_screen_auxiliary);
     assert!(!drag_cfg.hides_on_deactivate);
     assert_eq!(drag_cfg.window_level, 101);
+    assert!(drag_cfg.logical_bounds.is_none());
 
     let idle_cfg = wheel_overlay_config(false, true);
     assert!(idle_cfg.focusable);
@@ -548,7 +549,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         for p in raw_params.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             if let Some((arg, ty)) = p.split_once(':') {
                 let ty = ty.trim();
-                if ty.contains("AppHandle") || ty.contains("State<") {
+                if ty.contains("AppHandle") || ty.contains("State<") || ty.contains("WebviewWindow") {
                     continue;
                 }
                 let clean_arg = arg.trim().trim_start_matches("mut ").trim().trim_start_matches('_');

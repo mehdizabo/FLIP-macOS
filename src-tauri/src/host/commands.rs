@@ -1,7 +1,7 @@
 use crate::core::input_gate::{DragTriggerShortcut, IdleShortcut};
 use crate::core::logging::{
-    collect_macos_sw_vers, format_diagnostics_markdown, global_logger, DiagnosticsReportInput,
-    DIAGNOSTICS_TAIL_LINES,
+    collect_macos_sw_vers, format_diagnostics_markdown, global_logger, log_event,
+    DiagnosticsReportInput, DIAGNOSTICS_TAIL_LINES,
 };
 use crate::core::naming::conversion_stem;
 use crate::core::preferences::{AppPreferences, RecentConversion};
@@ -281,11 +281,13 @@ pub fn spawn_completion_notification(
     };
 
     std::thread::spawn(move || {
-        let _ = bridge::notify(
+        if let Err(err) = bridge::notify(
             &content.title,
             &content.body,
             content.reveal_path.as_deref(),
-        );
+        ) {
+            log_event("notification.error", Some(json!({ "error": err.to_string() })));
+        }
     });
 }
 
@@ -293,6 +295,7 @@ pub fn spawn_completion_notification(
 pub async fn execute_conversion(
     paths: Vec<String>,
     formats: Vec<String>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_, Arc<HostState>>,
 ) -> Result<ConversionCompletePayload, String> {
@@ -308,9 +311,13 @@ pub async fn execute_conversion(
     if let Ok(mut guard) = state.active_cancel.lock() {
         *guard = Some(Arc::clone(&cancel));
     }
+    let from_batch = window.label() == "batch";
+    let from_wheel = window.label() == "wheel";
     let wheel_was_open = if let Ok(mut wheel_guard) = state.wheel.lock() {
         if wheel_guard.is_open {
-            wheel_guard.acted_epoch = wheel_guard.open_epoch;
+            if from_wheel {
+                wheel_guard.acted_epoch = wheel_guard.open_epoch;
+            }
             true
         } else {
             false
@@ -385,7 +392,7 @@ pub async fn execute_conversion(
         payload.error.as_deref(),
         was_cancelled,
         elapsed,
-        !wheel_was_open,
+        from_batch || !wheel_was_open,
     );
     Ok(payload)
 }

@@ -266,6 +266,26 @@ fn collect_templates_recursive(
             continue;
         }
         if meta.is_dir() {
+            let dir_ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            if matches!(
+                dir_ext.as_str(),
+                "pages"
+                    | "numbers"
+                    | "key"
+                    | "rtfd"
+                    | "app"
+                    | "bundle"
+                    | "framework"
+                    | "xcodeproj"
+                    | "xcworkspace"
+                    | "playground"
+            ) {
+                continue;
+            }
             let next_group = match group {
                 Some(g) => format!("{g}/{fname}"),
                 None => fname.into_owned(),

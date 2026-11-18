@@ -1151,6 +1151,11 @@ fn readonly_source_directory_falls_back_to_fallback_folder() {
     let ro_json = ro_dir.join("mounted.json");
     make_transparent_test_png(&ro_png);
     fs::write(&ro_json, r#"{"readonly":true,"count":42}"#).unwrap();
+    for ro_file in [&ro_png, &ro_json] {
+        let mut fperms = fs::metadata(ro_file).unwrap().permissions();
+        fperms.set_mode(0o444);
+        fs::set_permissions(ro_file, fperms).unwrap();
+    }
 
     let png_hash = sha256_file(&ro_png);
     let json_hash = sha256_file(&ro_json);
@@ -1181,6 +1186,7 @@ fn readonly_source_directory_falls_back_to_fallback_folder() {
     assert_eq!(jpg_out.parent(), Some(fallback_dir.as_path()));
     assert_eq!(jpg_out.file_name().unwrap().to_str().unwrap(), "mounted.jpg");
     assert!(jpg_out.is_file());
+    assert!(!fs::metadata(&jpg_out).unwrap().permissions().readonly());
 
     // Even with output_subfolder configured, a read-only source directory falls back cleanly
     let prefs_with_sub = AppPreferences {

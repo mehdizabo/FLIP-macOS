@@ -21,7 +21,7 @@ use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position,
 
 pub const WHEEL_WINDOW_SIZE: i32 = 440;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WheelOverlayConfig {
     pub focusable: bool,
     pub order_front: bool,
@@ -32,6 +32,7 @@ pub struct WheelOverlayConfig {
     pub full_screen_auxiliary: bool,
     pub ignores_cycle: bool,
     pub transient: bool,
+    pub logical_bounds: Option<(f64, f64, f64, f64)>,
 }
 
 pub fn wheel_overlay_config(is_drag: bool, order_front: bool) -> WheelOverlayConfig {
@@ -45,6 +46,7 @@ pub fn wheel_overlay_config(is_drag: bool, order_front: bool) -> WheelOverlayCon
         full_screen_auxiliary: true,
         ignores_cycle: true,
         transient: true,
+        logical_bounds: None,
     }
 }
 
@@ -56,9 +58,10 @@ pub fn configure_wheel_overlay(win: &WebviewWindow, cfg: WheelOverlayConfig) {
     {
         let _ = win.with_webview(move |webview| {
             use objc2_app_kit::{
-                NSPopUpMenuWindowLevel, NSWindow, NSWindowAnimationBehavior,
-                NSWindowCollectionBehavior,
+                NSApplication, NSPopUpMenuWindowLevel, NSScreen, NSWindow,
+                NSWindowAnimationBehavior, NSWindowCollectionBehavior,
             };
+            use objc2_foundation::{MainThreadMarker, NSPoint, NSSize};
             let ptr = webview.ns_window().cast::<NSWindow>();
             if ptr.is_null() {
                 return;
@@ -88,10 +91,26 @@ pub fn configure_wheel_overlay(win: &WebviewWindow, cfg: WheelOverlayConfig) {
                 ns_win.setLevel(level);
                 ns_win.setHidesOnDeactivate(cfg.hides_on_deactivate);
                 ns_win.setAnimationBehavior(NSWindowAnimationBehavior::None);
+
+                let mtm = MainThreadMarker::new();
+                if let (Some((x, y, width, height)), Some(mtm)) = (cfg.logical_bounds, mtm) {
+                    if let Some(primary) = NSScreen::screens(mtm).firstObject() {
+                        let primary_height = primary.frame().size.height;
+                        ns_win.setContentSize(NSSize::new(width, height));
+                        ns_win.setFrameTopLeftPoint(NSPoint::new(x, primary_height - y));
+                    }
+                }
+
                 if cfg.order_front {
                     if cfg.make_key {
                         ns_win.makeKeyAndOrderFront(None);
                     } else {
+                        if let Some(mtm) = mtm {
+                            let ns_app = NSApplication::sharedApplication(mtm);
+                            if ns_app.isHidden() {
+                                ns_app.unhideWithoutActivation();
+                            }
+                        }
                         ns_win.orderFrontRegardless();
                     }
                 }
@@ -532,9 +551,13 @@ pub fn present_wheel_at(
         win_x as f64,
         win_y as f64,
     )));
-    let overlay_cfg = wheel_overlay_config(is_drag, true);
-    let _ = win.set_visible_on_all_workspaces(overlay_cfg.can_join_all_spaces);
-    let _ = win.set_focusable(overlay_cfg.focusable);
+    let mut overlay_cfg = wheel_overlay_config(is_drag, true);
+    overlay_cfg.logical_bounds = Some((
+        win_x as f64,
+        win_y as f64,
+        WHEEL_WINDOW_SIZE as f64,
+        WHEEL_WINDOW_SIZE as f64,
+    ));
     let _ = win.emit("wheel:state", &payload);
     configure_wheel_overlay(&win, overlay_cfg);
     if !is_drag {
@@ -572,6 +595,26 @@ pub fn hide_wheel(app: &AppHandle, state: &Arc<HostState>, reason: &str) {
     if let Some(win) = app.get_webview_window("wheel") {
         let _ = win.hide();
         let _ = win.set_focusable(false);
+        #[cfg(target_os = "macos")]
+        {
+            let any_standard_visible = ["settings", "batch", "onboarding"].iter().any(|lbl| {
+                app.get_webview_window(lbl)
+                    .and_then(|w| w.is_visible().ok())
+                    .unwrap_or(false)
+            });
+            if !any_standard_visible {
+                let _ = win.with_webview(|_| {
+                    use objc2_app_kit::NSApplication;
+                    use objc2_foundation::MainThreadMarker;
+                    if let Some(mtm) = MainThreadMarker::new() {
+                        let ns_app = NSApplication::sharedApplication(mtm);
+                        if ns_app.isActive() {
+                            ns_app.hide(None);
+                        }
+                    }
+                });
+            }
+        }
     }
     log_event("wheel.dismiss", Some(json!({ "reason": reason })));
 }

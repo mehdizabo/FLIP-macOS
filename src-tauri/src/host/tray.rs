@@ -413,6 +413,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
             let id = event.id().as_ref().to_string();
             if let Some(kind) = id.strip_prefix("new_kind:") {
                 let kind = kind.to_string();
+                let app_h = app.clone();
                 std::thread::spawn(move || {
                     let prefs = state.prefs.lock().map(|g| g.clone()).unwrap_or_default();
                     match create_new_item(&kind, None, &prefs, true) {
@@ -427,6 +428,14 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                                 Some(json!({ "kind": kind, "error": err.to_string() })),
                             );
                             let _ = bridge::feedback("error", None);
+                            if kind.starts_with("template:") {
+                                sync_tray_and_windows(
+                                    &app_h,
+                                    &state,
+                                    &AppPreferences::templates_dir(),
+                                    false,
+                                );
+                            }
                         }
                     }
                 });
@@ -678,8 +687,11 @@ mod tests {
         assert!(readme_txt.contains("{{user}}"));
         assert!(readme_txt.contains("{{folder}}"));
 
-        // Custom README edits must never be overwritten
+        // Custom README edits must never be overwritten, and macOS package bundles must not be traversed
         fs::write(&readme, "CUSTOM README CONTENT").unwrap();
+        let pkg_dir = tmpl_dir.join("Package.pages").join("Index");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(pkg_dir.join("Document.iwa"), b"iwa").unwrap();
         let notes_dir = tmpl_dir.join("Meeting & Notes");
         fs::create_dir_all(&notes_dir).unwrap();
         fs::write(notes_dir.join("Agenda.md"), "# {{date}}").unwrap();

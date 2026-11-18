@@ -439,7 +439,7 @@ enum FinderBridge {
             guard let rp = effectiveReveal else { return "" }
             let url = URL(fileURLWithPath: rp)
             let folder = url.deletingLastPathComponent().lastPathComponent
-            return folder.isEmpty ? url.lastPathComponent : "Saved in \(folder)"
+            return (folder.isEmpty || folder == "/") ? url.lastPathComponent : "Saved in \(folder)"
         }()
 
         let proc = Process()

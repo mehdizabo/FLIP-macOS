@@ -701,3 +701,29 @@ fn convert_single_unit(
     staging.cleanup()?;
     Ok(committed)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unwritable_dir_error_classifies_readonly_and_permission_codes() {
+        assert!(is_unwritable_dir_error(&std::io::Error::from_raw_os_error(
+            libc::EROFS
+        )));
+        assert!(is_unwritable_dir_error(&std::io::Error::from_raw_os_error(
+            libc::EACCES
+        )));
+        assert!(is_unwritable_dir_error(&std::io::Error::from_raw_os_error(
+            libc::EPERM
+        )));
+        assert!(is_unwritable_dir_error(&std::io::Error::new(
+            std::io::ErrorKind::ReadOnlyFilesystem,
+            "rofs"
+        )));
+        assert!(!is_unwritable_dir_error(&std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing"
+        )));
+    }
+}
