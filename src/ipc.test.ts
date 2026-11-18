@@ -394,4 +394,24 @@ describe("Frontend IPC surface & contract alignment", () => {
 
     expect(defaultPreferences().preferredFormats.image).toContain("ICO");
   });
+
+  test("bidirectional XLSX structured data policy alignment", () => {
+    const csvRes = inspectFilesLocally(["/tmp/table.csv"]);
+    expect(csvRes.family).toBe("data");
+    expect(csvRes.compatibleFormats).toContain("XLSX");
+
+    const jsonRes = inspectFilesLocally(["/tmp/config.json"]);
+    expect(jsonRes.family).toBe("data");
+    expect(jsonRes.compatibleFormats).toContain("XLSX");
+
+    const xlsxRes = inspectFilesLocally(["/tmp/sheet.xlsx"]);
+    expect(xlsxRes.family).toBe("data");
+    expect(xlsxRes.compatibleFormats).not.toContain("XLSX");
+    for (const target of ["JSON", "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF", "ZIP"]) {
+      expect(xlsxRes.compatibleFormats).toContain(target);
+    }
+
+    expect(defaultPreferences().preferredFormats.data).toContain("XLSX");
+    expect(defaultPreferences().preferredFormats.data.slice(0, 7)).toContain("XLSX");
+  });
 });

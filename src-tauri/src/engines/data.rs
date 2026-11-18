@@ -1,16 +1,20 @@
-use crate::core::policy::ext_lower;
+use crate::core::policy::{ext_lower, validate_container, MAX_CONTAINER_EXPANDED_BYTES};
 use crate::engines::{bridge, EngineError};
 use quick_xml::events::{BytesDecl, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::{Reader, Writer};
 use serde_json::{Map, Number, Value};
 use std::collections::{BTreeMap, HashSet};
-use std::fs;
-use std::io::Cursor;
+use std::fs::{self, File};
+use std::io::{Cursor, Read, Write};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 pub const MAX_DATA_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_XLSX_COLUMNS: usize = 16_384;
+const MAX_XLSX_ROWS: usize = 1_048_576;
 
 pub fn convert(
     source: &Path,
@@ -27,28 +31,32 @@ pub fn convert(
         ));
     }
 
-    let raw_bytes = fs::read(source)?;
-    let raw_str = String::from_utf8(raw_bytes).map_err(|e| {
-        EngineError::ConversionFailed(format!("Data file is not valid UTF-8: {e}"))
-    })?;
-    let clean_raw = raw_str.strip_prefix('\u{FEFF}').unwrap_or(&raw_str);
-    if clean_raw.trim().is_empty() {
-        return Err(EngineError::ConversionFailed(
-            "Source data file is empty".to_string(),
-        ));
-    }
-
     let ext = ext_lower(source);
-    let root = match ext.as_str() {
-        "json" => parse_json(clean_raw)?,
-        "yaml" | "yml" => parse_yaml(clean_raw)?,
-        "toml" => parse_toml(clean_raw)?,
-        "xml" => parse_xml(clean_raw)?,
-        "csv" => parse_csv(clean_raw)?,
-        _ => {
-            return Err(EngineError::Unsupported(format!(
-                "Unsupported data extension: .{ext}"
-            )))
+    let root = if ext == "xlsx" {
+        parse_xlsx(source)?
+    } else {
+        let raw_bytes = fs::read(source)?;
+        let raw_str = String::from_utf8(raw_bytes).map_err(|e| {
+            EngineError::ConversionFailed(format!("Data file is not valid UTF-8: {e}"))
+        })?;
+        let clean_raw = raw_str.strip_prefix('\u{FEFF}').unwrap_or(&raw_str);
+        if clean_raw.trim().is_empty() {
+            return Err(EngineError::ConversionFailed(
+                "Source data file is empty".to_string(),
+            ));
+        }
+
+        match ext.as_str() {
+            "json" => parse_json(clean_raw)?,
+            "yaml" | "yml" => parse_yaml(clean_raw)?,
+            "toml" => parse_toml(clean_raw)?,
+            "xml" => parse_xml(clean_raw)?,
+            "csv" => parse_csv(clean_raw)?,
+            _ => {
+                return Err(EngineError::Unsupported(format!(
+                    "Unsupported data extension: .{ext}"
+                )))
+            }
         }
     };
 
@@ -82,6 +90,10 @@ pub fn convert(
         "CSV" => {
             let s = to_csv(&root)?;
             fs::write(output, s)?;
+        }
+        "XLSX" => {
+            let bytes = to_xlsx(&root)?;
+            fs::write(output, bytes)?;
         }
         "TXT" => {
             let s = serde_json::to_string_pretty(&root)
@@ -688,7 +700,7 @@ fn scalar_string(val: &Value) -> String {
     }
 }
 
-fn flatten_object(prefix: &str, obj: &Map<String, Value>, out: &mut Vec<(String, String)>) {
+fn flatten_object(prefix: &str, obj: &Map<String, Value>, out: &mut Vec<(String, Value)>) {
     for (k, v) in obj {
         let key = if prefix.is_empty() {
             k.clone()
@@ -697,14 +709,12 @@ fn flatten_object(prefix: &str, obj: &Map<String, Value>, out: &mut Vec<(String,
         };
         match v {
             Value::Object(nested) if !nested.is_empty() => flatten_object(&key, nested, out),
-            _ => out.push((key, scalar_string(v))),
+            _ => out.push((key, v.clone())),
         }
     }
 }
 
-fn to_csv(root: &Value) -> Result<String, EngineError> {
-    let mut wtr = csv::Writer::from_writer(Vec::new());
-
+fn extract_tabular_rows(root: &Value) -> (Vec<String>, Vec<Vec<Value>>) {
     if let Value::Array(arr) = root {
         if !arr.is_empty() && arr.iter().all(|v| v.is_object()) {
             let mut cols: Vec<String> = Vec::new();
@@ -721,38 +731,24 @@ fn to_csv(root: &Value) -> Result<String, EngineError> {
                     if seen.insert(k.clone()) {
                         cols.push(k.clone());
                     }
-                    row_map.insert(k, Value::String(v));
+                    row_map.insert(k, v);
                 }
                 flat_rows.push(row_map);
             }
 
-            wtr.write_record(&cols)
-                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-            for row in flat_rows {
-                let fields: Vec<String> = cols
-                    .iter()
-                    .map(|c| row.get(c).map(scalar_string).unwrap_or_default())
-                    .collect();
-                wtr.write_record(&fields)
-                    .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-            }
-            let bytes = wtr
-                .into_inner()
-                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-            return String::from_utf8(bytes)
-                .map_err(|e| EngineError::ConversionFailed(e.to_string()));
+            let rows = flat_rows
+                .into_iter()
+                .map(|row| {
+                    cols.iter()
+                        .map(|c| row.get(c).cloned().unwrap_or(Value::Null))
+                        .collect()
+                })
+                .collect();
+            return (cols, rows);
         }
-        wtr.write_record(["value"])
-            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-        for item in arr {
-            wtr.write_record([scalar_string(item)])
-                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-        }
-        let bytes = wtr
-            .into_inner()
-            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-        return String::from_utf8(bytes)
-            .map_err(|e| EngineError::ConversionFailed(e.to_string()));
+
+        let rows = arr.iter().map(|item| vec![item.clone()]).collect();
+        return (vec!["value".to_string()], rows);
     }
 
     if let Value::Object(map) = root {
@@ -760,31 +756,781 @@ fn to_csv(root: &Value) -> Result<String, EngineError> {
         if let Some((_, first_arr)) = map.iter().find(|(_, v)| {
             matches!(v, Value::Array(a) if !a.is_empty() && a.iter().all(|x| x.is_object()))
         }) {
-            return to_csv(first_arr);
+            return extract_tabular_rows(first_arr);
         }
-        wtr.write_record(["key", "value"])
-            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
         let mut pairs = Vec::new();
         flatten_object("", map, &mut pairs);
-        for (k, v) in pairs {
-            wtr.write_record([k, v])
-                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-        }
-        let bytes = wtr
-            .into_inner()
-            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-        return String::from_utf8(bytes)
-            .map_err(|e| EngineError::ConversionFailed(e.to_string()));
+        let rows = pairs
+            .into_iter()
+            .map(|(k, v)| vec![Value::String(k), v])
+            .collect();
+        return (vec!["key".to_string(), "value".to_string()], rows);
     }
 
-    wtr.write_record(["value"])
+    (vec!["value".to_string()], vec![vec![root.clone()]])
+}
+
+fn to_csv(root: &Value) -> Result<String, EngineError> {
+    let mut wtr = csv::Writer::from_writer(Vec::new());
+    let (cols, rows) = extract_tabular_rows(root);
+    wtr.write_record(&cols)
         .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
-    wtr.write_record([scalar_string(root)])
-        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    for row in rows {
+        let fields: Vec<String> = row.iter().map(scalar_string).collect();
+        wtr.write_record(&fields)
+            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    }
     let bytes = wtr
         .into_inner()
         .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
     String::from_utf8(bytes).map_err(|e| EngineError::ConversionFailed(e.to_string()))
+}
+
+fn col_index_to_letters(mut col: usize) -> String {
+    let mut letters = Vec::new();
+    loop {
+        let rem = col % 26;
+        letters.push((b'A' + rem as u8) as char);
+        if col < 26 {
+            break;
+        }
+        col = (col / 26) - 1;
+    }
+    letters.into_iter().rev().collect()
+}
+
+fn sanitize_xml_text(raw: &str) -> String {
+    raw.chars()
+        .filter(|&c| {
+            c == '\t'
+                || c == '\n'
+                || c == '\r'
+                || ('\u{0020}'..='\u{D7FF}').contains(&c)
+                || ('\u{E000}'..='\u{FFFD}').contains(&c)
+                || c >= '\u{10000}'
+        })
+        .collect()
+}
+
+fn write_xlsx_inline_cell(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    coord: &str,
+    raw_text: &str,
+) -> Result<(), EngineError> {
+    let clean = sanitize_xml_text(raw_text);
+    let mut cell = BytesStart::new("c");
+    cell.push_attribute(("r", coord));
+    cell.push_attribute(("t", "inlineStr"));
+    writer
+        .write_event(Event::Start(cell))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+
+    writer
+        .write_event(Event::Start(BytesStart::new("is")))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+
+    let mut t_elem = BytesStart::new("t");
+    if clean.starts_with(char::is_whitespace) || clean.ends_with(char::is_whitespace) {
+        t_elem.push_attribute(("xml:space", "preserve"));
+    }
+    writer
+        .write_event(Event::Start(t_elem))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    if !clean.is_empty() {
+        writer
+            .write_event(Event::Text(BytesText::new(&clean)))
+            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    }
+    writer
+        .write_event(Event::End(BytesEnd::new("t")))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    writer
+        .write_event(Event::End(BytesEnd::new("is")))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    writer
+        .write_event(Event::End(BytesEnd::new("c")))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    Ok(())
+}
+
+fn write_xlsx_value_cell(
+    writer: &mut Writer<Cursor<Vec<u8>>>,
+    coord: &str,
+    val: &Value,
+) -> Result<(), EngineError> {
+    match val {
+        Value::Null => Ok(()),
+        Value::Bool(b) => {
+            let mut cell = BytesStart::new("c");
+            cell.push_attribute(("r", coord));
+            cell.push_attribute(("t", "b"));
+            writer
+                .write_event(Event::Start(cell))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            writer
+                .write_event(Event::Start(BytesStart::new("v")))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            writer
+                .write_event(Event::Text(BytesText::new(if *b { "1" } else { "0" })))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            writer
+                .write_event(Event::End(BytesEnd::new("v")))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            writer
+                .write_event(Event::End(BytesEnd::new("c")))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            Ok(())
+        }
+        Value::Number(n) if n.as_f64().is_some_and(|f| f.is_finite()) => {
+            let mut cell = BytesStart::new("c");
+            cell.push_attribute(("r", coord));
+            cell.push_attribute(("t", "n"));
+            writer
+                .write_event(Event::Start(cell))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            writer
+                .write_event(Event::Start(BytesStart::new("v")))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            writer
+                .write_event(Event::Text(BytesText::new(&n.to_string())))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            writer
+                .write_event(Event::End(BytesEnd::new("v")))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            writer
+                .write_event(Event::End(BytesEnd::new("c")))
+                .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+            Ok(())
+        }
+        _ => write_xlsx_inline_cell(writer, coord, &scalar_string(val)),
+    }
+}
+
+fn to_xlsx(root: &Value) -> Result<Vec<u8>, EngineError> {
+    let (cols, rows) = extract_tabular_rows(root);
+    if cols.is_empty() {
+        return Err(EngineError::ConversionFailed(
+            "Cannot export empty dataset to XLSX".to_string(),
+        ));
+    }
+    if cols.len() > MAX_XLSX_COLUMNS {
+        return Err(EngineError::ConversionFailed(format!(
+            "XLSX column count ({}) exceeds Excel limit ({MAX_XLSX_COLUMNS})",
+            cols.len()
+        )));
+    }
+    if rows.len() + 1 > MAX_XLSX_ROWS {
+        return Err(EngineError::ConversionFailed(format!(
+            "XLSX row count ({}) exceeds Excel limit ({MAX_XLSX_ROWS})",
+            rows.len() + 1
+        )));
+    }
+
+    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    writer
+        .write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), Some("yes"))))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+
+    let mut ws = BytesStart::new("worksheet");
+    ws.push_attribute((
+        "xmlns",
+        "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+    ));
+    writer
+        .write_event(Event::Start(ws))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    writer
+        .write_event(Event::Start(BytesStart::new("sheetData")))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+
+    // Header row (row 1)
+    let mut header_row = BytesStart::new("row");
+    header_row.push_attribute(("r", "1"));
+    writer
+        .write_event(Event::Start(header_row))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    for (col_idx, header) in cols.iter().enumerate() {
+        let coord = format!("{}1", col_index_to_letters(col_idx));
+        write_xlsx_inline_cell(&mut writer, &coord, header)?;
+    }
+    writer
+        .write_event(Event::End(BytesEnd::new("row")))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+
+    // Data rows (row 2..)
+    for (r_idx, row) in rows.iter().enumerate() {
+        let row_num = r_idx + 2;
+        let row_num_str = row_num.to_string();
+        let mut row_elem = BytesStart::new("row");
+        row_elem.push_attribute(("r", row_num_str.as_str()));
+        writer
+            .write_event(Event::Start(row_elem))
+            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+        for (col_idx, val) in row.iter().enumerate() {
+            if matches!(val, Value::Null) {
+                continue;
+            }
+            let coord = format!("{}{}", col_index_to_letters(col_idx), row_num);
+            write_xlsx_value_cell(&mut writer, &coord, val)?;
+        }
+        writer
+            .write_event(Event::End(BytesEnd::new("row")))
+            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+
+        if writer.get_ref().get_ref().len() as u64 > MAX_CONTAINER_EXPANDED_BYTES {
+            return Err(EngineError::ConversionFailed(
+                "Generated XLSX worksheet exceeds 256 MiB safety limit".to_string(),
+            ));
+        }
+    }
+
+    writer
+        .write_event(Event::End(BytesEnd::new("sheetData")))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    writer
+        .write_event(Event::End(BytesEnd::new("worksheet")))
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+
+    let sheet1 = writer.into_inner().into_inner();
+
+    let content_types = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"#;
+    let rels = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+    let wb_rels = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#;
+    let workbook = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="Sheet1" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#;
+    let styles = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="1"><fill><patternFill patternType="none"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>"#;
+
+    let entries: [(&str, &[u8]); 6] = [
+        ("[Content_Types].xml", content_types),
+        ("_rels/.rels", rels),
+        ("xl/_rels/workbook.xml.rels", wb_rels),
+        ("xl/workbook.xml", workbook),
+        ("xl/styles.xml", styles),
+        ("xl/worksheets/sheet1.xml", &sheet1),
+    ];
+
+    let total_uncompressed: u64 = entries.iter().map(|(_, b)| b.len() as u64).sum();
+    if total_uncompressed > MAX_CONTAINER_EXPANDED_BYTES {
+        return Err(EngineError::ConversionFailed(
+            "Generated XLSX archive exceeds 256 MiB safety limit".to_string(),
+        ));
+    }
+
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    for (name, bytes) in entries {
+        zip.start_file(name, opts)
+            .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+        zip.write_all(bytes)?;
+    }
+    let finished = zip
+        .finish()
+        .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+    Ok(finished.into_inner())
+}
+
+fn read_zip_entry_string(archive: &mut ZipArchive<File>, target: &str) -> Option<String> {
+    let normalized = target.trim_start_matches('/');
+    if let Ok(mut entry) = archive.by_name(normalized) {
+        let mut s = String::new();
+        if entry.read_to_string(&mut s).is_ok() {
+            return Some(s);
+        }
+    }
+    let matched_name = (0..archive.len()).find_map(|i| {
+        archive.by_index(i).ok().and_then(|e| {
+            let n = e.name().trim_start_matches('/');
+            if n.eq_ignore_ascii_case(normalized) {
+                Some(e.name().to_string())
+            } else {
+                None
+            }
+        })
+    })?;
+    let mut entry = archive.by_name(&matched_name).ok()?;
+    let mut s = String::new();
+    entry.read_to_string(&mut s).ok()?;
+    Some(s)
+}
+
+fn normalize_ooxml_target(base_dir: &str, target: &str) -> String {
+    let raw = target.trim();
+    let combined = if let Some(abs) = raw.strip_prefix('/') {
+        abs.to_string()
+    } else if base_dir.is_empty() {
+        raw.to_string()
+    } else {
+        format!("{base_dir}/{raw}")
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in combined.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
+
+fn resolve_first_worksheet_path(archive: &mut ZipArchive<File>) -> String {
+    if let Some(wb_xml) = read_zip_entry_string(archive, "xl/workbook.xml") {
+        let mut reader = Reader::from_str(&wb_xml);
+        let mut buf = Vec::new();
+        let mut first_rid: Option<String> = None;
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                    if e.local_name().as_ref() == b"sheet" {
+                        for attr in e.attributes().flatten() {
+                            if attr.key.as_ref() == b"r:id" || attr.key.local_name().as_ref() == b"id"
+                            {
+                                if let Ok(v) = attr.unescape_value() {
+                                    first_rid = Some(v.into_owned());
+                                    break;
+                                }
+                            }
+                        }
+                        if first_rid.is_some() {
+                            break;
+                        }
+                    }
+                }
+                Ok(Event::Eof) | Err(_) => break,
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        if let Some(rid) = first_rid {
+            if let Some(rels_xml) = read_zip_entry_string(archive, "xl/_rels/workbook.xml.rels") {
+                let mut rel_reader = Reader::from_str(&rels_xml);
+                let mut rel_buf = Vec::new();
+                loop {
+                    match rel_reader.read_event_into(&mut rel_buf) {
+                        Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                            if e.local_name().as_ref() == b"Relationship" {
+                                let mut id_val = None;
+                                let mut target_val = None;
+                                for attr in e.attributes().flatten() {
+                                    let k = attr.key.local_name();
+                                    if k.as_ref() == b"Id" {
+                                        id_val = attr.unescape_value().ok().map(|v| v.into_owned());
+                                    } else if k.as_ref() == b"Target" {
+                                        target_val =
+                                            attr.unescape_value().ok().map(|v| v.into_owned());
+                                    }
+                                }
+                                if id_val.as_deref() == Some(rid.as_str()) {
+                                    if let Some(t) = target_val {
+                                        return normalize_ooxml_target("xl", &t);
+                                    }
+                                }
+                            }
+                        }
+                        Ok(Event::Eof) | Err(_) => break,
+                        _ => {}
+                    }
+                    rel_buf.clear();
+                }
+            }
+        }
+    }
+
+    if archive.by_name("xl/worksheets/sheet1.xml").is_ok() {
+        return "xl/worksheets/sheet1.xml".to_string();
+    }
+
+    for i in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(i) {
+            let name = entry.name();
+            let lower = name.to_ascii_lowercase();
+            if lower.starts_with("xl/worksheets/") && lower.ends_with(".xml") {
+                return name.to_string();
+            }
+        }
+    }
+
+    "xl/worksheets/sheet1.xml".to_string()
+}
+
+fn parse_shared_strings(xml: &str) -> Result<Vec<String>, EngineError> {
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
+    let mut strings = Vec::new();
+    let mut in_si = false;
+    let mut in_t = false;
+    let mut rph_depth: usize = 0;
+    let mut current = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => match e.local_name().as_ref() {
+                b"si" => {
+                    in_si = true;
+                    in_t = false;
+                    rph_depth = 0;
+                    current.clear();
+                }
+                b"rPh" if in_si => {
+                    rph_depth += 1;
+                }
+                b"t" if in_si && rph_depth == 0 => {
+                    in_t = true;
+                }
+                _ => {}
+            },
+            Ok(Event::Empty(e)) => {
+                if e.local_name().as_ref() == b"si" {
+                    strings.push(String::new());
+                }
+            }
+            Ok(Event::Text(t)) if in_si && in_t && rph_depth == 0 => {
+                let txt = t
+                    .unescape()
+                    .map_err(|e| EngineError::ConversionFailed(format!("Invalid sharedStrings XML: {e}")))?;
+                current.push_str(&txt);
+            }
+            Ok(Event::CData(c)) if in_si && in_t && rph_depth == 0 => {
+                current.push_str(&String::from_utf8_lossy(&c));
+            }
+            Ok(Event::End(e)) => match e.local_name().as_ref() {
+                b"t" => in_t = false,
+                b"rPh" => rph_depth = rph_depth.saturating_sub(1),
+                b"si" => {
+                    in_si = false;
+                    in_t = false;
+                    rph_depth = 0;
+                    strings.push(std::mem::take(&mut current));
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => {
+                return Err(EngineError::ConversionFailed(format!(
+                    "Invalid XLSX sharedStrings XML: {e}"
+                )));
+            }
+        }
+        buf.clear();
+    }
+
+    Ok(strings)
+}
+
+fn parse_cell_col_index(coord: &str) -> Option<usize> {
+    let mut col: usize = 0;
+    let mut saw_alpha = false;
+    for b in coord.bytes() {
+        if b.is_ascii_alphabetic() {
+            saw_alpha = true;
+            let digit = (b.to_ascii_uppercase() - b'A') as usize + 1;
+            col = col.checked_mul(26)?.checked_add(digit)?;
+        } else {
+            break;
+        }
+    }
+    if saw_alpha && col > 0 {
+        Some(col - 1)
+    } else {
+        None
+    }
+}
+
+fn parse_xlsx_number_or_scalar(raw: &str) -> Value {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Value::String(String::new());
+    }
+    if let Ok(i) = trimmed.parse::<i64>() {
+        return Value::Number(Number::from(i));
+    }
+    if let Ok(f) = trimmed.parse::<f64>() {
+        if f.is_finite() {
+            if let Some(n) = Number::from_f64(f) {
+                return Value::Number(n);
+            }
+        }
+    }
+    parse_scalar(trimmed)
+}
+
+fn is_cell_non_empty(val: &Value) -> bool {
+    match val {
+        Value::Null => false,
+        Value::String(s) => !s.trim().is_empty(),
+        _ => true,
+    }
+}
+
+fn parse_xlsx(path: &Path) -> Result<Value, EngineError> {
+    validate_container(path)?;
+
+    let file = File::open(path)?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|e| EngineError::ConversionFailed(format!("Invalid XLSX archive: {e}")))?;
+
+    let shared_strings = if let Some(ss_xml) = read_zip_entry_string(&mut archive, "xl/sharedStrings.xml") {
+        parse_shared_strings(&ss_xml)?
+    } else {
+        Vec::new()
+    };
+
+    let sheet_path = resolve_first_worksheet_path(&mut archive);
+    let sheet_xml = read_zip_entry_string(&mut archive, &sheet_path).ok_or_else(|| {
+        EngineError::ConversionFailed(format!("XLSX worksheet not found: {sheet_path}"))
+    })?;
+
+    let mut reader = Reader::from_str(&sheet_xml);
+    reader.config_mut().trim_text(false);
+    let mut buf = Vec::new();
+
+    let mut rows: Vec<BTreeMap<usize, Value>> = Vec::new();
+    let mut max_col: usize = 0;
+
+    let mut in_row = false;
+    let mut current_row: BTreeMap<usize, Value> = BTreeMap::new();
+    let mut next_col_idx: usize = 0;
+
+    let mut in_cell = false;
+    let mut cell_col: usize = 0;
+    let mut cell_type = String::new();
+    let mut in_v = false;
+    let mut in_is = false;
+    let mut in_t = false;
+    let mut rph_depth: usize = 0;
+    let mut has_value = false;
+    let mut cell_buf = String::new();
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) => match e.local_name().as_ref() {
+                b"row" => {
+                    in_row = true;
+                    current_row.clear();
+                    next_col_idx = 0;
+                }
+                b"c" if in_row => {
+                    in_cell = true;
+                    cell_type.clear();
+                    cell_buf.clear();
+                    has_value = false;
+                    in_v = false;
+                    in_is = false;
+                    in_t = false;
+                    rph_depth = 0;
+
+                    let mut parsed_col = None;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.local_name().as_ref() {
+                            b"r" => {
+                                if let Ok(v) = attr.unescape_value() {
+                                    parsed_col = parse_cell_col_index(&v);
+                                }
+                            }
+                            b"t" => {
+                                if let Ok(v) = attr.unescape_value() {
+                                    cell_type = v.into_owned();
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    cell_col = parsed_col.unwrap_or(next_col_idx);
+                    if cell_col >= MAX_XLSX_COLUMNS {
+                        return Err(EngineError::ConversionFailed(
+                            "XLSX cell column coordinate exceeds Excel limit".to_string(),
+                        ));
+                    }
+                    next_col_idx = cell_col + 1;
+                }
+                b"v" if in_cell => {
+                    in_v = true;
+                    has_value = true;
+                }
+                b"is" if in_cell => {
+                    in_is = true;
+                }
+                b"rPh" if in_cell && in_is => {
+                    rph_depth += 1;
+                }
+                b"t" if in_cell && in_is && rph_depth == 0 => {
+                    in_t = true;
+                    has_value = true;
+                }
+                _ => {}
+            },
+            Ok(Event::Empty(e)) => {
+                if e.local_name().as_ref() == b"c" && in_row {
+                    let mut parsed_col = None;
+                    for attr in e.attributes().flatten() {
+                        if attr.key.local_name().as_ref() == b"r" {
+                            if let Ok(v) = attr.unescape_value() {
+                                parsed_col = parse_cell_col_index(&v);
+                            }
+                        }
+                    }
+                    let col = parsed_col.unwrap_or(next_col_idx);
+                    if col >= MAX_XLSX_COLUMNS {
+                        return Err(EngineError::ConversionFailed(
+                            "XLSX cell column coordinate exceeds Excel limit".to_string(),
+                        ));
+                    }
+                    next_col_idx = col + 1;
+                }
+            }
+            Ok(Event::Text(t)) if in_cell && (in_v || (in_is && in_t && rph_depth == 0)) => {
+                let txt = t
+                    .unescape()
+                    .map_err(|e| EngineError::ConversionFailed(format!("Invalid XLSX XML: {e}")))?;
+                cell_buf.push_str(&txt);
+            }
+            Ok(Event::CData(c)) if in_cell && (in_v || (in_is && in_t && rph_depth == 0)) => {
+                cell_buf.push_str(&String::from_utf8_lossy(&c));
+            }
+            Ok(Event::End(e)) => match e.local_name().as_ref() {
+                b"v" => in_v = false,
+                b"t" => in_t = false,
+                b"rPh" => rph_depth = rph_depth.saturating_sub(1),
+                b"is" => {
+                    in_is = false;
+                    in_t = false;
+                    rph_depth = 0;
+                }
+                b"c" if in_cell => {
+                    in_cell = false;
+                    if has_value {
+                        let cell_val = match cell_type.as_str() {
+                            "s" => {
+                                let idx: usize = cell_buf.trim().parse().map_err(|_| {
+                                    EngineError::ConversionFailed(format!(
+                                        "Invalid XLSX shared string index: `{cell_buf}`"
+                                    ))
+                                })?;
+                                let s = shared_strings.get(idx).cloned().ok_or_else(|| {
+                                    EngineError::ConversionFailed(format!(
+                                        "XLSX shared string index {idx} out of bounds"
+                                    ))
+                                })?;
+                                Value::String(s)
+                            }
+                            "inlineStr" | "str" | "e" | "d" => Value::String(std::mem::take(&mut cell_buf)),
+                            "b" => match cell_buf.trim() {
+                                "1" | "true" | "TRUE" => Value::Bool(true),
+                                "0" | "false" | "FALSE" => Value::Bool(false),
+                                other => parse_scalar(other),
+                            },
+                            "" | "n" => {
+                                if cell_buf.trim().is_empty() {
+                                    Value::Null
+                                } else {
+                                    parse_xlsx_number_or_scalar(&cell_buf)
+                                }
+                            }
+                            _ => parse_scalar(&cell_buf),
+                        };
+                        if is_cell_non_empty(&cell_val) {
+                            current_row.insert(cell_col, cell_val);
+                        }
+                    }
+                    cell_buf.clear();
+                }
+                b"row" if in_row => {
+                    in_row = false;
+                    if current_row.values().any(is_cell_non_empty) {
+                        if let Some(&last_col) = current_row.keys().next_back() {
+                            max_col = max_col.max(last_col);
+                        }
+                        rows.push(std::mem::take(&mut current_row));
+                    } else {
+                        current_row.clear();
+                    }
+                }
+                _ => {}
+            },
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => {
+                return Err(EngineError::ConversionFailed(format!(
+                    "Invalid XLSX worksheet XML: {e}"
+                )));
+            }
+        }
+        buf.clear();
+    }
+
+    if rows.is_empty() {
+        return Err(EngineError::ConversionFailed(
+            "XLSX worksheet is empty or has no data".to_string(),
+        ));
+    }
+
+    let num_cols = max_col + 1;
+    if rows.len() == 1 {
+        let mut single = Map::new();
+        for c in 0..num_cols {
+            let val = rows[0]
+                .get(&c)
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+            single.insert(format!("col_{}", c + 1), val);
+        }
+        return Ok(Value::Array(vec![Value::Object(single)]));
+    }
+
+    let headers: Vec<String> = (0..num_cols)
+        .map(|c| {
+            let hdr = rows[0].get(&c).map(scalar_string).unwrap_or_default();
+            if hdr.trim().is_empty() {
+                format!("col_{}", c + 1)
+            } else {
+                hdr.trim().to_string()
+            }
+        })
+        .collect();
+
+    let mut out = Vec::with_capacity(rows.len() - 1);
+    for row in &rows[1..] {
+        let mut obj = Map::new();
+        for (c, key) in headers.iter().enumerate() {
+            let val = row
+                .get(&c)
+                .cloned()
+                .unwrap_or_else(|| Value::String(String::new()));
+            obj.insert(key.clone(), val);
+        }
+        out.push(Value::Object(obj));
+    }
+    Ok(Value::Array(out))
 }
 
 fn to_markdown(root: &Value, title: &str) -> Result<String, EngineError> {
@@ -915,5 +1661,31 @@ mod tests {
         convert(&json_out, "XML", &xml_back, dir.path(), "a4", &cancel).unwrap();
         let back_str = fs::read_to_string(&xml_back).unwrap();
         assert!(back_str.contains(r#"version="2.0""#), "xml lost root attr: {back_str}");
+    }
+
+    #[test]
+    fn xlsx_column_coords_shared_strings_and_edge_cases() {
+        assert_eq!(col_index_to_letters(0), "A");
+        assert_eq!(col_index_to_letters(25), "Z");
+        assert_eq!(col_index_to_letters(26), "AA");
+        assert_eq!(col_index_to_letters(51), "AZ");
+        assert_eq!(col_index_to_letters(52), "BA");
+        assert_eq!(col_index_to_letters(702), "AAA");
+
+        assert_eq!(parse_cell_col_index("A1"), Some(0));
+        assert_eq!(parse_cell_col_index("Z99"), Some(25));
+        assert_eq!(parse_cell_col_index("AA12"), Some(26));
+        assert_eq!(parse_cell_col_index("AZ5"), Some(51));
+        assert_eq!(parse_cell_col_index("BA1"), Some(52));
+        assert_eq!(parse_cell_col_index("123"), None);
+
+        let ss_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="3" uniqueCount="3">
+  <si><t>Name</t></si>
+  <si><r><t xml:space="preserve">Rich </t></r><r><t>Text</t></r><rPh><t>ignored</t></rPh></si>
+  <si/>
+</sst>"#;
+        let ss = parse_shared_strings(ss_xml).unwrap();
+        assert_eq!(ss, vec!["Name", "Rich Text", ""]);
     }
 }

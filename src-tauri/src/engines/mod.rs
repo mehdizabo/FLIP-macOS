@@ -387,13 +387,19 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
         }
         "DOCX" | "ODT" | "EPUB" | "XLSX" | "PPTX" | "ZIP" => {
             let f = File::open(path)?;
-            let archive = ZipArchive::new(f).map_err(|e| {
+            let mut archive = ZipArchive::new(f).map_err(|e| {
                 EngineError::ValidationFailed(path.display().to_string(), e.to_string())
             })?;
             if archive.is_empty() {
                 return Err(EngineError::ValidationFailed(
                     path.display().to_string(),
                     "Empty archive".to_string(),
+                ));
+            }
+            if fmt == "XLSX" && archive.by_name("xl/workbook.xml").is_err() {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid XLSX archive missing xl/workbook.xml".to_string(),
                 ));
             }
         }

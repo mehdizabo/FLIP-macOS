@@ -83,7 +83,7 @@ pub const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns",
     "ico", "svg",
 ];
-pub const DATA_EXTS: &[&str] = &["json", "yaml", "yml", "toml", "xml", "csv"];
+pub const DATA_EXTS: &[&str] = &["json", "yaml", "yml", "toml", "xml", "csv", "xlsx"];
 pub const AUDIO_NATIVE_EXTS: &[&str] = &[
     "wav", "aiff", "aif", "m4a", "aac", "alac", "caf", "flac", "mp3",
 ];
@@ -157,7 +157,7 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
             ]
         }
         e if DATA_EXTS.contains(&e) => {
-            vec!["JSON", "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"]
+            vec!["JSON", "YAML", "TOML", "XML", "CSV", "XLSX", "TXT", "HTML", "MD", "PDF"]
         }
         e if AUDIO_ALL_EXTS.contains(&e) => {
             if caps.ffmpeg {
@@ -359,6 +359,7 @@ pub fn order_formats(
             "TOML",
             "XML",
             "CSV",
+            "XLSX",
             "PNG",
             "JPG",
             "WEBP",
@@ -808,14 +809,25 @@ mod tests {
 
         let json_out: HashSet<String> = outputs(&["data.json"], &native).into_iter().collect();
         let expected: HashSet<String> = [
-            "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF", "ZIP",
+            "YAML", "TOML", "XML", "CSV", "XLSX", "TXT", "HTML", "MD", "PDF", "ZIP",
         ]
             .into_iter()
             .map(String::from)
             .collect();
         assert_eq!(json_out, expected);
 
+        let xlsx_out: HashSet<String> = outputs(&["sheet.xlsx"], &native).into_iter().collect();
+        let xlsx_expected: HashSet<String> = [
+            "JSON", "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF", "ZIP",
+        ]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        assert_eq!(xlsx_out, xlsx_expected);
+        assert_eq!(family_for_ext("xlsx"), Some(FormatFamily::Data));
+
         assert!(outputs(&["table.csv"], &native).contains(&"JSON".to_string()));
+        assert!(outputs(&["table.csv"], &native).contains(&"XLSX".to_string()));
         assert!(outputs(&["audio.mp3"], &with_ff).contains(&"WAV".to_string()));
         assert!(outputs(&["audio.mp3"], &with_ff).contains(&"CAF".to_string()));
         assert_eq!(outputs(&["audio.ogg"], &native), vec!["ZIP".to_string()]);

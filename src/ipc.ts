@@ -139,7 +139,7 @@ export function defaultPreferences(): AppPreferences {
         "FB2",
         "RST",
       ],
-      data: ["JSON", "YAML", "TOML", "CSV", "XML", "MD", "HTML", "PDF", "TXT"],
+      data: ["JSON", "YAML", "TOML", "CSV", "XLSX", "XML", "MD", "HTML", "PDF", "TXT"],
       audio: ["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"],
       video: ["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"],
     },
@@ -258,7 +258,7 @@ let mockQuickActions: QuickActionsStatus = {
 let mockCancelRequested = false;
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns", "ico", "svg"]);
-const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "csv"]);
+const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "csv", "xlsx"]);
 export const AUDIO_NATIVE_EXTS = new Set(["wav", "aiff", "aif", "m4a", "aac", "alac", "caf", "flac", "mp3"]);
 const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf"]);
 const VIDEO_EXTS = new Set(["mp4", "mkv", "webm", "avi", "mov", "wmv", "m4v"]);
@@ -315,7 +315,7 @@ function mockTargetsForExt(
     return { targets: ["UNZIP"], family: "archive" };
   }
   if (DATA_EXTS.has(ext)) {
-    return { targets: ["JSON", "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"], family: "data" };
+    return { targets: ["JSON", "YAML", "TOML", "XML", "CSV", "XLSX", "TXT", "HTML", "MD", "PDF"], family: "data" };
   }
   if (AUDIO_EXTS.has(ext)) {
     if (hasFfmpeg) {

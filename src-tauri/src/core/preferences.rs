@@ -112,7 +112,7 @@ pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
     );
     map.insert(
         "data".to_string(),
-        vec!["JSON", "YAML", "TOML", "CSV", "XML", "MD", "HTML", "PDF", "TXT"]
+        vec!["JSON", "YAML", "TOML", "CSV", "XLSX", "XML", "MD", "HTML", "PDF", "TXT"]
             .into_iter()
             .map(String::from)
             .collect(),

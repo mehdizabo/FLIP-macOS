@@ -2929,3 +2929,211 @@ fn svg_input_rasterization_ico_output_and_animate_gif_batch() {
     let cancel_res = convert_files(&anim_sources, &["ANIMATE_GIF".into()], &prefs, &precancel, None);
     assert!(matches!(cancel_res, Err(EngineError::Cancelled)));
 }
+
+#[test]
+fn xlsx_bidirectional_spreadsheet_sparse_cells_and_container_bomb() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // 1. CSV -> XLSX -> JSON roundtrip
+    let csv_path = dir.path().join("team.csv");
+    fs::write(
+        &csv_path,
+        "name,score,active,note\nMarco,95,true,\"hello, world\"\nGiulia,88.5,false,cafè\n",
+    )
+    .unwrap();
+    let csv_hash = sha256_file(&csv_path);
+
+    let csv_to_xlsx = convert_files(
+        std::slice::from_ref(&csv_path),
+        &["XLSX".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(csv_to_xlsx[0].error.is_none(), "{:?}", csv_to_xlsx[0].error);
+    let xlsx_from_csv = PathBuf::from(&csv_to_xlsx[0].outputs[0]);
+    assert!(validate_output(&xlsx_from_csv, "XLSX").is_ok());
+
+    let xlsx_to_json = convert_files(
+        std::slice::from_ref(&xlsx_from_csv),
+        &["JSON".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(xlsx_to_json[0].error.is_none(), "{:?}", xlsx_to_json[0].error);
+    let parsed_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&xlsx_to_json[0].outputs[0]).unwrap()).unwrap();
+    let arr = parsed_json.as_array().expect("JSON array");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["name"], "Marco");
+    assert_eq!(arr[0]["score"], 95);
+    assert_eq!(arr[0]["active"], true);
+    assert_eq!(arr[0]["note"], "hello, world");
+    assert_eq!(arr[1]["name"], "Giulia");
+    assert_eq!(arr[1]["score"], 88.5);
+    assert_eq!(arr[1]["active"], false);
+    assert_eq!(arr[1]["note"], "cafè");
+
+    // 2. JSON -> XLSX -> CSV / MD / HTML / PDF
+    let json_path = dir.path().join("records.json");
+    fs::write(
+        &json_path,
+        r#"[
+          {"id": 1, "title": "Alpha", "meta": {"owner": "Ada"}},
+          {"id": 2, "title": "Beta", "meta": {"owner": "Lin"}}
+        ]"#,
+    )
+    .unwrap();
+    let json_to_xlsx = convert_files(
+        std::slice::from_ref(&json_path),
+        &["XLSX".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(json_to_xlsx[0].error.is_none());
+    let xlsx_from_json = PathBuf::from(&json_to_xlsx[0].outputs[0]);
+    assert!(validate_output(&xlsx_from_json, "XLSX").is_ok());
+
+    let xlsx_targets: Vec<String> = ["CSV", "MD", "HTML", "PDF"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    let xlsx_exports = convert_files(
+        std::slice::from_ref(&xlsx_from_json),
+        &xlsx_targets,
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    for res in &xlsx_exports {
+        assert!(res.error.is_none(), "XLSX -> {} failed: {:?}", res.format, res.error);
+        assert_eq!(res.outputs.len(), 1);
+        assert!(validate_output(Path::new(&res.outputs[0]), &res.format).is_ok());
+    }
+    let csv_back = fs::read_to_string(&xlsx_exports.iter().find(|r| r.format == "CSV").unwrap().outputs[0]).unwrap();
+    assert!(csv_back.contains("meta.owner") && csv_back.contains("Ada") && csv_back.contains("Lin"));
+    let md_back = fs::read_to_string(&xlsx_exports.iter().find(|r| r.format == "MD").unwrap().outputs[0]).unwrap();
+    assert!(md_back.contains("| id | title | meta.owner |"));
+
+    // 3. Sparse cells + sharedStrings + inlineStr + str + bool + AA1 column alignment + custom sheet path via workbook.xml
+    let sparse_xlsx = dir.path().join("sparse.xlsx");
+    {
+        let file = File::create(&sparse_xlsx).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+        zip.start_file("[Content_Types].xml", opts).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+</Types>"#,
+        )
+        .unwrap();
+
+        zip.start_file("xl/workbook.xml", opts).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Data" sheetId="1" r:id="rId9"/></sheets>
+</workbook>"#,
+        )
+        .unwrap();
+
+        zip.start_file("xl/_rels/workbook.xml.rels", opts).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/custom_sheet.xml"/>
+</Relationships>"#,
+        )
+        .unwrap();
+
+        zip.start_file("xl/sharedStrings.xml", opts).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="3" uniqueCount="3">
+  <si><t>item</t></si>
+  <si><t>count</t></si>
+  <si><r><t>Apple</t></r></si>
+</sst>"#,
+        )
+        .unwrap();
+
+        zip.start_file("xl/worksheets/custom_sheet.xml", opts).unwrap();
+        zip.write_all(
+            br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="s"><v>0</v></c>
+      <c r="C1" t="s"><v>1</v></c>
+      <c r="AA1" t="inlineStr"><is><t>wide_col</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="s"><v>2</v></c>
+      <c r="C2"><v>42</v></c>
+      <c r="AA2" t="str"><v>formula-ok</v></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="inlineStr"><is><t>Banana</t></is></c>
+      <c r="B3" t="b"><v>1</v></c>
+      <c r="AA3" t="b"><v>0</v></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+        )
+        .unwrap();
+        zip.finish().unwrap();
+    }
+
+    let sparse_res = convert_files(&[sparse_xlsx], &["JSON".into()], &prefs, &cancel, None).unwrap();
+    assert!(sparse_res[0].error.is_none(), "{:?}", sparse_res[0].error);
+    let sparse_json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&sparse_res[0].outputs[0]).unwrap()).unwrap();
+    let sarr = sparse_json.as_array().unwrap();
+    assert_eq!(sarr.len(), 2);
+    assert_eq!(sarr[0]["item"], "Apple");
+    assert_eq!(sarr[0]["col_2"], "");
+    assert_eq!(sarr[0]["count"], 42);
+    assert_eq!(sarr[0]["wide_col"], "formula-ok");
+    assert_eq!(sarr[1]["item"], "Banana");
+    assert_eq!(sarr[1]["col_2"], true);
+    assert_eq!(sarr[1]["count"], "");
+    assert_eq!(sarr[1]["wide_col"], false);
+
+    // 4. Empty/headerless XLSX (including Create New blank XLSX) rejected cleanly
+    let blank_xlsx = create_new_item("xlsx", Some(dir.path()), &prefs, false).unwrap();
+    assert!(validate_output(Path::new(&blank_xlsx.path), "XLSX").is_ok());
+    let blank_conv = convert_files(&[PathBuf::from(&blank_xlsx.path)], &["JSON".into()], &prefs, &cancel, None).unwrap();
+    assert!(blank_conv[0].error.is_some(), "empty worksheet must be rejected");
+    assert!(blank_conv[0].outputs.is_empty());
+
+    // 5. Container bomb XLSX (> 256 MiB) rejected before conversion
+    let bomb_xlsx = dir.path().join("bomb.xlsx");
+    {
+        let file = File::create(&bomb_xlsx).unwrap();
+        let mut zip = ZipWriter::new(file);
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        zip.start_file("xl/worksheets/sheet1.xml", opts).unwrap();
+        let zeros = vec![0u8; 1024 * 1024];
+        for _ in 0..257 {
+            zip.write_all(&zeros).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+    let bomb_res = convert_files(&[bomb_xlsx], &["JSON".into()], &prefs, &cancel, None).unwrap();
+    assert!(bomb_res[0].error.as_deref().unwrap_or("").contains("256 MiB"));
+    assert!(bomb_res[0].outputs.is_empty());
+
+    assert_eq!(sha256_file(&csv_path), csv_hash);
+}
