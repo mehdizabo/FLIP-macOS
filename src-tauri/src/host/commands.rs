@@ -84,12 +84,24 @@ impl Drop for ConversionBusyGuard {
 }
 
 #[tauri::command]
-pub fn get_wheel_state(state: State<'_, Arc<HostState>>) -> Result<WheelStatePayload, String> {
-    state
+pub fn get_wheel_state(
+    window: tauri::WebviewWindow,
+    state: State<'_, Arc<HostState>>,
+) -> Result<WheelStatePayload, String> {
+    let mut payload = state
         .wheel
         .lock()
         .map(|g| g.payload.clone())
-        .map_err(|_| "Wheel state lock poisoned".to_string())
+        .map_err(|_| "Wheel state lock poisoned".to_string())?;
+    if window.label() == "batch" {
+        if let Ok(mut pending) = state.pending_batch_files.lock() {
+            state.batch_mounted.store(true, Ordering::SeqCst);
+            if let Some(files) = pending.take() {
+                payload.files = files;
+            }
+        }
+    }
+    Ok(payload)
 }
 
 #[tauri::command]

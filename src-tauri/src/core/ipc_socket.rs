@@ -16,6 +16,7 @@ pub const SOCKET_FILE_NAME: &str = "flip-instance.sock";
 const MAX_IPC_LINE_BYTES: u64 = 1024 * 1024;
 const MAX_CONCURRENT_CLIENTS: usize = 16;
 const MACOS_SUN_PATH_MAX: usize = 103;
+const INTERNAL_PROBE_PAYLOAD: &str = r#"{"cmd":"__probe__"}"#;
 
 #[derive(Debug, Error)]
 pub enum IpcSocketError {
@@ -185,13 +186,13 @@ impl IpcServerHandle {
         }
         self.cleaned = true;
         self.shutdown.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.thread.take() {
-            let _ = handle.join();
-        }
         if let Ok(meta) = fs::symlink_metadata(&self.socket_path) {
             if meta.file_type().is_socket() && (meta.dev(), meta.ino()) == self.bound_identity {
                 let _ = fs::remove_file(&self.socket_path);
             }
+        }
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
         }
     }
 }
@@ -199,6 +200,47 @@ impl IpcServerHandle {
 impl Drop for IpcServerHandle {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+fn probe_existing_socket_stale(socket_path: &Path) -> Result<bool, io::Error> {
+    let mut stream = match UnixStream::connect(socket_path) {
+        Ok(s) => s,
+        Err(e) if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound) => {
+            return Ok(true);
+        }
+        Err(e) => return Err(e),
+    };
+
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(250)));
+
+    if let Err(e) = writeln!(stream, "{INTERNAL_PROBE_PAYLOAD}").and_then(|_| stream.flush()) {
+        if matches!(
+            e.kind(),
+            ErrorKind::BrokenPipe | ErrorKind::ConnectionReset | ErrorKind::NotConnected
+        ) {
+            return Ok(true);
+        }
+        return Ok(false);
+    }
+
+    let mut line = String::new();
+    let mut reader = BufReader::new(stream.take(MAX_IPC_LINE_BYTES));
+    match reader.read_line(&mut line) {
+        // EOF or reset without any response indicates the listener fd closed (stale/exiting process).
+        Ok(0) => Ok(true),
+        Ok(_) => Ok(false),
+        Err(e)
+            if matches!(
+                e.kind(),
+                ErrorKind::ConnectionReset | ErrorKind::BrokenPipe | ErrorKind::UnexpectedEof
+            ) =>
+        {
+            Ok(true)
+        }
+        // Read timeout means an active listener is still holding the socket open.
+        Err(_) => Ok(false),
     }
 }
 
@@ -230,15 +272,20 @@ where
             )));
         }
 
-        match UnixStream::connect(socket_path) {
-            Ok(_active_stream) => {
+        let existing_id = (meta.dev(), meta.ino());
+        match probe_existing_socket_stale(socket_path) {
+            Ok(true) => {
+                // Stale socket left by a crashed process or short-lived inherited fd: remove only if same inode.
+                if let Ok(cur_meta) = fs::symlink_metadata(socket_path) {
+                    if (cur_meta.dev(), cur_meta.ino()) == existing_id {
+                        let _ = fs::remove_file(socket_path);
+                    }
+                }
+            }
+            Ok(false) => {
                 return Err(IpcSocketError::AlreadyRunning(
                     socket_path.display().to_string(),
                 ));
-            }
-            Err(e) if matches!(e.kind(), ErrorKind::ConnectionRefused | ErrorKind::NotFound) => {
-                // Stale socket left by a crashed process: safe to remove before binding.
-                let _ = fs::remove_file(socket_path);
             }
             Err(e) => {
                 return Err(IpcSocketError::AlreadyRunning(format!(
@@ -330,6 +377,11 @@ fn handle_client_connection<F>(mut stream: UnixStream, handler: &F)
 where
     F: Fn(IpcCommand) -> IpcResponse,
 {
+    // On macOS/BSD, accepted sockets inherit O_NONBLOCK from a non-blocking UnixListener.
+    // Explicitly restore blocking mode so read/write timeouts govern I/O instead of returning EAGAIN.
+    if stream.set_nonblocking(false).is_err() {
+        return;
+    }
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(3)));
 
@@ -355,6 +407,13 @@ where
             if trimmed.is_empty() {
                 return;
             }
+            if trimmed == INTERNAL_PROBE_PAYLOAD {
+                if let Ok(encoded) = serde_json::to_string(&IpcResponse::ok("alive")) {
+                    let _ = writeln!(stream, "{encoded}");
+                    let _ = stream.flush();
+                }
+                return;
+            }
             match serde_json::from_str::<IpcCommand>(trimmed) {
                 Ok(cmd) => handler(cmd),
                 Err(err) => IpcResponse::err(format!("Invalid IPC command: {err}")),
@@ -370,7 +429,7 @@ where
 }
 
 pub fn send_command(socket_path: &Path, cmd: &IpcCommand) -> Result<IpcResponse, IpcSocketError> {
-    send_command_with_timeout(socket_path, cmd, Duration::from_secs(5))
+    send_command_with_timeout(socket_path, cmd, Duration::from_secs(12))
 }
 
 pub fn send_command_with_timeout(

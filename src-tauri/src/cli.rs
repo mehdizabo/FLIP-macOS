@@ -418,23 +418,45 @@ pub fn resolve_cli_path(raw: &Path, cwd: Option<&Path>) -> PathBuf {
 pub fn launch_flip_host_app() -> Result<(), String> {
     let current_exe = std::env::current_exe().ok();
     if let Some(bundle) = resolve_app_bundle_path(current_exe.as_deref()) {
-        let status = Command::new("/usr/bin/open")
-            .arg("-g")
-            .arg("-a")
-            .arg(&bundle)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|e| format!("Failed to launch `{}`: {e}", bundle.display()))?;
-        if status.success() {
-            return Ok(());
+        let mut last_err = String::new();
+        for attempt in 0..15 {
+            let output = Command::new("/usr/bin/open")
+                .arg("-g")
+                .arg("-a")
+                .arg(&bundle)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .output()
+                .map_err(|e| format!("Failed to launch `{}`: {e}", bundle.display()))?;
+            if output.status.success() {
+                return Ok(());
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            last_err = if stderr.is_empty() {
+                format!(
+                    "`open -a {}` exited with status {:?}",
+                    bundle.display(),
+                    output.status.code()
+                )
+            } else {
+                format!(
+                    "`open -a {}` exited with status {:?}: {stderr}",
+                    bundle.display(),
+                    output.status.code()
+                )
+            };
+            // macOS LaunchServices returns -609 / -600 while an exiting instance finishes AppKit teardown.
+            if attempt < 14
+                && (stderr.contains("-609")
+                    || stderr.contains("-600")
+                    || crate::core::startup::is_gui_instance_running())
+            {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            break;
         }
-        return Err(format!(
-            "`open -a {}` exited with status {:?}",
-            bundle.display(),
-            status.code()
-        ));
+        return Err(last_err);
     }
 
     if let Some(exe) = resolve_cli_executable(current_exe.as_deref()).or(current_exe) {
@@ -508,7 +530,25 @@ where
 {
     let cmd_name = ipc_command_name(&ipc_cmd);
 
-    match ipc_socket::send_command(socket_path, &ipc_cmd) {
+    let initial_send = match ipc_socket::send_command(socket_path, &ipc_cmd) {
+        Ok(resp) if launch_if_offline && resp.error.as_deref() == Some("FLIP is shutting down") => {
+            let mut settled = Err(IpcSocketError::NotRunning(socket_path.display().to_string()));
+            for _ in 0..40 {
+                std::thread::sleep(Duration::from_millis(50));
+                match ipc_socket::send_command(socket_path, &ipc_cmd) {
+                    Ok(r) if r.error.as_deref() == Some("FLIP is shutting down") => continue,
+                    other => {
+                        settled = other;
+                        break;
+                    }
+                }
+            }
+            settled
+        }
+        other => other,
+    };
+
+    match initial_send {
         Ok(resp) => format_ipc_outcome(cmd_name, resp, false),
         Err(IpcSocketError::NotRunning(_)) if !launch_if_offline => {
             let msg = "FLIP is not running.".to_string();
@@ -544,6 +584,11 @@ where
             let deadline = Instant::now() + wait_timeout;
             loop {
                 match ipc_socket::send_command(socket_path, &ipc_cmd) {
+                    Ok(resp) if resp.error.as_deref() == Some("FLIP is shutting down")
+                        && Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
                     Ok(resp) => return format_ipc_outcome(cmd_name, resp, true),
                     Err(IpcSocketError::NotRunning(_)) if Instant::now() < deadline => {
                         std::thread::sleep(Duration::from_millis(50));
@@ -600,7 +645,7 @@ pub fn execute_cli_command_in(
         prefs,
         cwd,
         &default_sock,
-        Duration::from_secs(5),
+        Duration::from_secs(8),
         launch_flip_host_app,
     )
 }
@@ -740,11 +785,34 @@ where
                 .iter()
                 .map(|p| resolve_cli_path(p, cwd).to_string_lossy().into_owned())
                 .collect();
-            let folder = if mode.as_deref() == Some("new")
-                && resolved_files.len() == 1
-                && Path::new(&resolved_files[0]).is_dir()
-            {
-                Some(resolved_files.remove(0))
+            let folder = if mode.as_deref() == Some("new") && !resolved_files.is_empty() {
+                let first = PathBuf::from(&resolved_files[0]);
+                if first.is_dir() {
+                    resolved_files.clear();
+                    Some(first.to_string_lossy().into_owned())
+                } else if first.is_file() {
+                    resolved_files.clear();
+                    first
+                        .parent()
+                        .filter(|p| p.is_dir())
+                        .map(|p| p.to_string_lossy().into_owned())
+                } else {
+                    let msg = format!(
+                        "Target path does not exist: `{}`",
+                        first.display()
+                    );
+                    let err_json = serde_json::to_string_pretty(&json!({
+                        "success": false,
+                        "command": "open_wheel",
+                        "error": msg,
+                    }))
+                    .unwrap_or_else(|_| "{\"success\":false}".to_string());
+                    return CliOutcome {
+                        exit_code: 1,
+                        stdout: format!("{err_json}\n"),
+                        stderr: format!("{msg}\n"),
+                    };
+                }
             } else {
                 None
             };
@@ -1174,6 +1242,41 @@ mod tests {
         );
         assert_eq!(quit_out.exit_code, 0);
 
+        // 4. `flip wheel --mode new` with existing dir, existing file, and nonexistent path
+        let sub_folder = work_dir.join("notes_dir");
+        fs::create_dir_all(&sub_folder).unwrap();
+        let w_dir_out = execute_cli_command_with_ipc(
+            parse_cli_args(["flip", "wheel", "--mode", "new", "./notes_dir"]).unwrap(),
+            &prefs,
+            Some(&work_dir),
+            &sock,
+            Duration::from_secs(1),
+            || panic!("server already running"),
+        );
+        assert_eq!(w_dir_out.exit_code, 0);
+
+        let sub_file = sub_folder.join("doc.txt");
+        fs::write(&sub_file, b"hi").unwrap();
+        let w_file_out = execute_cli_command_with_ipc(
+            parse_cli_args(["flip", "wheel", "--mode", "new", "notes_dir/doc.txt"]).unwrap(),
+            &prefs,
+            Some(&work_dir),
+            &sock,
+            Duration::from_secs(1),
+            || panic!("server already running"),
+        );
+        assert_eq!(w_file_out.exit_code, 0);
+
+        let w_missing_out = execute_cli_command_with_ipc(
+            parse_cli_args(["flip", "wheel", "--mode", "new", "./missing_dir"]).unwrap(),
+            &prefs,
+            Some(&work_dir),
+            &sock,
+            Duration::from_secs(1),
+            || panic!("must fail before launching on nonexistent path"),
+        );
+        assert_eq!(w_missing_out.exit_code, 1);
+
         let recorded = received.lock().unwrap().clone();
         assert_eq!(
             recorded,
@@ -1191,6 +1294,16 @@ mod tests {
                     ],
                 },
                 IpcCommand::Quit,
+                IpcCommand::OpenWheel {
+                    mode: Some("new".to_string()),
+                    files: vec![],
+                    folder: Some(lexical_normalize(&sub_folder).to_string_lossy().into_owned()),
+                },
+                IpcCommand::OpenWheel {
+                    mode: Some("new".to_string()),
+                    files: vec![],
+                    folder: Some(lexical_normalize(&sub_folder).to_string_lossy().into_owned()),
+                },
             ]
         );
 

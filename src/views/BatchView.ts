@@ -570,19 +570,6 @@ export function mountBatchView(root: HTMLElement): () => void {
   const unlistenFns: Array<() => void> = [];
 
   void (async () => {
-    const handoff = consumeBatchHandoff();
-    if (handoff.results) results = handoff.results;
-    if (handoff.files.length > 0) {
-      await setFiles(handoff.files);
-    } else {
-      const ws = await getWheelState().catch(() => null);
-      if (!disposed && ws && ws.files.length > 0) {
-        await setFiles(ws.files);
-      } else {
-        render();
-      }
-    }
-
     const subs = await Promise.all([
       events.onConversionProgress((p) => {
         if (disposed || !busy) return;
@@ -623,6 +610,19 @@ export function mountBatchView(root: HTMLElement): () => void {
       return;
     }
     unlistenFns.push(...subs);
+
+    const handoff = consumeBatchHandoff();
+    if (handoff.results) results = handoff.results;
+    if (handoff.files.length > 0) {
+      await setFiles(handoff.files);
+    } else if (files.length === 0) {
+      const ws = await getWheelState().catch(() => null);
+      if (!disposed && files.length === 0 && ws && ws.files.length > 0) {
+        await setFiles(ws.files);
+      } else if (!disposed && files.length === 0) {
+        render();
+      }
+    }
   })();
 
   return () => {

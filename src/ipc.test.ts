@@ -299,5 +299,7 @@ describe("Frontend IPC surface & contract alignment", () => {
     expect(defaultPreferences().preferredFormats.document).toContain("HEIC");
     expect(defaultPreferences().preferredFormats.document).toContain("EPUB");
     expect(defaultPreferences().preferredFormats.pdf).toContain("TIFF");
+    expect(defaultPreferences().preferredFormats.pdf.slice(0, 7)).toContain("OPTIMIZE_PDF");
+    expect(defaultPreferences().preferredFormats.image.slice(0, 7)).toContain("REMOVE_BG");
   });
 });

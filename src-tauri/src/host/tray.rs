@@ -507,15 +507,23 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     std::thread::spawn(move || {
                         let prefs = state.prefs.lock().map(|g| g.clone()).unwrap_or_default();
                         let (selected, _) = query_finder_context_or_fallback(&prefs);
-                        if !selected.is_empty() {
-                            if let Ok(mut w) = state.wheel.lock() {
-                                if !w.is_open {
-                                    w.payload.files = selected.clone();
+                        let should_emit = if !selected.is_empty() {
+                            if let Ok(mut pending) = state.pending_batch_files.lock() {
+                                if state.batch_mounted.load(Ordering::SeqCst) {
+                                    *pending = None;
+                                    true
+                                } else {
+                                    *pending = Some(selected.clone());
+                                    false
                                 }
+                            } else {
+                                true
                             }
-                        }
+                        } else {
+                            false
+                        };
                         let _ = show_standard_window(&app_h, &state, "batch");
-                        if !selected.is_empty() {
+                        if should_emit {
                             if let Some(win) = app_h.get_webview_window("batch") {
                                 let _ = win.emit(
                                     "batch:files",

@@ -196,10 +196,10 @@ enum MediaAndDocs {
     }
 
     // MARK: - PDFKit + Vision OCR
-    private static func renderPageToCGImage(_ page: PDFPage, dpi: CGFloat) throws -> CGImage {
+    private static func renderPageToCGImage(_ page: PDFPage, dpi: CGFloat, box: PDFDisplayBox = .mediaBox) throws -> CGImage {
         let scale = dpi / 72.0
-        let mediaBox = page.bounds(for: .mediaBox)
-        let transform = page.transform(for: .mediaBox)
+        let mediaBox = page.bounds(for: box)
+        let transform = page.transform(for: box)
         let displayBox = mediaBox.applying(transform)
 
         let width = max(1, Int((displayBox.width * scale).rounded()))
@@ -222,7 +222,7 @@ enum MediaAndDocs {
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
         ctx.scaleBy(x: scale, y: scale)
         ctx.translateBy(x: -displayBox.origin.x, y: -displayBox.origin.y)
-        page.draw(with: .mediaBox, to: ctx)
+        page.draw(with: box, to: ctx)
 
         guard let cgImage = ctx.makeImage() else {
             throw BridgeError.operationFailed("Failed to render PDF page to image")
@@ -505,9 +505,9 @@ enum MediaAndDocs {
                     guard let page = doc.page(at: idx), let pageRef = page.pageRef else {
                         throw BridgeError.operationFailed("Failed to load PDF page \(idx + 1)")
                     }
-                    let mb = page.bounds(for: .mediaBox)
-                    let tr = page.transform(for: .mediaBox)
-                    let db = mb.applying(tr)
+                    let crop = page.bounds(for: .cropBox)
+                    let tr = page.transform(for: .cropBox)
+                    let db = crop.applying(tr)
                     var targetBox = CGRect(
                         origin: .zero,
                         size: CGSize(width: max(1, db.width), height: max(1, db.height))
@@ -515,8 +515,9 @@ enum MediaAndDocs {
                     let boxData = Data(bytes: &targetBox, count: MemoryLayout<CGRect>.size) as CFData
                     outCtx.beginPDFPage([kCGPDFContextMediaBox: boxData] as CFDictionary)
                     outCtx.saveGState()
+                    outCtx.clip(to: targetBox)
                     let drawTransform = pageRef.getDrawingTransform(
-                        .mediaBox,
+                        .cropBox,
                         rect: targetBox,
                         rotate: 0,
                         preserveAspectRatio: true
@@ -534,14 +535,14 @@ enum MediaAndDocs {
                     guard let page = doc.page(at: idx) else {
                         throw BridgeError.operationFailed("Failed to load PDF page \(idx + 1)")
                     }
-                    let mb = page.bounds(for: .mediaBox)
-                    let tr = page.transform(for: .mediaBox)
-                    let db = mb.applying(tr)
+                    let crop = page.bounds(for: .cropBox)
+                    let tr = page.transform(for: .cropBox)
+                    let db = crop.applying(tr)
                     var targetBox = CGRect(
                         origin: .zero,
                         size: CGSize(width: max(1, db.width), height: max(1, db.height))
                     )
-                    let cgImg = try renderPageToCGImage(page, dpi: 144.0)
+                    let cgImg = try renderPageToCGImage(page, dpi: 144.0, box: .cropBox)
                     let jpgData = NSMutableData()
                     guard let jpgDest = CGImageDestinationCreateWithData(
                         jpgData as CFMutableData,

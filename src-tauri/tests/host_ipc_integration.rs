@@ -343,6 +343,21 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
     assert!(state.pending_settings_nav.lock().unwrap().is_none());
     assert!(state.settings_mounted.load(std::sync::atomic::Ordering::SeqCst));
 
+    // Cold CLI/tray batch handoff: pending batch files queue without polluting wheel.payload
+    assert!(!state.batch_mounted.load(std::sync::atomic::Ordering::SeqCst));
+    *state.pending_batch_files.lock().unwrap() = Some(vec!["/tmp/cold1.png".into(), "/tmp/cold2.jpg".into()]);
+    assert!(state.wheel.lock().unwrap().payload.files.is_empty());
+    let batch_consumed = state.pending_batch_files.lock().unwrap().take();
+    state
+        .batch_mounted
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        batch_consumed,
+        Some(vec!["/tmp/cold1.png".to_string(), "/tmp/cold2.jpg".to_string()])
+    );
+    assert!(state.pending_batch_files.lock().unwrap().is_none());
+    assert!(state.batch_mounted.load(std::sync::atomic::Ordering::SeqCst));
+
     let redacted = redact_user_paths(
         "/Users/tester/Desktop/a.png /private/var/folders/12/abcd/T/b.txt flip://convert?file=%2FUsers%2Ftester%2Fc.md",
     );
@@ -779,6 +794,40 @@ fn unix_socket_ipc_roundtrips_permissions_and_stale_recovery() {
         Err(IpcSocketError::InvalidSocketPath(_))
     ));
 
+    // 5b. Delayed-write client must NOT fail with EAGAIN/os error 35 on macOS inherited O_NONBLOCK
+    {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        let mut raw_stream = UnixStream::connect(&sock_path).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(75));
+        writeln!(raw_stream, r#"{{"cmd":"ping"}}"#).unwrap();
+        raw_stream.flush().unwrap();
+        let mut resp_line = String::new();
+        BufReader::new(raw_stream).read_line(&mut resp_line).unwrap();
+        let parsed: IpcResponse = serde_json::from_str(resp_line.trim()).unwrap();
+        assert!(parsed.ok);
+        assert_eq!(parsed.message.as_deref(), Some("pong"));
+    }
+
+    // 5c. Concurrent clients succeed cleanly
+    let mut client_threads = Vec::new();
+    for idx in 0..8 {
+        let p = sock_path.clone();
+        client_threads.push(std::thread::spawn(move || {
+            let r = send_command(
+                &p,
+                &IpcCommand::OpenBatch {
+                    files: vec![format!("/tmp/c_{idx}.png")],
+                },
+            )
+            .unwrap();
+            assert!(r.ok);
+        }));
+    }
+    for t in client_threads {
+        t.join().unwrap();
+    }
+
     // 6. Stopping server removes socket cleanly and subsequent send reports NotRunning
     server.stop();
     assert!(!sock_path.exists());
@@ -786,4 +835,29 @@ fn unix_socket_ipc_roundtrips_permissions_and_stale_recovery() {
         send_command(&sock_path, &IpcCommand::Ping),
         Err(IpcSocketError::NotRunning(_))
     ));
+
+    // 7. Dying/inherited-fd non-accepting listener (closes after 25ms) must be recovered,
+    //    whereas a persistently open bare UnixListener must NOT be clobbered.
+    {
+        let inherited_sock = sock_dir.join("inherited-dying.sock");
+        let dying_listener = UnixListener::bind(&inherited_sock).unwrap();
+        let dropper = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            drop(dying_listener);
+        });
+        let mut recovered = start_server(&inherited_sock, |_| IpcResponse::ok("recovered"))
+            .expect("start_server must recover short-lived dying/inherited listener socket");
+        recovered.stop();
+        dropper.join().unwrap();
+
+        let live_bare_sock = sock_dir.join("live-bare.sock");
+        let _active_bare = UnixListener::bind(&live_bare_sock).unwrap();
+        assert!(
+            matches!(
+                start_server(&live_bare_sock, |_| IpcResponse::ok("clobber")),
+                Err(IpcSocketError::AlreadyRunning(_))
+            ),
+            "start_server must not clobber a persistently open bare UnixListener"
+        );
+    }
 }

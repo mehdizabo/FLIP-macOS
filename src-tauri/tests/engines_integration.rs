@@ -1714,11 +1714,55 @@ fn zip_and_unzip_roundtrip_dedup_collisions_and_safety_rejections() {
     let forged_res =
         convert_files(std::slice::from_ref(&forged_zip), &["UNZIP".into()], &prefs, &cancel, None)
             .unwrap();
+    let forged_err = forged_res[0].error.as_deref().unwrap_or("");
     assert!(
-        forged_res[0].error.is_some(),
-        "forged header bomb unexpectedly succeeded"
+        forged_err.contains("256 MiB"),
+        "expected 256 MiB bomb error for forged header bomb, got: {forged_err:?}"
     );
     assert!(!dir.path().join("forged_bomb").exists());
+
+    // 8c. Zip directory entry marked via Unix S_IFDIR mode without trailing `/` extracts as dir cleanly
+    let s_ifdir_zip = dir.path().join("unix_dir.zip");
+    {
+        let mut zw = ZipWriter::new(File::create(&s_ifdir_zip).unwrap());
+        zw.start_file(
+            "subdir",
+            SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Stored)
+                .unix_permissions(0o755),
+        )
+        .unwrap();
+        zw.start_file("subdir/hello.txt", SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(b"inside unix S_IFDIR").unwrap();
+        zw.finish().unwrap();
+    }
+    {
+        let mut raw = fs::read(&s_ifdir_zip).unwrap();
+        let mut patched = false;
+        for idx in 0..raw.len().saturating_sub(52) {
+            if &raw[idx..idx + 4] == b"PK\x01\x02" {
+                let nlen = u16::from_le_bytes([raw[idx + 28], raw[idx + 29]]) as usize;
+                if nlen == 6 && idx + 46 + nlen <= raw.len() && &raw[idx + 46..idx + 52] == b"subdir" {
+                    let dir_mode = (0o040755u16).to_le_bytes();
+                    raw[idx + 40..idx + 42].copy_from_slice(&dir_mode);
+                    patched = true;
+                }
+            }
+        }
+        assert!(patched, "failed to locate central header for subdir");
+        fs::write(&s_ifdir_zip, &raw).unwrap();
+    }
+    let s_ifdir_res =
+        convert_files(std::slice::from_ref(&s_ifdir_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(s_ifdir_res[0].error.is_none(), "{:?}", s_ifdir_res[0].error);
+    let s_ifdir_out = PathBuf::from(&s_ifdir_res[0].outputs[0]);
+    assert!(s_ifdir_out.join("subdir").is_dir());
+    assert_eq!(
+        fs::read_to_string(s_ifdir_out.join("subdir/hello.txt")).unwrap(),
+        "inside unix S_IFDIR"
+    );
 
     assert_no_residual_staging(dir.path());
 }
@@ -1776,6 +1820,54 @@ fn vision_remove_bg_cuts_subject_and_rejects_blank_image() {
         "unexpected blank REMOVE_BG error: {blank_err:?}"
     );
     assert!(!dir.path().join("blank 2.png").exists());
+
+    // EXIF Orientation=6 JPEG normalizes upright before Vision mask generation
+    let exif6_jpg = dir.path().join("cover_exif6.jpg");
+    let mk_exif6 = dir.path().join("mk_exif6_bg.swift");
+    fs::write(
+        &mk_exif6,
+        format!(
+            r#"import Foundation
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
+let src = CGImageSourceCreateWithURL(URL(fileURLWithPath: "{}") as CFURL, nil)!
+let cg = CGImageSourceCreateImageAtIndex(src, 0, nil)!
+let w = cg.width, h = cg.height
+let cs = CGColorSpace(name: CGColorSpace.sRGB)!
+let rot = CGContext(data: nil, width: h, height: w, bitsPerComponent: 8, bytesPerRow: 0, space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+rot.translateBy(x: CGFloat(h), y: 0)
+rot.rotate(by: .pi / 2)
+rot.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+let rotCg = rot.makeImage()!
+let dest = CGImageDestinationCreateWithURL(URL(fileURLWithPath: "{}") as CFURL, UTType.jpeg.identifier as CFString, 1, nil)!
+CGImageDestinationAddImage(dest, rotCg, [kCGImagePropertyOrientation: 6] as CFDictionary)
+CGImageDestinationFinalize(dest)
+"#,
+            cover_png.display(),
+            exif6_jpg.display()
+        ),
+    )
+    .unwrap();
+    assert!(Command::new("/usr/bin/swift").arg(&mk_exif6).status().unwrap().success());
+    let exif6_res = convert_files(
+        std::slice::from_ref(&exif6_jpg),
+        &["REMOVE_BG".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(exif6_res[0].error.is_none(), "EXIF6 REMOVE_BG failed: {:?}", exif6_res[0].error);
+    let exif6_out = PathBuf::from(&exif6_res[0].outputs[0]);
+    let exif6_rgba = image::open(&exif6_out).unwrap().to_rgba8();
+    assert_eq!(
+        exif6_rgba.dimensions(),
+        image::image_dimensions(&cover_png).unwrap(),
+        "EXIF Orientation=6 REMOVE_BG output must be upright"
+    );
+    assert!(exif6_rgba.pixels().filter(|p| p[3] < 20).count() > 1000);
+
     assert_no_residual_staging(dir.path());
 }
 
@@ -1849,5 +1941,97 @@ fn optimize_pdf_shrinks_heavy_pdf_preserves_text_and_rejects_over_200_pages() {
         "expected 200-page limit error, got: {over_err:?}"
     );
     assert!(!dir.path().join("too_many_pages 2.pdf").exists());
+
+    // 3. Reject locked/encrypted PDF and preserve CropBox + Rotate 90 dimensions
+    let locked_pdf = dir.path().join("locked_opt.pdf");
+    let crop_rot_pdf = dir.path().join("crop_rot90.pdf");
+    let crop_raw = b"%PDF-1.4\n\
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /CropBox [50 50 350 450] /Rotate 90 /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n\
+4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n\
+5 0 obj << /Length 44 >> stream\n\
+BT /F1 18 Tf 100 200 Td (CROP ROT90) Tj ET\n\
+endstream endobj\n\
+xref\n0 6\n\
+0000000000 65535 f \n\
+0000000009 00000 n \n\
+0000000058 00000 n \n\
+0000000115 00000 n \n\
+0000000284 00000 n \n\
+0000000352 00000 n \n\
+trailer << /Size 6 /Root 1 0 R >>\nstartxref\n446\n%%EOF\n";
+    fs::write(&crop_rot_pdf, crop_raw).unwrap();
+
+    let lock_script = dir.path().join("lock_opt_pdf.swift");
+    fs::write(
+        &lock_script,
+        format!(
+            r#"import Foundation
+import PDFKit
+let doc = PDFDocument(url: URL(fileURLWithPath: "{}"))!
+doc.write(to: URL(fileURLWithPath: "{}"), withOptions: [.userPasswordOption: "secret", .ownerPasswordOption: "owner"])
+"#,
+            heavy_pdf.display(),
+            locked_pdf.display()
+        ),
+    )
+    .unwrap();
+    assert!(Command::new("/usr/bin/swift").arg(&lock_script).status().unwrap().success());
+
+    let locked_res = convert_files(
+        std::slice::from_ref(&locked_pdf),
+        &["OPTIMIZE_PDF".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(
+        locked_res[0]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains("password"),
+        "expected password/encrypted error, got: {:?}",
+        locked_res[0].error
+    );
+
+    let crop_opt_res = convert_files(
+        std::slice::from_ref(&crop_rot_pdf),
+        &["OPTIMIZE_PDF".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(crop_opt_res[0].error.is_none(), "{:?}", crop_opt_res[0].error);
+    let crop_opt_out = PathBuf::from(&crop_opt_res[0].outputs[0]);
+    let check_crop = dir.path().join("check_crop_opt.swift");
+    fs::write(
+        &check_crop,
+        format!(
+            r#"import Foundation
+import PDFKit
+let doc = PDFDocument(url: URL(fileURLWithPath: "{}"))!
+let page = doc.page(at: 0)!
+let box = page.bounds(for: .cropBox)
+// CropBox [50 50 350 450] is 300x400; rotated 90 degrees becomes 400x300
+assert(abs(box.width - 400.0) < 2.0 && abs(box.height - 300.0) < 2.0, "unexpected cropped rotated bounds: \(box)")
+assert((page.string ?? "").contains("CROP ROT90"), "lost text: \(page.string ?? "")")
+print("CROP_ROT_OK")
+"#,
+            crop_opt_out.display()
+        ),
+    )
+    .unwrap();
+    let check_out = Command::new("/usr/bin/swift").arg(&check_crop).output().unwrap();
+    assert!(
+        check_out.status.success() && String::from_utf8_lossy(&check_out.stdout).contains("CROP_ROT_OK"),
+        "CropBox/Rotate90 check failed: {}",
+        String::from_utf8_lossy(&check_out.stderr)
+    );
+
     assert_no_residual_staging(dir.path());
 }

@@ -43,15 +43,23 @@ fn dispatch_open_batch(
     files: Vec<String>,
 ) -> Result<(), String> {
     state.opened_from_url.store(true, Ordering::Relaxed);
-    if !files.is_empty() {
-        if let Ok(mut w) = state.wheel.lock() {
-            if !w.is_open {
-                w.payload.files = files.clone();
+    let should_emit = if !files.is_empty() {
+        if let Ok(mut pending) = state.pending_batch_files.lock() {
+            if state.batch_mounted.load(Ordering::SeqCst) {
+                *pending = None;
+                true
+            } else {
+                *pending = Some(files.clone());
+                false
             }
+        } else {
+            true
         }
-    }
+    } else {
+        false
+    };
     show_standard_window(app, state, "batch")?;
-    if !files.is_empty() {
+    if should_emit {
         if let Some(win) = app.get_webview_window("batch") {
             let _ = win.emit(
                 "batch:files",
@@ -98,6 +106,28 @@ fn dispatch_open_wheel(
         };
         ("convert", ctx_files, folder.or(Some(ctx_folder)))
     } else {
+        if folder.is_none() && files.len() == 1 {
+            let p = Path::new(&files[0]);
+            let ext = p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .unwrap_or_default();
+            let is_iwork = matches!(ext.as_str(), "pages" | "numbers" | "key");
+            if p.is_dir() && !is_iwork {
+                return present_wheel_at(
+                    app,
+                    state,
+                    "new",
+                    Vec::new(),
+                    false,
+                    Some(files[0].clone()),
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
         let (ctx_files, ctx_folder) = if files.is_empty() {
             query_finder_context_or_fallback(&prefs)
         } else {
@@ -325,7 +355,18 @@ fn handle_opened_urls(app: &AppHandle, state: &Arc<HostState>, urls: &[Url]) {
     }
 }
 
-fn handle_ipc_command(app: &AppHandle, state: &Arc<HostState>, cmd: IpcCommand) -> IpcResponse {
+fn handle_ipc_command(
+    app: &AppHandle,
+    state: &Arc<HostState>,
+    ipc_slot: &Arc<Mutex<Option<IpcServerHandle>>>,
+    cmd: IpcCommand,
+) -> IpcResponse {
+    if state.shutting_down.load(Ordering::Relaxed) {
+        return match cmd {
+            IpcCommand::Quit => IpcResponse::ok("quitting"),
+            _ => IpcResponse::err("FLIP is shutting down"),
+        };
+    }
     match cmd {
         IpcCommand::Ping => IpcResponse::ok("pong"),
         IpcCommand::Activate => {
@@ -397,8 +438,14 @@ fn handle_ipc_command(app: &AppHandle, state: &Arc<HostState>, cmd: IpcCommand) 
             state.shutting_down.store(true, Ordering::Relaxed);
             state.send_monitor_command(serde_json::json!({ "cmd": "quit" }));
             let app_h = app.clone();
+            let slot_for_quit = Arc::clone(ipc_slot);
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_millis(25));
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                if let Ok(mut guard) = slot_for_quit.lock() {
+                    if let Some(mut server) = guard.take() {
+                        server.stop();
+                    }
+                }
                 app_h.exit(0);
             });
             IpcResponse::ok("quitting")
@@ -436,22 +483,58 @@ fn try_forward_to_running_instance(
         None => IpcCommand::Activate,
     };
 
-    if let Ok(resp) = ipc_socket::send_command(socket_path, &cmd) {
-        if resp.ok {
+    match ipc_socket::send_command(socket_path, &cmd) {
+        Ok(resp) if resp.error.as_deref() == Some("FLIP is shutting down") => {
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                match ipc_socket::send_command(socket_path, &cmd) {
+                    Ok(r) if r.error.as_deref() == Some("FLIP is shutting down") => continue,
+                    Ok(r) => {
+                        if !r.ok {
+                            if let Some(err) = r.error {
+                                log_event("ipc.forward.rejected", Some(json!({ "error": err })));
+                            }
+                        }
+                        return true;
+                    }
+                    Err(ipc_socket::IpcSocketError::NotRunning(_)) => return false,
+                    Err(_) => break,
+                }
+            }
+        }
+        Ok(resp) => {
+            if !resp.ok {
+                if let Some(err) = resp.error {
+                    log_event("ipc.forward.rejected", Some(json!({ "error": err })));
+                }
+            }
             return true;
         }
+        Err(_) => {}
     }
 
     if startup::is_gui_instance_running() {
         for _ in 0..40 {
             std::thread::sleep(std::time::Duration::from_millis(50));
-            if let Ok(resp) = ipc_socket::send_command(socket_path, &cmd) {
-                if resp.ok {
+            match ipc_socket::send_command(socket_path, &cmd) {
+                Ok(resp) if resp.error.as_deref() == Some("FLIP is shutting down") => continue,
+                Ok(resp) => {
+                    if !resp.ok {
+                        if let Some(err) = resp.error {
+                            log_event("ipc.forward.rejected", Some(json!({ "error": err })));
+                        }
+                    }
                     return true;
                 }
+                Err(ipc_socket::IpcSocketError::NotRunning(_))
+                    if !startup::is_gui_instance_running() =>
+                {
+                    return false;
+                }
+                Err(_) => {}
             }
         }
-        return true;
+        return startup::is_gui_instance_running();
     }
 
     false
@@ -467,25 +550,36 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
         return;
     }
 
-    let _gui_lock = startup::acquire_gui_lock();
+    let mut _gui_lock = startup::acquire_gui_lock();
     if _gui_lock.is_none() {
-        if !is_login_item {
-            let cmd = match initial_url.as_deref() {
-                Some(url) => IpcCommand::OpenUrl {
-                    url: url.to_string(),
-                },
-                None => IpcCommand::Activate,
-            };
-            for _ in 0..40 {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+        let cmd = match initial_url.as_deref() {
+            Some(url) => IpcCommand::OpenUrl {
+                url: url.to_string(),
+            },
+            None => IpcCommand::Activate,
+        };
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if !is_login_item {
                 if let Ok(resp) = ipc_socket::send_command(&socket_path, &cmd) {
-                    if resp.ok {
+                    if resp.error.as_deref() != Some("FLIP is shutting down") {
+                        if !resp.ok {
+                            if let Some(err) = resp.error {
+                                log_event("ipc.forward.rejected", Some(json!({ "error": err })));
+                            }
+                        }
                         return;
                     }
                 }
             }
+            if let Some(lock) = startup::acquire_gui_lock() {
+                _gui_lock = Some(lock);
+                break;
+            }
         }
-        return;
+        if _gui_lock.is_none() {
+            return;
+        }
     }
 
     let mut prefs = AppPreferences::load();
@@ -532,8 +626,9 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
 
             let app_for_ipc = app.handle().clone();
             let state_for_ipc = Arc::clone(&state_for_setup);
+            let ipc_for_handler = Arc::clone(&ipc_for_setup);
             match ipc_socket::start_server(&socket_path, move |cmd| {
-                handle_ipc_command(&app_for_ipc, &state_for_ipc, cmd)
+                handle_ipc_command(&app_for_ipc, &state_for_ipc, &ipc_for_handler, cmd)
             }) {
                 Ok(handle) => {
                     if let Ok(mut guard) = ipc_for_setup.lock() {

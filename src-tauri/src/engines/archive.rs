@@ -232,7 +232,10 @@ pub fn unzip_archive(
         }
 
         let dest = extract_dir.join(&rel);
-        if entry.is_dir() || raw_name.ends_with('/') {
+        let is_dir_entry = entry.is_dir()
+            || raw_name.ends_with('/')
+            || entry.unix_mode().is_some_and(|m| (m & S_IFMT) == S_IFDIR);
+        if is_dir_entry {
             fs::create_dir_all(&dest)?;
             continue;
         }
