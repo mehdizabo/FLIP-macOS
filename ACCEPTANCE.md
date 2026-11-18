@@ -86,3 +86,20 @@ This checklist covers manual live-desktop QA on **macOS 27.2.1 (`26B131`) Golden
 - [ ] Run `open "flip://wheel?mode=new"` and `open "flip://settings?tab=engines"` from Terminal -> confirm matching windows open cleanly.
 - [ ] Shift/Option-click a sector (or tray `Batch / Multiple Formats…`) -> enqueue multiple files & multiple output formats (`PNG` + `PDF`), run batch conversion, cancel mid-queue, and inspect per-item progress/completion rows.
 - [ ] Verify CLI install/symlink (`which flip`) works (`flip --help`, `flip convert note.md --to EPUB`) and `Check for Updates` reports current release comparison cleanly.
+
+## 10. Single-Instance Socket IPC & CLI Control Commands (Step E)
+- [ ] With FLIP already running in the menu bar, inspect socket permissions: `ls -la ~/Library/Application\ Support/FLIP/flip-instance.sock` confirms owner-only `srwx------` (`0600`).
+- [ ] Run `flip wheel --mode new`, `flip wheel --mode convert <file>`, `flip settings`, and `flip batch <files...>` -> confirm each command drives the **existing** menu bar instance cleanly without spawning a duplicate process or Dock icon.
+- [ ] Quit FLIP cleanly with `flip quit` (or terminate the host), verify stale `flip-instance.sock` cleanup, and run `flip wheel` when FLIP is closed -> confirm CLI launches `FLIP.app` and opens the wheel automatically.
+
+## 11. Archives, Vision `REMOVE_BG`, `OPTIMIZE_PDF`, Native `CAF`/`FLAC`, Localization & Feedback Test (Steps F–G)
+- [ ] **Archives (`ZIP` / `UNZIP`)**: Drop multiple files in Finder -> invoke `ZIP` -> confirm single deduplicated `<stem>.zip` archive; trigger `UNZIP` on a `.zip` -> confirm extraction into collision-safe subfolder (`<stem>/...`) and clean rejection of malformed/traversal archives.
+- [ ] **Apple Vision Background Removal (`REMOVE_BG`)**: Trigger `REMOVE_BG` on a subject photo (e.g., portrait/object `.png`/`.jpg`) -> confirm transparent PNG cutout (`<stem>.png` or Finder counter if source is PNG); trigger `REMOVE_BG` on a blank solid-color image -> confirm clear error with redacted diagnostics option.
+- [ ] **PDF Optimization (`OPTIMIZE_PDF`)**: Trigger `OPTIMIZE_PDF` on a raster-heavy `.pdf` -> verify noticeable size reduction while searchable text remains selectable in Preview; verify encrypted/locked PDFs return a clean error rather than corrupting output.
+- [ ] **Native Zero-FFmpeg Audio (`CAF` & `FLAC`)**: Temporarily blank/hide FFmpeg path in `Settings -> Engines & Permissions` -> verify `CAF`, `FLAC`, `WAV`, `M4A`, `AIFF`, `ALAC` stay active in the wheel for `WAV`/`FLAC`/`CAF` files, while `MP3`/`OGG`/`OPUS` stay FFmpeg-gated (`FFmpeg` required).
+- [ ] **EN / IT UI Localization (`Settings -> General`)**: Switch **Language** between **English** and **Italiano** -> verify Settings, Radial Wheel (pills/subtitles/VoiceOver strings), Batch Converter, and Onboarding update dynamically in both languages and persist across restart.
+- [ ] **Sound & Haptics Preview Button**: Open `Settings -> General`:
+  - With both `Wheel tick sound` and `Trackpad haptics` ON -> click **Test Wheel Sound & Haptics** (`Prova suono e feedback aptico ruota`) -> confirm audible tick and Force Touch haptic feedback plus `"Sound & haptics played"` (`"Suono e aptica riprodotti"`).
+  - Toggle `Wheel tick sound` OFF and `Trackpad haptics` ON -> click preview -> confirm haptic-only pulse (no audio).
+  - Toggle `Wheel tick sound` ON and `Trackpad haptics` OFF -> click preview -> confirm acoustic tick only (no Force Touch pulse).
+  - Toggle both OFF -> click preview -> confirm muted feedback message (`"Sound & haptics are muted"`).

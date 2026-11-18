@@ -10,12 +10,12 @@ FLIP porta una ruota radiale veloce centrata sul cursore (ispirata all'Actions R
 
 ## Funzionalità principali
 
-- **Ruota Radiale Liquid Glass**: settori in vetro traslucido stratificato, riflessi speculari direzionali, animazioni a molla, anteprima QuickLook nell'hub centrale, selettore modalità `Convert` / `New File` (`Tab`), arco radiale di avanzamento con percentuale, **annunci VoiceOver live**, feedback acustico (`flip-tick.wav`) e aptico sul trackpad.
-- **App Menu Bar (`LSUIElement`)**: vive nella barra dei menu senza ingombrare il Dock (`Open FLIP Wheel`, `New File in Finder Folder…`, `Batch / Multiple Formats…`, `Settings & Shortcuts…`, `Open Templates Folder`, `Reveal Diagnostic Logs`, `Quit FLIP`).
+- **Ruota Radiale Liquid Glass**: settori in vetro traslucido stratificato, riflessi speculari direzionali, animazioni a molla, anteprima QuickLook nell'hub centrale, selettore modalità `Convert` / `New File` (`Tab`), arco radiale di avanzamento con percentuale, **annunci VoiceOver live**, **selettore lingua English / Italiano (`EN` / `IT`)**, feedback acustico (`flip-tick.wav`), aptico sul trackpad e pulsante **Prova suono e feedback aptico ruota**.
+- **App Menu Bar (`LSUIElement`) & IPC Single-Instance**: vive nella barra dei menu senza ingombrare il Dock (`Open FLIP Wheel`, `New File in Finder Folder…`, `Batch / Multiple Formats…`, `Settings & Shortcuts…`, `Open Templates Folder`, `Reveal Diagnostic Logs`, `Quit FLIP`). Garantisce istanza singola tramite `flock` e Unix domain socket locale (`flip-instance.sock`, permessi `0600`) per gestire Azioni Rapide, URL `flip://` e comandi di controllo CLI.
 - **Convertitore Batch & Multi-Formato**: converte più file verso uno o più formati contemporaneamente (`Shift+Click` su un settore, pulsante `Multi` al centro o dal menu nella menu bar).
 - **Naming senza sovrascrittura**:
   - **Conversioni**: ereditano direttamente il nome base del file originale (`photo.heic` → `photo.png`). In caso di collisione aggiunge il contatore stile Finder (`photo 2.png`, `photo 3.png`). Le esportazioni multipagina usano `<nome>-p001.<ext>`. Non attiva **mai** la rinomina inline sulle conversioni.
-  - **Staging atomico e protezioni**: ogni job lavora in `.flip-job-<uuid>`, valida gli output prima del commit atomico (`renamex_np(RENAME_EXCL)`), rifiuta symlink, alias del Finder, file iCloud non scaricati localmente e volumi di rete, limita i batch a 128 file, blocca immagini > 40 MP e archivi ZIP > 256 MiB / 4.096 entry, e sanitizza HTML offline.
+  - **Staging atomico e protezioni**: ogni job lavora in `.flip-job-<uuid>`, valida gli output prima del commit atomico (`renamex_np(RENAME_EXCL)`), rifiuta symlink, alias del Finder, file iCloud non scaricati localmente e volumi di rete, limita i batch a 128 file, blocca immagini > 40 MP, ottimizzazioni PDF oltre 200 pagine e archivi ZIP > 256 MiB / 4.096 entry / Zip-Slip, e sanitizza HTML offline.
 
 ---
 
@@ -46,15 +46,34 @@ FLIP aggiunge la creazione immediata di nuovi file nella cartella del Finder in 
 
 | Famiglia | Input | Output | Motori |
 |---|---|---|---|
-| **Immagini** | `PNG`, `JPG/JPEG`, `WEBP`, `HEIC/HEIF`, `AVIF`, `TIFF`, `GIF`, `BMP`, `ICNS`, `ICO` | `PNG`, `JPG`, `WEBP`, `HEIC`, `PDF`, `TIFF`, `GIF`, `BMP`, più `Combine into PDF` | `ImageIO` nativo (EXIF & rimozione GPS opzionale) + `image` Rust + `PDFKit` |
-| **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (con **Apple Vision** OCR per PDF scansionati), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo) (+ `FB2`/`RST` con Pandoc), `Merge PDFs` | `PDFKit` nativo + `Vision` (`VNRecognizeTextRequest`) + writer EPUB 3 in Rust |
-| **Documenti** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB` (+ `FB2`, `RST` con Pandoc) | `PDF` (A4/Letter impaginato), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `PNG`, `JPG`, `WEBP`, `HEIC` (+ `FB2`/`RST` con Pandoc) | `NSAttributedString` / CoreText nativo + `pulldown-cmark` + EPUB 3 nativo + `Pandoc` opzionale |
-| **Apple iWork** | `.pages`, `.numbers`, `.key` | `PDF` (+ `DOCX`/`RTF`/`TXT`/`EPUB` per Pages, `XLSX`/`CSV` per Numbers, `PPTX` per Keynote) | Anteprima QuickLook + AppleScript verso app Apple |
-| **Dati strutturati** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (appiattimento chiavi con punto), `TXT`, `MD`, `HTML`, `PDF` | Parser Rust nativi + CoreText PDF |
-| **Audio** | `MP3`, `WAV`, `M4A`, `AAC`, `AIFF`, `ALAC`, `CAF`, `FLAC`, `OGG`, `OPUS`, `WMA` | Nativi: `M4A`, `WAV`, `AIFF`, `ALAC` · Con FFmpeg: `MP3`, `M4A`, `WAV`, `FLAC`, `AIFF`, `ALAC`, `OGG`, `OPUS`, `AAC` | `AVFoundation` nativo + `afconvert` + `FFmpeg` opzionale |
-| **Video** | `MP4`, `MOV`, `M4V`, `MKV`, `WEBM`, `AVI`, `WMV` | Nativi: `MP4`, `MOV`, `M4V`, `M4A`, `WAV`, `GIF` animata · Con FFmpeg: + `MKV`, `WEBM`, `AVI`, `MP3` | `AVFoundation` nativo + `FFmpeg` opzionale (progresso in tempo reale & `Esc`) |
+| **Immagini** | `PNG`, `JPG/JPEG`, `WEBP`, `HEIC/HEIF`, `AVIF`, `TIFF`, `GIF`, `BMP`, `ICNS`, `ICO` | `PNG`, `JPG`, `WEBP`, `HEIC`, `PDF`, `TIFF`, `GIF`, `BMP`, `REMOVE_BG`, `ZIP`, più `Combine into PDF` | `ImageIO` nativo (EXIF & rimozione GPS opzionale) + `Vision` (`VNGenerateForegroundInstanceMaskRequest` `REMOVE_BG`) + `image` Rust + `PDFKit` |
+| **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (con **Apple Vision** OCR per PDF scansionati), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `OPTIMIZE_PDF` (compressione PDF preservando testo selezionabile), `ZIP` (+ `FB2`/`RST` con Pandoc), `Merge PDFs` | `PDFKit` / Quartz nativo + `Vision` (`VNRecognizeTextRequest`) + writer EPUB 3 in Rust |
+| **Documenti** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB` (+ `FB2`, `RST` con Pandoc) | `PDF` (A4/Letter impaginato), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `PNG`, `JPG`, `WEBP`, `HEIC`, `ZIP` (+ `FB2`/`RST` con Pandoc) | `NSAttributedString` / CoreText nativo + `pulldown-cmark` + EPUB 3 nativo + `Pandoc` opzionale |
+| **Apple iWork** | `.pages`, `.numbers`, `.key` | `PDF`, `ZIP` (+ `DOCX`/`RTF`/`TXT`/`EPUB` per Pages, `XLSX`/`CSV` per Numbers, `PPTX` per Keynote) | Anteprima QuickLook + AppleScript verso app Apple |
+| **Dati strutturati** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (appiattimento chiavi con punto), `TXT`, `MD`, `HTML`, `PDF`, `ZIP` | Parser Rust nativi + CoreText PDF |
+| **Audio** | `MP3`, `WAV`, `M4A`, `AAC`, `AIFF`, `ALAC`, `CAF`, `FLAC`, `OGG`, `OPUS`, `WMA` | **Nativi (zero FFmpeg)**: `M4A`, `WAV`, `FLAC`, `AIFF`, `ALAC`, `CAF` · Con FFmpeg: + `MP3`, `OGG`, `OPUS`, `AAC`, più `ZIP` | `AVFoundation` nativo + CoreAudio `ExtAudioFile` + `/usr/bin/afconvert` + `FFmpeg` opzionale |
+| **Video** | `MP4`, `MOV`, `M4V`, `MKV`, `WEBM`, `AVI`, `WMV` | Nativi: `MP4`, `MOV`, `M4V`, `M4A`, `WAV`, `GIF` animata, `ZIP` · Con FFmpeg: + `MKV`, `WEBM`, `AVI`, `MP3` | `AVFoundation` nativo + `FFmpeg` opzionale (progresso in tempo reale & `Esc`) |
+| **Archivi** | `ZIP` (e qualsiasi selezione di file) | `UNZIP` (estrazione sicura in sottocartella) · `ZIP` (creazione archivio senza sovrascritture) | Motore Rust `zip` (`archive.rs` con blocchi Zip-Slip e >256 MiB / 4.096 entry) |
 
-> **Nota sui tool opzionali**: FFmpeg e Pandoc **non** sono inclusi nel bundle. Installali via Homebrew (`brew install ffmpeg pandoc`) o indica i percorsi in **Settings → Engines & Permissions** per sbloccare formati extra (`MKV`/`WebM`/`MP3`/`FLAC`/`OGG` con FFmpeg e libri `FB2`/`RST` con Pandoc — **EPUB 3 è integrato nativamente senza Pandoc**).
+> **Nota sui tool opzionali**: FFmpeg e Pandoc **non** sono inclusi nel bundle. **EPUB 3 e le conversioni audio lossless `CAF` e `FLAC` funzionano nativamente senza FFmpeg e senza Pandoc.** Installa `brew install ffmpeg pandoc` (o indica i percorsi in **Settings → Engines & Permissions**) per sbloccare formati extra (`MKV`/`WebM`/`AVI`/`MP3`/`OGG`/`OPUS`/`AAC` con FFmpeg e libri `FB2`/`RST` con Pandoc).
+
+---
+
+## CLI e comandi di controllo
+
+FLIP include una CLI integrata in `FLIP.app/Contents/MacOS/flip` (collegabile in `~/.local/bin/flip` da **Settings → Engines & Permissions**):
+
+```bash
+flip                                          # Avvia app menu bar (istanza singola)
+flip convert <file...> --to <FMT[,FMT2]>      # Conversione locale con output JSON
+flip new <kind> [--in <folder>] [--no-rename] # Crea nuovo file/cartella
+flip wheel [--mode convert|new] [files...]    # Apre la ruota via Unix socket IPC
+flip settings                                 # Apre la finestra Impostazioni
+flip batch [files...]                         # Apre il convertitore Batch & Multi-Formato
+flip quit                                     # Chiude in modo pulito l'istanza attiva
+flip --help                                   # Guida rapida CLI
+flip --version                                # Mostra versione
+```
 
 ---
 
@@ -84,18 +103,19 @@ npm install
 cargo tauri dev
 ```
 
-### Packaging `.app` e firma ad-hoc locale
+### Packaging `.app`, `.dmg` e firma ad-hoc locale
 
-Compila il bridge nativo Swift, il frontend Vite, il bundle `.app` release, verifica l'inclusione di `flip-macos-bridge` (`+x`) e `flip-tick.wav`, e applica la firma ad-hoc con verifica rigorosa:
+Compila il bridge nativo Swift, il frontend Vite, il bundle `.app` release, verifica l'inclusione di `flip-macos-bridge` (`+x`) e `flip-tick.wav`, e applica la firma ad-hoc con verifica rigorosa in un solo comando (usa `--dmg` per generare anche l'immagine disco compressa e firmata):
 
 ```bash
-./scripts/build-macos.sh
+./scripts/build-macos.sh --dmg
 ```
 
-Output del bundle firmato:
+Output firmati:
 
 ```text
 src-tauri/target/release/bundle/macos/FLIP.app
+src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg
 ```
 
 Per firmare nuovamente o usare un certificato Developer ID / notarizzazione:
@@ -117,8 +137,10 @@ APPLE_NOTARY_PROFILE="notary-profile" \
 npx tsc --noEmit
 npm run build
 bun test
-cd src-tauri && cargo test
+cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 ```
+
+I risultati completi di test unitari, integrazione, stress a 50 cicli, benchmark di latenza e verifica `.app`/`.dmg` sono documentati in [`TEST_RESULTS.md`](TEST_RESULTS.md).
 
 ---
 

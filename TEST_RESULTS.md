@@ -1,7 +1,7 @@
 # Test & Compatibility Results (`FLIP-macOS-port` v0.1.0)
 
 Date: 2026-11-18  
-Commit Scope: Steps A–D complete (Native Pure-Rust EPUB 3 Engine, Interactive Preferred Format Ordering, VoiceOver Live Announcer, CI Workflow, Porting & Acceptance Docs, DMG Packager)
+Commit Scope: Steps A–H complete (`ZIP`/`UNZIP` archive engine, Apple Vision `REMOVE_BG`, Quartz `OPTIMIZE_PDF`, zero-FFmpeg CoreAudio/`afconvert` `CAF`/`FLAC`, single-instance Unix socket IPC + CLI control commands, `EN`/`IT` localization + `"Test Wheel Sound & Haptics"` button, 50-cycle & 20+10 stress/performance test suite, `.app` & `.dmg` release verification)
 
 ---
 
@@ -13,17 +13,17 @@ Verified host hardware & OS:
 - **Toolchain**:
   - Swift: `Apple Swift 6.3.2` (`swift-driver 1.148.6`, target `arm64-apple-macosx15.0` binary)
   - Rust / Cargo: `rustc 1.100.0` / `cargo 1.100.0`, `tauri-cli 2.12.4`
-  - Node.js: `v26.11.1`, Bun: `1.4.4`
+  - Node.js: `v26.11.1`, `npm 11.16.0`, Bun: `1.4.4`
 - **Optional External Engines on Test Host**:
-  - `FFmpeg`: Present (`/opt/homebrew/bin/ffmpeg` `8.1.1`)
+  - `FFmpeg`: Present (`/opt/homebrew/bin/ffmpeg` `8.1.1`) — note: zero-FFmpeg audio paths (`CAF`/`FLAC`/`M4A`/`WAV`/`AIFF`/`ALAC`) and zero-FFmpeg release CLI tests were explicitly verified with FFmpeg capability off and under `PATH=/usr/bin:/bin`
   - `Pandoc`: Not installed on host (built-in EPUB 3 runs completely Pandoc-free; Pandoc is only required for `FB2`/`RST`)
   - `Pages.app` / `Numbers.app` / `Keynote.app`: Not installed in `/Applications` on host
 
 | Target Platform | Architecture | Status | Notes |
 |---|---|---|---|
-| **macOS 27.2.1 (`26B131`)** | Apple Silicon (`arm64`) | **Verified (Automated Tests + `.app`/`.dmg` Build + CLI Smoke)** | Primary target; native `flip-macos-bridge`, Tauri v2 `.app`, and `.dmg` built and verified here. Live WindowServer GUI drag-drop & VoiceOver walkthrough checklist documented in [`ACCEPTANCE.md`](ACCEPTANCE.md). |
+| **macOS 27.2.1 (`26B131`)** | Apple Silicon (`arm64`) | **Verified (Automated Tests + Stress/Perf + `.app`/`.dmg` Build + CLI Smoke)** | Primary target; native `flip-macos-bridge`, Tauri v2 `.app`, and `.dmg` built and verified here. Live WindowServer GUI drag-drop & VoiceOver walkthrough checklist documented in [`ACCEPTANCE.md`](ACCEPTANCE.md). |
 | **macOS 26 (Tahoe / Liquid Glass)** | Apple Silicon (`arm64`) | **Not Executed on Host** | Deployment target is macOS 15.0+; CSS/WebKit Liquid Glass properties align, not tested on physical macOS 26 hardware. |
-| **macOS 15 (Sequoia fallback)** | Apple Silicon (`arm64`) | **Not Executed on Host** | Minimum deployment target (`-target arm64-apple-macosx15.0`, `minimumSystemVersion: 15.0`); not booted on physical macOS 15 hardware. |
+| **macOS 15 (Sequoia fallback)** | Apple Silicon (`arm64`) | **Not Executed on Host** | Minimum deployment target (`-target arm64-apple-macosx15.0`, `minimumSystemVersion: 15.0`); `.github/workflows/ci.yml` targets `macos-15` runner, not yet executed remotely on macOS 15 hardware. |
 | **Intel (`x86_64`)** | `x86_64` | **Not Supported / Not Tested** | Current bridge and DMG build target `arm64` only. |
 
 ---
@@ -32,60 +32,72 @@ Verified host hardware & OS:
 
 ### 2.1 Native Swift/AppKit Bridge (`./native-bridge/build.sh`)
 - **Result**: Passed (`exit 0`)
-- **Artifact**: `native-bridge/bin/flip-macos-bridge` (`437,312` bytes, `arm64`, `-rwxr-xr-x@`)
-- Compiled via `/usr/bin/swiftc -O -target arm64-apple-macosx15.0` using Command Line Tools only.
+- **Artifact**: `native-bridge/bin/flip-macos-bridge` (`467,376` bytes before bundle re-sign; `464,816` bytes inside signed `FLIP.app/Contents/Resources/flip-macos-bridge`, `arm64`, `-rwxr-xr-x@`)
+- Compiled via `/usr/bin/swiftc -O -target arm64-apple-macosx15.0` using Command Line Tools only (zero `Xcode.app` required).
 
 ### 2.2 TypeScript, Vite Production Build, and Bun Unit Tests
 Command: `npx tsc --noEmit && npm run build && bun test`
 - **TypeScript (`tsc --noEmit`)**: 0 errors
-- **Vite Production Build (`npm run build`)**: 20 modules transformed (`dist/index.html` 0.39 kB, CSS 25.06 kB, JS 142.54 kB)
-- **Bun Test Suite (`bun test`)**: **29 passed, 0 failed** across 2 files (`524` `expect()` assertions):
-  - `src/ipc.test.ts`: **3/3 passed** (Rust `AppPreferences` schema alignment including `HEIC` in document and `TIFF` in PDF preferences plus custom-order preservation on default backfill, mock IPC commands & events, and `DOC_NATIVE_EXTS` / `DOC_PANDOC_ONLY_EXTS` / `inspectFilesLocally` verifying `EPUB` works without Pandoc while `FB2`/`RST` remain Pandoc-gated)
-  - `src/wheelGeometry.test.ts`: **26/26 passed** (wheel format ordering, `reorderFormatList` / `moveFormatToIndex` clamping, SVG chamfered sector geometry for 1–8 sectors, 3° angular hysteresis + 0°/360° wraparound, progress arc geometry, pagination, hash routing, HTML escaping, Option-modified key token mapping, batch handoff, and VoiceOver live announcement formatters for `formatSectorAriaLabel`, open mode, page flips, 25/50/75% progress milestones, and completion/error/cancel states)
+- **Vite Production Build (`npm run build`)**: 21 modules transformed (`dist/index.html` 0.39 kB, `dist/assets/index-vTEYyANX.css` 25.06 kB, `dist/assets/index-ByTp273z.js` 194.95 kB in 226–236 ms)
+- **Bun Test Suite (`bun test`)**: **34 passed, 0 failed** across 3 files (`1,597` `expect()` assertions):
+  - `src/ipc.test.ts`: **4/4 passed** (Rust `AppPreferences` schema alignment including `language` & format lists, mock IPC commands & events including `"sound"`/`"tick"`/`"none"` feedback test & language updates, native Pandoc-free `EPUB 3`, and zero-FFmpeg `CAF`/`FLAC` audio capability policy)
+  - `src/wheelGeometry.test.ts`: **26/26 passed** (wheel format ordering, `reorderFormatList` / `moveFormatToIndex` clamping, SVG chamfered sector geometry for 1–8 sectors, 3° angular hysteresis + 0°/360° wraparound, progress arc geometry, pagination, hash routing, `inspectFilesLocally` coverage including `ZIP`/`UNZIP`/`REMOVE_BG`/`OPTIMIZE_PDF`, HTML escaping, Option-modified key token mapping, non-ASCII thumbnail btoa fallback, batch handoff, and VoiceOver live announcement formatters)
+  - `src/i18n.test.ts`: **4/4 passed** (`EN`/`IT` full key parity, non-empty dictionary validation, consistent placeholder tokens, clean interpolation without double substitution, safe fallback to English on invalid/empty inputs)
 
-### 2.3 Rust Clippy, Unit & Integration Test Suite (`cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test`)
+### 2.3 Rust Clippy, Unit, Engine/IPC Integration & Stress/Perf Suite (`cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test`)
 - **Clippy (`cargo clippy --all-targets -- -D warnings`)**: **Passed with 0 warnings**
-- **Cargo Test Suite (`cargo test` offline default suite)**: **70 passed, 0 failed, 1 ignored**
-  - **`flip_lib` unit tests**: **52/52 passed** (+ 1 `#[ignore]` live network test `live_github_update_check_and_tags_fallback`)
-    - Includes `engines::document::tests::epub3_writer_and_reader_produce_valid_container_and_wellformed_xhtml5`, `epub_reader_respects_spine_order_and_lexical_fallback_when_spine_incomplete`, and `html_comment_apostrophes_scripts_cdata_and_duplicate_heading_ids_handled_safely`
-    - Includes `core::policy::tests::txt_and_document_outputs_with_and_without_pandoc` (asserting `DOC_NATIVE_EXTS` contains `epub` and `DOC_PANDOC_ONLY_EXTS` keeps only `fb2`, `rst`) and `core::preferences::tests::sanitize_preserves_custom_order_while_backfilling_new_defaults`
-    - Includes `core::updater`, `core::logging` (redacted diagnostic bundle), `core::input_gate`, `core::naming`, `core::policy`, `core::preferences`, `core::quick_actions`, `core::staging`, `core::startup`, `cli`, `engines::data`, `host`, `host::monitor`, `host::tray`
-  - **`tests/engines_integration.rs`**: **11/11 passed**
-    - Includes `native_epub3_md_epub_txt_and_pdf_epub_roundtrips_without_pandoc` verifying Pandoc-free `MD -> EPUB -> TXT` and `PDF -> EPUB` roundtrips plus ZIP entry `0` = `mimetype` (`CompressionMethod::Stored`, exact `application/epub+zip` payload)
-    - Includes image matrix (`PNG`, `JPG`, `WEBP`, `HEIC`, `BMP`, `TIFF`, `GIF`, `COMBINE_PDF`, alpha flattening, EXIF orientation, GPS strip), structured data matrix (`JSON`, `YAML`, `TOML`, `XML`, `CSV`, `HTML`, `MD`, `PDF`), PDF multi-page rasterization + Vision OCR + merge, > 40 MP / > 256 MiB / zip-bomb / HTML LFI guards, media/FFmpeg + cancellation, read-only fallback, and Create New File OOXML + templates
-  - **`tests/host_ipc_integration.rs`**: **7/7 passed**
-    - Verifies exact command & camelCase parameter alignment across all **27** Tauri commands and all **10** host-emitted events between Rust and `src/ipc.ts`
-    - Verifies bridge & WAV resource resolution in dev and relocated `.app` layouts, `Info.plist` `plutil -lint`, screen clamping, and config/capabilities consistency
+- **Cargo Test Suite (`cargo test` offline default suite)**: **80 passed, 0 failed, 1 ignored** (`live_github_update_check_and_tags_fallback`, hits live `github.com`):
+  - **`flip_lib` unit tests**: **55/55 passed** (+ 1 `#[ignore]`)
+    - Covers `core::policy`, `core::preferences` (incl. `language` `"en"`/`"it"` sanitization & default backfill), `core::input_gate`, `core::naming`, `core::staging`, `core::startup`, `core::quick_actions`, `core::logging`, `core::updater`, `cli` (incl. `flip wheel`/`settings`/`batch`/`quit` parser & execution), `engines::data`, `engines::document`, `host::commands` (incl. independent `sound_enabled`/`haptics_enabled` `resolve_feedback_kind`), `host::monitor`, `host::tray`.
+  - **`tests/engines_integration.rs`**: **15/15 passed**
+    - Covers `zip_and_unzip_roundtrip_dedup_collisions_and_safety_rejections` (Zip-Slip, >256 MiB / >4,096 entries, collisions, stem deduplication)
+    - Covers `vision_remove_bg_cuts_subject_and_rejects_blank_image` (transparent PNG cutout + blank-canvas rejection)
+    - Covers `optimize_pdf_shrinks_heavy_pdf_preserves_text_and_rejects_over_200_pages`
+    - Covers `native_zero_ffmpeg_audio_caf_and_flac_roundtrips` (`WAV <-> CAF`, `WAV <-> FLAC`, `CAF -> FLAC`, `FLAC -> CAF`, `FLAC -> M4A`, `CAF -> M4A`, `FLAC -> ALAC`, `ALAC -> FLAC`, zero FFmpeg binary)
+    - Plus native `EPUB 3`, PDF multi-page rasterization + Vision OCR + merge, image matrix + EXIF/GPS, >40 MP / HTML LFI safety, FFmpeg/AVFoundation video + mid-flight cancellation, read-only fallback, OOXML + templates.
+  - **`tests/host_ipc_integration.rs`**: **8/8 passed**
+    - Verifies exact command & camelCase alignment across all **27** Tauri commands and all **11** host-emitted events between Rust and `src/ipc.ts`
+    - Verifies `unix_socket_ipc_roundtrips_permissions_and_stale_recovery` (`0600` owner-only socket, live command roundtrips, stale socket cleanup/recovery)
+    - Verifies bridge & WAV resource resolution in dev and relocated `.app` layouts, `Info.plist` `plutil -lint`, screen clamping, and Tauri capabilities consistency.
+  - **`tests/stress_and_perf.rs`**: **2/2 passed** (`2.05 s`)
+    - **`stress_50_cycle_trigger_wheel_escape_and_multimonitor_clamping`**: Drives 50 rapid trigger -> wheel open -> pointer drag -> global Escape / drag-end -> gate reset cycles across 4 simulated multi-monitor layouts (Retina + 1x left + top-notch + ultrawide side-Dock) with 0 stuck `press_gate` / `order_gate` flags, 0 orphaned wheel `is_open` / `is_drag` states, and 100% bounded screen coordinates.
+    - **`stress_20_plus_10_staging_cleanup_policy_latency_and_cli_startup_perf`**:
+      - Executes **20 sequential successful conversions** (`Data`, `Document`/`EPUB`, `Image`, `ZIP`) + **10 intentionally failing/cancelled/mid-job `Drop` conversions** (pre-cancelled, corrupt JSON, Zip-Slip, missing source, unsupported target, read-only aborted `JobStaging`) in an isolated `TempDir`: **0 leftover `.flip-job-*` or `.flip-probe-*` directories**.
+      - `policy::outputs` latency: **9.71 µs** single file, **1.31 ms** max 128-file batch, **21.15 µs** avg over 500 mixed lookups (target `< 5 ms`).
+      - Compiled CLI `flip --version` startup (`target/debug/flip`): **6.50 ms – 9.23 ms** across 5 warm runs after macOS one-time `1.086 s` first-exec AMFI/syspolicyd cache scan on newly linked binary (target `< 300 ms`).
 
 ---
 
 ## 3. Release Bundle, Signing, DMG Packaging & Bundled CLI Verification
 
 1. **Release `.app` Build (`./scripts/build-macos.sh --dmg`)**:
-   - Built `src-tauri/target/release/bundle/macos/FLIP.app` (`21.99 MiB`), embedded `Contents/Resources/flip-macos-bridge` (`437,312` bytes, `-rwxr-xr-x@`) and `flip-tick.wav`.
+   - Built `src-tauri/target/release/bundle/macos/FLIP.app` (`22.29 MiB`, main `flip` Mach-O executable `20,493,328` bytes), embedded signed `Contents/Resources/flip-macos-bridge` (`464,816` bytes, `-rwxr-xr-x@`) and `Contents/Resources/resources/flip-tick.wav`.
 2. **Code Signing (`codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/FLIP.app`)**:
    - **Passed**: `valid on disk`, `satisfies its Designated Requirement` (ad-hoc local signature).
-3. **DMG Packager & Mount Verification (`src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg`, `8.9M`)**:
-   - `codesign --verify --strict --verbose=2` on `.dmg`: **Passed** (`valid on disk`, `satisfies its Designated Requirement`).
-   - Mounted with `hdiutil attach -nobrowse -readonly -mountpoint ...`: verified `FLIP.app` and `Applications -> /Applications` symlink inside mounted volume, verified `codesign --verify --deep --strict --verbose=2` on mounted `FLIP.app`, and detached cleanly with `hdiutil detach`.
-4. **Live Bundled CLI Native EPUB 3 Smoke Test (`FLIP.app/Contents/MacOS/flip`)**:
-   - `FLIP.app/Contents/MacOS/flip convert <tmp>/smoke.md --to EPUB`: converted Markdown to EPUB 3 cleanly with **no Pandoc installed**; Python `zipfile` inspection confirmed entry `0` is `mimetype` (`compress_type: 0` = `ZIP_STORED`, `extra_len: 0`, `20` bytes `application/epub+zip`) alongside `META-INF/container.xml`, `OEBPS/content.opf`, `OEBPS/nav.xhtml`, `OEBPS/style.css`, and `OEBPS/chapter.xhtml`.
-   - `FLIP.app/Contents/MacOS/flip convert <tmp>/smoke.epub --to TXT`: extracted `smoke.txt` preserving heading, paragraph, and bullet list text cleanly.
-   - `FLIP.app/Contents/MacOS/flip convert <tmp>/nasty.html --to EPUB -> TXT`: verified HTML comments with apostrophes, `<script>`/`<style>` blocks containing `<`/quotes, `<![CDATA[...]]>`, unquoted URL attributes ending in `/`, and duplicate heading `id`s parse cleanly into valid XML (`chapter.xhtml`, `nav.xhtml`) and expected `TXT`.
+3. **DMG Packager & Mount Verification (`src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg`, `8,917,516` bytes / `8.5 MiB`)**:
+   - `codesign --verify --deep --strict --verbose=2` on `.dmg`: **Passed** (`valid on disk`, `satisfies its Designated Requirement`).
+   - Mounted with `hdiutil attach -nobrowse -readonly -mountpoint ...`: verified `FLIP.app` and `Applications -> /Applications` symlink inside mounted volume, verified `codesign --verify --deep --strict --verbose=2` on mounted `FLIP.app`, and ejected cleanly with `hdiutil detach`.
+4. **Live Bundled Release CLI Smoke Tests (`FLIP.app/Contents/MacOS/flip`)**:
+   - **`--version` startup latency**: `flip 0.1.0`, **6.18 ms – 8.07 ms** across 5 runs.
+   - **`ZIP` -> `UNZIP` roundtrip**: `convert hello.txt note.md --to ZIP` -> `hello.zip` (`255` B) -> `convert hello.zip --to UNZIP` -> extracted `hello/` matching byte-for-byte via `diff -u`.
+   - **Zero-FFmpeg Audio (`WAV -> FLAC -> WAV` & `WAV -> CAF`)**: Both with default `PATH` and stripped `PATH=/usr/bin:/bin` (no Homebrew FFmpeg visible), `tick.wav` (`3.5K`) converted cleanly to `tick.flac` (`9.8K`), `tick.caf` (`7.0K`), and back from `tick.flac` to `tick 2.wav` (`7.0K`).
+   - **Native `EPUB 3` (`MD -> EPUB -> TXT`)**: `book.md` -> `book.epub` -> `book.txt` cleanly with no Pandoc installed.
+   - **`OPTIMIZE_PDF`**: `cover.png` (`1.8M`) -> `cover.pdf` (`2.9M`) -> `cover 2.pdf` (`174K`, `-94%` reduction cleanly).
+   - **Apple Vision `REMOVE_BG`**: `cover.png` (`1.8M`) -> `cover 2.png` (`1.3M`, transparent cutout PNG cleanly).
 
 ---
 
 ## 4. Unexecuted / Unverified Scenarios on This Host
 
-The following paths were **not** executed live on this machine and are tracked for physical desktop verification in [`ACCEPTANCE.md`](ACCEPTANCE.md):
+The following paths were **not** executed live inside a WindowServer GUI session on this machine and remain tracked for physical desktop verification in [`ACCEPTANCE.md`](ACCEPTANCE.md):
 
 - **Live WindowServer GUI, Finder & Accessibility Walkthrough**:
-  - Interactive Finder drag + trigger in both orders (`Drag -> Trigger` and `Trigger -> Drag`), `NSPasteboard(name: .drag)` live drag inspection, Mouse Button `2`/`3`/`4` triggers, global Idle shortcut (`Option+Shift+Space`), full-screen Spaces overlay, multi-monitor mixed-DPI clamping, live Finder inline rename (`Return`), Light/Dark appearance, `Reduce Motion`, `Reduce Transparency`, and live **VoiceOver** navigation + live announcements (`aria-live="polite"`)
-  - Live `WKWebView` clicks/drag-drop inside Settings (`Preferred Format Order` chips + `Reset to Default`), Wheel, Onboarding, and Batch windows (logic covered by TypeScript build + `bun test` mocks; unexecuted in a live desktop WebView)
+  - Interactive Finder drag + trigger (`Drag -> Trigger` and `Trigger -> Drag`), `NSPasteboard(name: .drag)` live capture, Mouse Button `2`/`3`/`4` triggers, global Idle shortcut (`Option+Shift+Space`), Full-Screen Spaces overlay, multi-monitor mixed-DPI positioning, live Finder inline rename (`Return`), Light/Dark appearance, `Reduce Motion`, `Reduce Transparency`, and **VoiceOver** live announcements
+  - Live `WKWebView` clicks/controls across `#settings` (`EN`/`IT` language switcher, `Test Wheel Sound & Haptics` physical audio + Force Touch feedback, `Preferred Format Order` chips + `Reset to Default`), `#wheel`, `#batch`, `#onboarding`, and live `flip://` / `flip wheel` / `flip settings` / `flip batch` / `flip quit` GUI socket launches
 - **Missing Optional External Apps / Tools on Host**:
-  - **Pandoc** (`FB2` and `RST` conversions): Not installed on host (`pandoc not found`); capability gating verified via Rust & Bun unit tests, runtime Pandoc subprocess execution unverified here.
+  - **Pandoc** (`FB2` and `RST` conversions): Not installed on host; capability gating verified via Rust & Bun unit tests, runtime Pandoc subprocess execution unverified here.
   - **Apple iWork** (`Pages.app`, `Numbers.app`, `Keynote.app` AppleScript automation): Not installed in `/Applications`; missing-app errors and `.pages` QuickLook extraction tested instead.
 - **GitHub Actions CI Execution**:
-  - `.github/workflows/ci.yml` created and aligned with all verified local steps, not yet triggered on a live GitHub `macos-15` runner.
+  - `.github/workflows/ci.yml` verified locally against all stages (incl. `cargo clippy --all-targets -- -D warnings` and `cargo test` running `stress_and_perf.rs`), not yet triggered on a live GitHub `macos-15` runner.
 - **Developer ID Signing & Apple Notarization**:
   - Scripts (`scripts/sign-local.sh`, `scripts/package-dmg.sh`) support `APPLE_SIGNING_IDENTITY` and `xcrun notarytool` / `stapler`, but only ad-hoc local signing (`--sign -`) was executed because no paid Apple Developer certificate is configured.
