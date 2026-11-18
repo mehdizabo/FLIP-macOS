@@ -282,6 +282,7 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
         "newFileVisibleKinds",
         "recentConversions",
         "onboardingCompleted",
+        "language",
     ] {
         assert!(prv.get(key).is_some(), "AppPreferences missing `{key}`");
     }
@@ -527,6 +528,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         "batch:files",
         "settings:navigate",
         "templates:changed",
+        "prefs:changed",
     ] {
         assert!(
             ipc_ts.contains(&format!("\"{ev_name}\"")),
@@ -649,6 +651,7 @@ fn fallback_folder_tilde_expansion_and_save_preferences_history_preservation() {
     let stale_settings = AppPreferences {
         sound_enabled: false,
         onboarding_completed: false,
+        language: "IT".into(),
         recent_conversions: vec![RecentConversion {
             source_name: "old.png".into(),
             target_format: "JPG".into(),
@@ -661,8 +664,18 @@ fn fallback_folder_tilde_expansion_and_save_preferences_history_preservation() {
     let merged = merge_and_validate_preferences(stale_settings, &server_prefs).unwrap();
     assert!(!merged.sound_enabled);
     assert!(merged.onboarding_completed);
+    assert_eq!(merged.language, "it");
     assert_eq!(merged.recent_conversions.len(), 2);
     assert_eq!(merged.recent_conversions[0].source_name, "new.png");
+
+    let bad_lang = AppPreferences {
+        language: "zz".into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        merge_and_validate_preferences(bad_lang, &server_prefs).unwrap().language,
+        "en"
+    );
 
     // Invalid shortcuts must still be rejected cleanly
     let bad_prefs = AppPreferences {

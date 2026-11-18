@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 export interface FormatMeta {
   shortLabel: string;
   title: string;
@@ -143,48 +145,48 @@ export const UI_ICONS = {
   ),
 };
 
-export function getFormatMeta(format: string): FormatMeta {
+export function getFormatMeta(format: string, lang = "en"): FormatMeta {
   const key = format.trim().toUpperCase();
   switch (key) {
     case "REMOVE_BG":
       return {
         shortLabel: "No BG",
-        title: "Remove BG",
+        title: t(lang, "wheel.actionRemoveBg"),
         accent: "#ec4899",
         iconSvg: UI_ICONS.removeBg,
       };
     case "OPTIMIZE_PDF":
       return {
         shortLabel: "Opt PDF",
-        title: "Optimize PDF",
+        title: t(lang, "wheel.actionOptimizePdf"),
         accent: "#f59e0b",
         iconSvg: UI_ICONS.optimizePdf,
       };
     case "ZIP":
       return {
         shortLabel: "ZIP",
-        title: "Zip Archive",
+        title: t(lang, "wheel.actionZip"),
         accent: "#eab308",
         iconSvg: UI_ICONS.zip,
       };
     case "UNZIP":
       return {
         shortLabel: "UNZIP",
-        title: "Unzip Folder",
+        title: t(lang, "wheel.actionUnzip"),
         accent: "#14b8a6",
         iconSvg: UI_ICONS.unzip,
       };
     case "COMBINE_PDF":
       return {
         shortLabel: "PDF+",
-        title: "Combine into PDF",
+        title: t(lang, "wheel.actionCombinePdf"),
         accent: "#ff6b4a",
         iconSvg: UI_ICONS.combinePdf,
       };
     case "MERGE_PDF":
       return {
         shortLabel: "MERGE",
-        title: "Merge PDFs",
+        title: t(lang, "wheel.actionMergePdf"),
         accent: "#ff5c5c",
         iconSvg: UI_ICONS.combinePdf,
       };
@@ -198,28 +200,28 @@ export function getFormatMeta(format: string): FormatMeta {
     case "BMP":
       return {
         shortLabel: key,
-        title: `Convert to ${key}`,
+        title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
         accent: "#38bdf8",
         iconSvg: UI_ICONS.image,
       };
     case "PDF":
       return {
         shortLabel: "PDF",
-        title: "Convert to PDF",
+        title: t(lang, "wheel.convertToSubtitle", { fmt: "PDF" }),
         accent: "#fb7185",
         iconSvg: UI_ICONS.pdf,
       };
     case "MD":
       return {
         shortLabel: "MD",
-        title: "Convert to Markdown",
+        title: t(lang, "wheel.convertToSubtitle", { fmt: "Markdown" }),
         accent: "#a78bfa",
         iconSvg: UI_ICONS.markdown,
       };
     case "HTML":
       return {
         shortLabel: "HTML",
-        title: "Convert to HTML",
+        title: t(lang, "wheel.convertToSubtitle", { fmt: "HTML" }),
         accent: "#f97316",
         iconSvg: UI_ICONS.code,
       };
@@ -227,7 +229,7 @@ export function getFormatMeta(format: string): FormatMeta {
     case "FB2":
       return {
         shortLabel: key,
-        title: `Convert to ${key}`,
+        title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
         accent: "#c084fc",
         iconSvg: UI_ICONS.book,
       };
@@ -238,7 +240,7 @@ export function getFormatMeta(format: string): FormatMeta {
     case "RST":
       return {
         shortLabel: key,
-        title: `Convert to ${key}`,
+        title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
         accent: "#60a5fa",
         iconSvg: UI_ICONS.document,
       };
@@ -246,14 +248,14 @@ export function getFormatMeta(format: string): FormatMeta {
     case "CSV":
       return {
         shortLabel: key,
-        title: `Convert to ${key}`,
+        title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
         accent: "#34d399",
         iconSvg: UI_ICONS.spreadsheet,
       };
     case "PPTX":
       return {
         shortLabel: "PPTX",
-        title: "Convert to PPTX",
+        title: t(lang, "wheel.convertToSubtitle", { fmt: "PPTX" }),
         accent: "#fb923c",
         iconSvg: UI_ICONS.presentation,
       };
@@ -263,7 +265,7 @@ export function getFormatMeta(format: string): FormatMeta {
     case "XML":
       return {
         shortLabel: key,
-        title: `Convert to ${key}`,
+        title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
         accent: "#2dd4bf",
         iconSvg: UI_ICONS.data,
       };
@@ -273,12 +275,13 @@ export function getFormatMeta(format: string): FormatMeta {
     case "FLAC":
     case "AIFF":
     case "ALAC":
+    case "CAF":
     case "OGG":
     case "OPUS":
     case "AAC":
       return {
         shortLabel: key,
-        title: `Convert to ${key}`,
+        title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
         accent: "#f472b6",
         iconSvg: UI_ICONS.audio,
       };
@@ -290,14 +293,14 @@ export function getFormatMeta(format: string): FormatMeta {
     case "M4V":
       return {
         shortLabel: key,
-        title: `Convert to ${key}`,
+        title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
         accent: "#818cf8",
         iconSvg: UI_ICONS.video,
       };
     default:
       return {
         shortLabel: key.slice(0, 6),
-        title: `Convert to ${key}`,
+        title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
         accent: "#38bdf8",
         iconSvg: UI_ICONS.document,
       };

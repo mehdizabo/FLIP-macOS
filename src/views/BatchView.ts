@@ -1,15 +1,18 @@
+import { normalizeLanguage, t } from "../i18n";
 import { getFormatMeta, UI_ICONS } from "../icons";
 import {
   basename,
   cancelConversion,
   consumeBatchHandoff,
   copyDiagnosticsToClipboard,
+  defaultPreferences,
   dirname,
   escapeHtml,
   events,
   executeConversion,
   extLower,
   formatError,
+  getPreferences,
   getWheelState,
   inspectFiles,
   isTauriRuntime,
@@ -17,67 +20,111 @@ import {
   revealInFinder,
   subscribeNativeDragDrop,
 } from "../ipc";
-import type { ConversionResult, InspectFilesResult } from "../types";
+import type { AppPreferences, ConversionResult, InspectFilesResult } from "../types";
+
+type BatchStatusMode =
+  | { kind: "prompt" }
+  | { kind: "ready"; count: number }
+  | { kind: "noSelection" }
+  | { kind: "webkitHidden" }
+  | { kind: "starting" }
+  | { kind: "cancelling" }
+  | { kind: "finishedErr"; err: string }
+  | { kind: "completed"; count: number }
+  | { kind: "failed"; msg: string }
+  | { kind: "diagFailed"; msg: string }
+  | { kind: "live"; text: string };
 
 export function mountBatchView(root: HTMLElement): () => void {
   document.documentElement.dataset.route = "batch";
 
   let disposed = false;
+  let prefs: AppPreferences = defaultPreferences();
   let files: string[] = [];
   let inspection: InspectFilesResult = {
     files: [],
     compatibleFormats: [],
     batchActions: [],
-    availabilityMessage: "Drop local files here",
+    availabilityMessage: "",
     family: null,
   };
   let selectedFormats = new Set<string>();
   let busy = false;
   let progressPct = 0;
-  let progressLabel = "Select files and one or more output formats.";
+  let statusMode: BatchStatusMode = { kind: "prompt" };
   let results: ConversionResult[] = [];
   let lastBatchError: string | null = null;
   let diagState: "idle" | "copied" | "manual" = "idle";
   let diagFallbackText = "";
   let diagResetTimer: number | null = null;
 
+  const lang = () => normalizeLanguage(prefs.language);
+
+  function resolveStatusText(): string {
+    const l = lang();
+    switch (statusMode.kind) {
+      case "prompt":
+        return t(l, "batch.statusPrompt");
+      case "ready":
+        return t(l, "batch.filesReady", { count: statusMode.count });
+      case "noSelection":
+        return t(l, "batch.noWheelSelection");
+      case "webkitHidden":
+        return t(l, "batch.webkitPathHidden");
+      case "starting":
+        return t(l, "batch.starting");
+      case "cancelling":
+        return t(l, "batch.cancelling");
+      case "finishedErr":
+        return t(l, "batch.finishedErr", { err: statusMode.err });
+      case "completed":
+        return t(l, "batch.completedOutputs", { count: statusMode.count });
+      case "failed":
+        return t(l, "batch.failedMsg", { msg: statusMode.msg });
+      case "diagFailed":
+        return t(l, "batch.diagExportFailed", { msg: statusMode.msg });
+      case "live":
+        return statusMode.text;
+    }
+  }
+
   root.innerHTML = `
     <div class="batch-shell">
       <div class="page-header">
         <div>
-          <h1 class="page-title">Batch &amp; Multi-Format Converter</h1>
-          <p class="card-subtitle">Convert multiple files or emit several formats locally — originals are never overwritten.</p>
+          <h1 class="page-title" id="batch-title"></h1>
+          <p class="card-subtitle" id="batch-subtitle"></p>
         </div>
         <div style="display:flex;gap:8px">
-          <button type="button" class="btn btn-sm" id="batch-open-settings">${UI_ICONS.settings}<span>Settings</span></button>
+          <button type="button" class="btn btn-sm" id="batch-open-settings">${UI_ICONS.settings}<span id="batch-open-settings-label"></span></button>
         </div>
       </div>
 
       <section class="batch-dropzone" id="batch-dropzone">
         <div style="color:var(--accent)">${UI_ICONS.drop}</div>
-        <div style="font-weight:600;font-size:14px">Drop files from Finder here</div>
-        <div class="setting-desc">Or load the current Finder/Wheel selection, or add a local path.</div>
+        <div style="font-weight:600;font-size:14px" id="batch-drop-title"></div>
+        <div class="setting-desc" id="batch-drop-desc"></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:4px">
-          <button type="button" class="btn btn-sm" id="batch-load-wheel">Load Wheel / Finder Selection</button>
+          <button type="button" class="btn btn-sm" id="batch-load-wheel"></button>
           <label class="btn btn-sm" style="cursor:pointer">
-            <span>Choose Files…</span>
+            <span id="batch-choose-files-label"></span>
             <input type="file" id="batch-file-input" multiple style="display:none" />
           </label>
-          <button type="button" class="btn btn-sm" id="batch-clear-files">Clear List</button>
+          <button type="button" class="btn btn-sm" id="batch-clear-files"></button>
         </div>
         <div style="display:flex;gap:6px;width:100%;max-width:520px;margin-top:6px">
-          <input type="text" class="mac-input" id="batch-path-input" placeholder="/Users/.../file.png (press Enter to add)" style="flex:1" />
-          <button type="button" class="btn btn-sm" id="batch-add-path">Add</button>
+          <input type="text" class="mac-input" id="batch-path-input" style="flex:1" />
+          <button type="button" class="btn btn-sm" id="batch-add-path"></button>
         </div>
       </section>
 
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Selected Files (<span id="batch-file-count">0</span>)</h2>
-            <p class="card-subtitle">Compatible formats update automatically for the entire selection</p>
+            <h2 class="card-title" id="batch-selected-title"></h2>
+            <p class="card-subtitle" id="batch-selected-sub"></p>
           </div>
-          <button type="button" class="btn btn-sm" id="batch-open-source-folder" disabled>${UI_ICONS.finder}<span>Open Source Folder</span></button>
+          <button type="button" class="btn btn-sm" id="batch-open-source-folder" disabled>${UI_ICONS.finder}<span id="batch-open-source-label"></span></button>
         </div>
         <div class="batch-file-list" id="batch-file-list"></div>
       </section>
@@ -85,17 +132,17 @@ export function mountBatchView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Output Formats</h2>
-            <p class="card-subtitle" id="batch-compat-subtitle">Choose one or more target formats</p>
+            <h2 class="card-title" id="batch-output-title"></h2>
+            <p class="card-subtitle" id="batch-compat-subtitle"></p>
           </div>
           <div style="display:flex;gap:6px">
-            <button type="button" class="btn btn-sm" id="batch-select-all">Select All</button>
-            <button type="button" class="btn btn-sm" id="batch-select-none">Clear</button>
+            <button type="button" class="btn btn-sm" id="batch-select-all"></button>
+            <button type="button" class="btn btn-sm" id="batch-select-none"></button>
           </div>
         </div>
         <div class="batch-format-grid" id="batch-format-grid"></div>
         <div id="batch-actions-wrap" style="margin-top:12px;display:none">
-          <div class="setting-desc" style="margin-bottom:6px;font-weight:600">Batch &amp; Archive Actions</div>
+          <div class="setting-desc" style="margin-bottom:6px;font-weight:600" id="batch-actions-heading"></div>
           <div class="batch-format-grid" id="batch-actions-grid"></div>
         </div>
       </section>
@@ -103,11 +150,11 @@ export function mountBatchView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div style="display:flex;gap:8px;align-items:center">
-            <button type="button" class="btn btn-primary" id="batch-run-btn" disabled>Convert Selected</button>
-            <button type="button" class="btn btn-danger" id="batch-cancel-btn" disabled>Cancel</button>
-            <button type="button" class="btn btn-sm" id="batch-progress-copy-diag" style="display:none">Copy Diagnostics</button>
+            <button type="button" class="btn btn-primary" id="batch-run-btn" disabled></button>
+            <button type="button" class="btn btn-danger" id="batch-cancel-btn" disabled></button>
+            <button type="button" class="btn btn-sm" id="batch-progress-copy-diag" style="display:none"></button>
           </div>
-          <div class="setting-desc" id="batch-progress-label">${escapeHtml(progressLabel)}</div>
+          <div class="setting-desc" id="batch-progress-label"></div>
         </div>
         <div class="progress-bar-wrap" style="margin-top:12px">
           <div class="progress-bar-fill" id="batch-progress-fill" style="width:0%"></div>
@@ -118,10 +165,10 @@ export function mountBatchView(root: HTMLElement): () => void {
       <section class="glass-card" id="batch-results-card" style="display:none">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Conversion Results</h2>
+            <h2 class="card-title" id="batch-results-title"></h2>
             <p class="card-subtitle" id="batch-results-summary"></p>
           </div>
-          <button type="button" class="btn btn-sm" id="batch-results-copy-diag" style="display:none">Copy Diagnostics</button>
+          <button type="button" class="btn btn-sm" id="batch-results-copy-diag" style="display:none"></button>
         </div>
         <div id="batch-results-diag-fallback" style="display:none;margin-bottom:10px"></div>
         <div class="batch-results-list" id="batch-results-list"></div>
@@ -131,7 +178,6 @@ export function mountBatchView(root: HTMLElement): () => void {
 
   const dropzoneEl = root.querySelector<HTMLElement>("#batch-dropzone")!;
   const fileListEl = root.querySelector<HTMLElement>("#batch-file-list")!;
-  const fileCountEl = root.querySelector<HTMLElement>("#batch-file-count")!;
   const openSourceBtn = root.querySelector<HTMLButtonElement>("#batch-open-source-folder")!;
   const formatGridEl = root.querySelector<HTMLElement>("#batch-format-grid")!;
   const actionsWrapEl = root.querySelector<HTMLElement>("#batch-actions-wrap")!;
@@ -148,13 +194,39 @@ export function mountBatchView(root: HTMLElement): () => void {
   const resultsCopyDiagBtn = root.querySelector<HTMLButtonElement>("#batch-results-copy-diag")!;
   const resultsDiagFallbackEl = root.querySelector<HTMLElement>("#batch-results-diag-fallback")!;
   const resultsListEl = root.querySelector<HTMLElement>("#batch-results-list")!;
+  const pathInput = root.querySelector<HTMLInputElement>("#batch-path-input")!;
+
+  function applyStaticLocalization(): void {
+    const l = lang();
+    root.querySelector("#batch-title")!.textContent = t(l, "batch.title");
+    root.querySelector("#batch-subtitle")!.textContent = t(l, "batch.subtitle");
+    root.querySelector("#batch-open-settings-label")!.textContent = t(l, "nav.settings");
+    root.querySelector("#batch-drop-title")!.textContent = t(l, "batch.dropTitle");
+    root.querySelector("#batch-drop-desc")!.textContent = t(l, "batch.dropDesc");
+    root.querySelector("#batch-load-wheel")!.textContent = t(l, "batch.loadWheel");
+    root.querySelector("#batch-choose-files-label")!.textContent = t(l, "batch.chooseFiles");
+    root.querySelector("#batch-clear-files")!.textContent = t(l, "batch.clearList");
+    pathInput.placeholder = t(l, "batch.pathPlaceholder");
+    root.querySelector("#batch-add-path")!.textContent = t(l, "batch.addPath");
+    root.querySelector("#batch-selected-title")!.innerHTML = t(l, "batch.selectedFiles", { count: files.length });
+    root.querySelector("#batch-selected-sub")!.textContent = t(l, "batch.selectedSub");
+    root.querySelector("#batch-open-source-label")!.textContent = t(l, "batch.openSourceFolder");
+    root.querySelector("#batch-output-title")!.textContent = t(l, "batch.outputFormats");
+    root.querySelector("#batch-select-all")!.textContent = t(l, "batch.selectAll");
+    root.querySelector("#batch-select-none")!.textContent = t(l, "batch.clearSelection");
+    root.querySelector("#batch-actions-heading")!.textContent = t(l, "batch.batchActionsHeading");
+    runBtn.textContent = t(l, "batch.convertSelected");
+    cancelBtn.textContent = t(l, "common.cancel");
+    root.querySelector("#batch-results-title")!.textContent = t(l, "batch.resultsTitle");
+  }
 
   function render(): void {
-    fileCountEl.textContent = String(files.length);
+    const l = lang();
+    applyStaticLocalization();
     openSourceBtn.disabled = files.length === 0;
 
     if (files.length === 0) {
-      fileListEl.innerHTML = `<div class="setting-desc">No files added yet.</div>`;
+      fileListEl.innerHTML = `<div class="setting-desc">${escapeHtml(t(l, "batch.noFilesYet"))}</div>`;
     } else {
       fileListEl.innerHTML = files
         .map((f, idx) => {
@@ -166,7 +238,7 @@ export function mountBatchView(root: HTMLElement): () => void {
                 <div style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(dirname(f))}</div>
               </div>
               <span class="code-chip">${escapeHtml(ext)}</span>
-              <button type="button" class="btn btn-sm" data-remove-file="${idx}" ${busy ? "disabled" : ""} aria-label="Remove file">${UI_ICONS.trash}</button>
+              <button type="button" class="btn btn-sm" data-remove-file="${idx}" ${busy ? "disabled" : ""} aria-label="${escapeHtml(t(l, "batch.removeFileAria"))}">${UI_ICONS.trash}</button>
             </div>
           `;
         })
@@ -179,35 +251,41 @@ export function mountBatchView(root: HTMLElement): () => void {
     const formatDisplayLabel = (fmt: string): string => {
       switch (fmt) {
         case "COMBINE_PDF":
-          return "Combine into PDF";
+          return t(l, "wheel.actionCombinePdf");
         case "MERGE_PDF":
-          return "Merge PDFs";
+          return t(l, "wheel.actionMergePdf");
         case "ZIP":
-          return "Zip Archive";
+          return t(l, "wheel.actionZip");
         case "UNZIP":
-          return "Unzip Folder";
+          return t(l, "wheel.actionUnzip");
         case "REMOVE_BG":
-          return "Remove BG";
+          return t(l, "wheel.actionRemoveBg");
         case "OPTIMIZE_PDF":
-          return "Optimize PDF";
+          return t(l, "wheel.actionOptimizePdf");
         default:
-          return getFormatMeta(fmt).shortLabel;
+          return getFormatMeta(fmt, l).shortLabel;
       }
     };
 
     if (files.length === 0) {
-      compatSubtitleEl.textContent = "Add files to inspect compatible formats";
-      formatGridEl.innerHTML = `<div class="setting-desc">Compatible output formats will appear here.</div>`;
+      compatSubtitleEl.textContent = t(l, "batch.addFilesToInspect");
+      formatGridEl.innerHTML = `<div class="setting-desc">${escapeHtml(t(l, "batch.formatsWillAppear"))}</div>`;
       actionsWrapEl.style.display = "none";
     } else if (allOptions.length === 0) {
-      compatSubtitleEl.textContent = inspection.availabilityMessage.replace(/\n/g, " · ");
-      formatGridEl.innerHTML = `<div class="status-pill is-warn">${escapeHtml(inspection.availabilityMessage.replace(/\n/g, " · "))}</div>`;
+      const msg = inspection.availabilityMessage.replace(/\n/g, " · ");
+      compatSubtitleEl.textContent = msg;
+      formatGridEl.innerHTML = `<div class="status-pill is-warn">${escapeHtml(msg)}</div>`;
       actionsWrapEl.style.display = "none";
     } else {
-      compatSubtitleEl.textContent = `${files.length} ${files.length === 1 ? "file" : "files"} · ${inspection.compatibleFormats.length} shared formats`;
+      const noun = files.length === 1 ? t(l, "vo.fileSingular") : t(l, "vo.filePlural");
+      compatSubtitleEl.textContent = t(l, "batch.sharedCount", {
+        count: files.length,
+        noun,
+        formats: inspection.compatibleFormats.length,
+      });
       formatGridEl.innerHTML =
         inspection.compatibleFormats.length === 0
-          ? `<div class="setting-desc">No shared per-file conversions — archive actions are available below.</div>`
+          ? `<div class="setting-desc">${escapeHtml(t(l, "batch.onlyArchiveActions"))}</div>`
           : inspection.compatibleFormats
               .map((fmt) => {
                 const checked = selectedFormats.has(fmt);
@@ -240,18 +318,18 @@ export function mountBatchView(root: HTMLElement): () => void {
 
     runBtn.disabled = busy || files.length === 0 || selectedFormats.size === 0;
     cancelBtn.disabled = !busy;
-    progressLabelEl.textContent = progressLabel;
+    progressLabelEl.textContent = resolveStatusText();
     progressFillEl.style.width = `${Math.max(0, Math.min(100, progressPct))}%`;
 
     const errCount = results.filter((r) => Boolean(r.error)).length;
     const hasTopLevelErr = Boolean(lastBatchError) && errCount === 0;
-    const diagBtnText = diagState === "copied" ? "Copied!" : "Copy Diagnostics";
+    const diagBtnText = diagState === "copied" ? t(l, "common.copied") : t(l, "common.copyDiagnostics");
 
     progressCopyDiagBtn.style.display = hasTopLevelErr ? "inline-flex" : "none";
     progressCopyDiagBtn.textContent = diagBtnText;
     if (hasTopLevelErr && diagState === "manual" && diagFallbackText) {
       progressDiagFallbackEl.style.display = "block";
-      progressDiagFallbackEl.innerHTML = `<div class="setting-desc" style="margin-bottom:4px">Clipboard access is restricted. Copy redacted diagnostics below:</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
+      progressDiagFallbackEl.innerHTML = `<div class="setting-desc" style="margin-bottom:4px">${escapeHtml(t(l, "common.clipboardRestricted"))}</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
     } else {
       progressDiagFallbackEl.style.display = "none";
       progressDiagFallbackEl.innerHTML = "";
@@ -260,12 +338,15 @@ export function mountBatchView(root: HTMLElement): () => void {
     if (results.length > 0) {
       resultsCardEl.style.display = "block";
       const okOutputs = results.flatMap((r) => r.outputs);
-      resultsSummaryEl.textContent = `${okOutputs.length} output(s) created, ${errCount} error(s).`;
+      resultsSummaryEl.textContent = t(l, "batch.resultsSummary", {
+        okCount: okOutputs.length,
+        errCount,
+      });
       resultsCopyDiagBtn.style.display = errCount > 0 ? "inline-flex" : "none";
       resultsCopyDiagBtn.textContent = diagBtnText;
       if (errCount > 0 && diagState === "manual" && diagFallbackText) {
         resultsDiagFallbackEl.style.display = "block";
-        resultsDiagFallbackEl.innerHTML = `<div class="setting-desc" style="margin-bottom:4px">Clipboard access is restricted. Copy redacted diagnostics below:</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
+        resultsDiagFallbackEl.innerHTML = `<div class="setting-desc" style="margin-bottom:4px">${escapeHtml(t(l, "common.clipboardRestricted"))}</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
       } else {
         resultsDiagFallbackEl.style.display = "none";
         resultsDiagFallbackEl.innerHTML = "";
@@ -282,7 +363,7 @@ export function mountBatchView(root: HTMLElement): () => void {
               <div style="min-width:0;flex:1">
                 <div style="display:flex;align-items:center;gap:8px">
                   <span class="status-pill ${hasErr ? "is-bad" : "is-ok"}">
-                    <span class="status-dot"></span>${hasErr ? "Error" : "Done"}
+                    <span class="status-dot"></span>${escapeHtml(hasErr ? t(l, "batch.statusError") : t(l, "batch.statusDone"))}
                   </span>
                   <strong>${escapeHtml(basename(r.source))} → ${escapeHtml(fmtLabel)}</strong>
                 </div>
@@ -290,7 +371,7 @@ export function mountBatchView(root: HTMLElement): () => void {
               </div>
               ${
                 !hasErr && r.outputs.length > 0
-                  ? `<button type="button" class="btn btn-sm" data-reveal-result="${idx}">${UI_ICONS.finder}<span>Show in Finder</span></button>`
+                  ? `<button type="button" class="btn btn-sm" data-reveal-result="${idx}">${UI_ICONS.finder}<span>${escapeHtml(t(l, "common.showInFinder"))}</span></button>`
                   : ""
               }
             </div>
@@ -358,7 +439,7 @@ export function mountBatchView(root: HTMLElement): () => void {
       files,
       compatibleFormats: [],
       batchActions: [],
-      availabilityMessage: "Failed to inspect files",
+      availabilityMessage: t(lang(), "batch.inspectFailed"),
       family: null,
     }));
     if (disposed) return;
@@ -373,10 +454,10 @@ export function mountBatchView(root: HTMLElement): () => void {
       }
     }
     progressPct = 0;
-    progressLabel =
+    statusMode =
       files.length === 0
-        ? "Select files and one or more output formats."
-        : `${files.length} file(s) ready.`;
+        ? { kind: "prompt" }
+        : { kind: "ready", count: files.length };
     render();
   }
 
@@ -392,7 +473,7 @@ export function mountBatchView(root: HTMLElement): () => void {
       diagFallbackText = "";
       await setFiles(ws.files);
     } else {
-      progressLabel = "No active Wheel or Finder selection found.";
+      statusMode = { kind: "noSelection" };
       render();
     }
   });
@@ -423,7 +504,6 @@ export function mountBatchView(root: HTMLElement): () => void {
     render();
   });
 
-  const pathInput = root.querySelector<HTMLInputElement>("#batch-path-input")!;
   const addInputPath = () => {
     const val = pathInput.value.trim();
     if (!val) return;
@@ -457,7 +537,7 @@ export function mountBatchView(root: HTMLElement): () => void {
     if (picked.length > 0) {
       void setFiles(picked, true);
     } else if (missingNativePath) {
-      progressLabel = "Drag files from Finder or enter a local path above (WebKit hides file paths from standard file inputs).";
+      statusMode = { kind: "webkitHidden" };
       render();
     }
   });
@@ -488,7 +568,7 @@ export function mountBatchView(root: HTMLElement): () => void {
       }
     } catch (err) {
       if (!disposed) {
-        progressLabel = `Diagnostics export failed: ${formatError(err)}`;
+        statusMode = { kind: "diagFailed", msg: formatError(err) };
         render();
       }
     }
@@ -503,11 +583,11 @@ export function mountBatchView(root: HTMLElement): () => void {
     busy = false;
     const createdCount = results.flatMap((r) => r.outputs).length;
     const firstErr = res.error || results.find((r) => Boolean(r.error))?.error || null;
-    lastBatchError = !res.success || firstErr ? firstErr || "Conversion failed." : null;
+    lastBatchError = !res.success || firstErr ? firstErr || t(lang(), "batch.conversionFailedDefault") : null;
     progressPct = res.error && createdCount === 0 ? 0 : 100;
-    progressLabel = res.error
-      ? `Finished with error: ${res.error}`
-      : `Completed ${createdCount} output(s).`;
+    statusMode = res.error
+      ? { kind: "finishedErr", err: res.error }
+      : { kind: "completed", count: createdCount };
     render();
   }
 
@@ -519,7 +599,7 @@ export function mountBatchView(root: HTMLElement): () => void {
     diagState = "idle";
     diagFallbackText = "";
     progressPct = 4;
-    progressLabel = "Starting conversion…";
+    statusMode = { kind: "starting" };
     render();
 
     try {
@@ -532,14 +612,14 @@ export function mountBatchView(root: HTMLElement): () => void {
       const errMsg = formatError(err);
       lastBatchError = errMsg;
       progressPct = 0;
-      progressLabel = `Failed: ${errMsg}`;
+      statusMode = { kind: "failed", msg: errMsg };
       render();
     }
   });
 
   cancelBtn.addEventListener("click", () => {
     if (!busy) return;
-    progressLabel = "Cancelling…";
+    statusMode = { kind: "cancelling" };
     render();
     void cancelConversion();
   });
@@ -570,45 +650,56 @@ export function mountBatchView(root: HTMLElement): () => void {
   const unlistenFns: Array<() => void> = [];
 
   void (async () => {
-    const subs = await Promise.all([
-      events.onConversionProgress((p) => {
-        if (disposed || !busy) return;
-        progressPct = Math.max(progressPct, p.percent);
-        if (p.label) progressLabel = p.label;
-        progressFillEl.style.width = `${progressPct}%`;
-        progressLabelEl.textContent = progressLabel;
-      }),
-      events.onConversionComplete((p) => {
-        finishBatchRun(p);
-      }),
-      events.onBatchFiles((p) => {
-        if (disposed) return;
-        consumeBatchHandoff();
-        results = p.results ?? [];
-        const unitErr = results.find((r) => Boolean(r.error))?.error ?? null;
-        lastBatchError = unitErr;
-        diagState = "idle";
-        diagFallbackText = "";
-        if (p.files.length > 0) {
-          void setFiles(p.files, false, true);
-        } else {
+    const [loadedPrefs, subs] = await Promise.all([
+      getPreferences().catch(() => defaultPreferences()),
+      Promise.all([
+        events.onPrefsChanged((updated) => {
+          if (disposed) return;
+          prefs = updated;
           render();
-        }
-      }),
-      subscribeNativeDragDrop({
-        onEnter: () => dropzoneEl.classList.add("is-drag-over"),
-        onLeave: () => dropzoneEl.classList.remove("is-drag-over"),
-        onDrop: (paths) => {
-          dropzoneEl.classList.remove("is-drag-over");
-          if (!disposed && paths.length > 0) void setFiles(paths, true);
-        },
-      }),
+        }),
+        events.onConversionProgress((p) => {
+          if (disposed || !busy) return;
+          progressPct = Math.max(progressPct, p.percent);
+          if (p.label) {
+            statusMode = { kind: "live", text: p.label };
+          }
+          progressFillEl.style.width = `${progressPct}%`;
+          progressLabelEl.textContent = resolveStatusText();
+        }),
+        events.onConversionComplete((p) => {
+          finishBatchRun(p);
+        }),
+        events.onBatchFiles((p) => {
+          if (disposed) return;
+          consumeBatchHandoff();
+          results = p.results ?? [];
+          const unitErr = results.find((r) => Boolean(r.error))?.error ?? null;
+          lastBatchError = unitErr;
+          diagState = "idle";
+          diagFallbackText = "";
+          if (p.files.length > 0) {
+            void setFiles(p.files, false, true);
+          } else {
+            render();
+          }
+        }),
+        subscribeNativeDragDrop({
+          onEnter: () => dropzoneEl.classList.add("is-drag-over"),
+          onLeave: () => dropzoneEl.classList.remove("is-drag-over"),
+          onDrop: (paths) => {
+            dropzoneEl.classList.remove("is-drag-over");
+            if (!disposed && paths.length > 0) void setFiles(paths, true);
+          },
+        }),
+      ]),
     ]);
 
     if (disposed) {
       subs.forEach((u) => u());
       return;
     }
+    prefs = loadedPrefs;
     unlistenFns.push(...subs);
 
     const handoff = consumeBatchHandoff();

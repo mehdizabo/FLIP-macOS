@@ -1,3 +1,4 @@
+import { normalizeLanguage, t } from "../i18n";
 import { getFormatMeta, getNewKindMeta, UI_ICONS } from "../icons";
 import {
   cancelConversion,
@@ -106,14 +107,16 @@ export function mountWheelView(root: HTMLElement): () => void {
   let activeActionLabel = "";
   let stepLabel = "";
   let lastErrorMsg = "";
-  let diagBtnLabel = "Copy Diagnostics";
-  let diagBtnTitle = "Copy redacted diagnostics report";
+  let diagBtnState: "idle" | "copying" | "copied" | "failed" = "idle";
+  let diagBtnFailReason = "";
   let lastResults: ConversionResult[] = [];
   let progressRaf: number | null = null;
   let autoCloseTimer: number | null = null;
   let dismissTimer: number | null = null;
   let diagResetTimer: number | null = null;
   let openedAtMs = 0;
+
+  const lang = () => normalizeLanguage(prefs?.language);
 
   // QuickLook thumbnail cache for current primary file
   let thumbnailPath = "";
@@ -132,15 +135,15 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   // Static shell DOM
   root.innerHTML = `
-    <div class="wheel-stage" role="dialog" aria-label="FLIP Radial Wheel">
+    <div class="wheel-stage" role="dialog" aria-label="${escapeHtml(t(lang(), "wheel.ariaLabel"))}">
       <div class="sr-only" id="wheel-live-announcer" aria-live="polite" aria-atomic="true"></div>
       <div class="wheel-shell" id="wheel-shell">
-        <div class="wheel-mode-pill" role="tablist" aria-label="Wheel Mode">
+        <div class="wheel-mode-pill" role="tablist" aria-label="${escapeHtml(t(lang(), "wheel.modeListLabel"))}">
           <button type="button" class="wheel-mode-btn" data-mode="convert" role="tab">
-            ${UI_ICONS.convert}<span>Convert</span>
+            ${UI_ICONS.convert}<span data-mode-label="convert">${escapeHtml(t(lang(), "wheel.modeConvert"))}</span>
           </button>
           <button type="button" class="wheel-mode-btn" data-mode="new" role="tab">
-            ${UI_ICONS.newFile}<span>New File</span>
+            ${UI_ICONS.newFile}<span data-mode-label="new">${escapeHtml(t(lang(), "wheel.modeNew"))}</span>
           </button>
           <span class="wheel-mode-tab-hint">Tab</span>
         </div>
@@ -185,12 +188,12 @@ export function mountWheelView(root: HTMLElement): () => void {
         isTauriRuntime()
           ? ""
           : `<div class="wheel-preview-dock" id="wheel-preview-dock">
-              <span>Preview:</span>
-              <button type="button" data-preview="image">Image</button>
-              <button type="button" data-preview="pdf12">PDF (12 fmts)</button>
-              <button type="button" data-preview="new">New File</button>
-              <button type="button" data-preview="settings">Settings</button>
-              <button type="button" data-preview="batch">Batch</button>
+              <span data-preview-label>${escapeHtml(t(lang(), "wheel.previewLabel"))}</span>
+              <button type="button" data-preview="image">${escapeHtml(t(lang(), "wheel.previewImage"))}</button>
+              <button type="button" data-preview="pdf12">${escapeHtml(t(lang(), "wheel.previewPdf"))}</button>
+              <button type="button" data-preview="new">${escapeHtml(t(lang(), "wheel.previewNew"))}</button>
+              <button type="button" data-preview="settings">${escapeHtml(t(lang(), "wheel.previewSettings"))}</button>
+              <button type="button" data-preview="batch">${escapeHtml(t(lang(), "wheel.previewBatch"))}</button>
             </div>`
       }
     </div>
@@ -270,6 +273,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   }
 
   function buildActionItems(): WheelActionItem[] {
+    const l = lang();
     if (state.mode === "new") {
       const visibleOrder = prefs?.newFileVisibleKinds ?? [];
       const orderRank = new Map<string, number>();
@@ -286,7 +290,10 @@ export function mountWheelView(root: HTMLElement): () => void {
         return {
           id: k.id,
           label: meta.shortLabel,
-          subtitle: k.id === "clipboard" ? "From Clipboard" : `New ${k.name}`,
+          subtitle:
+            k.id === "clipboard"
+              ? t(l, "wheel.fromClipboard")
+              : t(l, "wheel.newKindSubtitle", { name: k.name }),
           accent: meta.accent,
           iconSvg: meta.iconSvg,
           enabled: k.available,
@@ -296,10 +303,11 @@ export function mountWheelView(root: HTMLElement): () => void {
 
       for (const tmpl of userTemplates) {
         const meta = getNewKindMeta(tmpl.id, tmpl.name, tmpl.extension);
+        const templateLabel = tmpl.group ? `${tmpl.group}/${tmpl.name}` : tmpl.name;
         items.push({
           id: tmpl.id,
           label: tmpl.name,
-          subtitle: tmpl.group ? `Template: ${tmpl.group}/${tmpl.name}` : `Template: ${tmpl.name}`,
+          subtitle: t(l, "wheel.templateSubtitle", { label: templateLabel }),
           accent: meta.accent,
           iconSvg: meta.iconSvg,
           enabled: true,
@@ -316,7 +324,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     const allTargets = Array.from(new Set([...state.batchActions, ...orderedFormats]));
 
     return allTargets.map((fmt) => {
-      const meta = getFormatMeta(fmt);
+      const meta = getFormatMeta(fmt, l);
       return {
         id: fmt,
         label: meta.shortLabel,
@@ -335,6 +343,31 @@ export function mountWheelView(root: HTMLElement): () => void {
   }
 
   function updateModePillUI(): void {
+    const l = lang();
+    stageEl.setAttribute("aria-label", t(l, "wheel.ariaLabel"));
+    root.querySelector(".wheel-mode-pill")?.setAttribute("aria-label", t(l, "wheel.modeListLabel"));
+    const convertLabelEl = root.querySelector<HTMLElement>('[data-mode-label="convert"]');
+    if (convertLabelEl) convertLabelEl.textContent = t(l, "wheel.modeConvert");
+    const newLabelEl = root.querySelector<HTMLElement>('[data-mode-label="new"]');
+    if (newLabelEl) newLabelEl.textContent = t(l, "wheel.modeNew");
+
+    const previewDockEl = root.querySelector<HTMLElement>("#wheel-preview-dock");
+    if (previewDockEl) {
+      const lbl = previewDockEl.querySelector<HTMLElement>("[data-preview-label]");
+      if (lbl) lbl.textContent = t(l, "wheel.previewLabel");
+      const map: Record<string, Parameters<typeof t>[1]> = {
+        image: "wheel.previewImage",
+        pdf12: "wheel.previewPdf",
+        new: "wheel.previewNew",
+        settings: "wheel.previewSettings",
+        batch: "wheel.previewBatch",
+      };
+      for (const [k, msgKey] of Object.entries(map)) {
+        const btn = previewDockEl.querySelector<HTMLElement>(`button[data-preview="${k}"]`);
+        if (btn) btn.textContent = t(l, msgKey);
+      }
+    }
+
     const convertDisabled = state.files.length === 0 && !state.isDrag;
     for (const btn of modeButtons) {
       const btnMode = btn.dataset.mode as WheelMode;
@@ -345,15 +378,16 @@ export function mountWheelView(root: HTMLElement): () => void {
         btn.disabled = false;
         btn.setAttribute("aria-disabled", convertDisabled ? "true" : "false");
         btn.title = convertDisabled
-          ? "Select or drop files to convert"
-          : "Convert files (Tab)";
+          ? t(l, "wheel.modeConvertDisabledTitle")
+          : t(l, "wheel.modeConvertTitle");
       } else {
-        btn.title = "Create New File (Tab)";
+        btn.title = t(l, "wheel.modeNewTitle");
       }
     }
   }
 
   function renderSectors(): void {
+    const l = lang();
     const items = buildActionItems();
     currentItemsCount = items.length;
     const paginated = paginateWheelItems(items, page);
@@ -389,7 +423,7 @@ export function mountWheelView(root: HTMLElement): () => void {
               <path class="wheel-sector-path" d="${d}" />
               <foreignObject x="${pos.x - 36}" y="${pos.y - 26}" width="72" height="52">
                 <div class="wheel-sector-content">
-                  <span class="wheel-sector-icon">${getFormatMeta(label).iconSvg}</span>
+                  <span class="wheel-sector-icon">${getFormatMeta(label, l).iconSvg}</span>
                   <span class="wheel-sector-label">${escapeHtml(label)}</span>
                 </div>
               </foreignObject>
@@ -410,9 +444,9 @@ export function mountWheelView(root: HTMLElement): () => void {
         const enabled = isSlotActionable(slot);
         const label =
           slot.kind === "more"
-            ? "More ▸"
+            ? t(l, "wheel.moreSlot")
             : slot.kind === "back"
-              ? "Back ◂"
+              ? t(l, "wheel.backSlot")
               : slot.item.label;
         const icon =
           slot.kind === "more"
@@ -424,7 +458,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           slot.kind === "more" || slot.kind === "back"
             ? "#38bdf8"
             : slot.item.accent;
-        const ariaLabel = formatSectorAriaLabel(slot, i, count);
+        const ariaLabel = formatSectorAriaLabel(slot, i, count, l);
         const isActive = activeIndex === i && enabled && phase === "idle";
 
         const classes = [
@@ -475,6 +509,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   }
 
   function renderHub(): void {
+    const l = lang();
     hubEl.classList.toggle("is-error-hub", phase === "error");
     const fileCount = state.files.length;
     const primaryName =
@@ -482,16 +517,16 @@ export function mountWheelView(root: HTMLElement): () => void {
         ? ""
         : fileCount === 1
           ? basename(state.files[0])
-          : `${fileCount} files`;
+          : t(l, "wheel.filesCount", { count: fileCount });
 
     if (phase === "converting") {
       const shownPct = Math.max(1, Math.min(99, Math.round(displayedPercent)));
       hubEl.innerHTML = `
         <div class="wheel-hub-pct" id="wheel-hub-pct">${shownPct}%</div>
-        <div class="wheel-hub-title" title="${escapeHtml(primaryName)}">${escapeHtml(primaryName || "Converting")}</div>
+        <div class="wheel-hub-title" title="${escapeHtml(primaryName)}">${escapeHtml(primaryName || t(l, "wheel.converting"))}</div>
         <div class="wheel-hub-subtitle" id="wheel-hub-step">${escapeHtml(stepLabel || `→ ${activeActionLabel}`)}</div>
         <div class="wheel-hub-actions">
-          <button type="button" class="wheel-hub-pill-btn is-danger" id="hub-cancel-btn">Cancel</button>
+          <button type="button" class="wheel-hub-pill-btn is-danger" id="hub-cancel-btn">${escapeHtml(t(l, "common.cancel"))}</button>
         </div>
       `;
       hubEl.querySelector("#hub-cancel-btn")?.addEventListener("click", (e) => {
@@ -507,23 +542,38 @@ export function mountWheelView(root: HTMLElement): () => void {
           <circle class="wheel-check-circle" cx="18" cy="18" r="16" />
           <path class="wheel-check-mark" d="M10.5 18.5l5 5 10-10.5" />
         </svg>
-        <div class="wheel-hub-title">${escapeHtml(activeActionLabel || "Done")}</div>
-        <div class="wheel-hub-subtitle is-success">Completed!</div>
+        <div class="wheel-hub-title">${escapeHtml(activeActionLabel || t(l, "wheel.done"))}</div>
+        <div class="wheel-hub-subtitle is-success">${escapeHtml(t(l, "wheel.completed"))}</div>
       `;
       return;
     }
 
     if (phase === "error") {
-      const failTitle = state.mode === "new" ? "Creation Failed" : "Conversion Failed";
+      const failTitle =
+        state.mode === "new" ? t(l, "wheel.creationFailed") : t(l, "wheel.conversionFailed");
       const canOpenBatch = state.mode === "convert" && state.files.length > 0;
+      const diagBtnLabel =
+        diagBtnState === "copying"
+          ? t(l, "common.copying")
+          : diagBtnState === "copied"
+            ? t(l, "common.copied")
+            : diagBtnState === "failed"
+              ? t(l, "common.copyFailed")
+              : t(l, "common.copyDiagnostics");
+      const diagBtnTitle =
+        diagBtnState === "copied"
+          ? t(l, "wheel.copyDiagSuccessTitle")
+          : diagBtnState === "failed"
+            ? diagBtnFailReason || t(l, "wheel.copyDiagFailTitle")
+            : t(l, "wheel.copyDiagTitle");
       hubEl.innerHTML = `
-        <div class="wheel-hub-title">${failTitle}</div>
-        <div class="wheel-hub-subtitle is-error" title="${escapeHtml(lastErrorMsg)}">${escapeHtml(lastErrorMsg || "An error occurred")}</div>
+        <div class="wheel-hub-title">${escapeHtml(failTitle)}</div>
+        <div class="wheel-hub-subtitle is-error" title="${escapeHtml(lastErrorMsg)}">${escapeHtml(lastErrorMsg || t(l, "wheel.genericError"))}</div>
         <div class="wheel-hub-actions is-error-actions">
-          <button type="button" class="wheel-hub-pill-btn is-diag-btn" id="hub-copy-diag" title="${escapeHtml(diagBtnTitle)}">${escapeHtml(diagBtnLabel)}</button>
+          <button type="button" class="wheel-hub-pill-btn is-diag-btn" id="hub-copy-diag" title="${escapeHtml(diagBtnTitle)}" ${diagBtnState === "copying" ? "disabled" : ""}>${escapeHtml(diagBtnLabel)}</button>
           <div class="wheel-hub-error-row">
-            ${canOpenBatch ? `<button type="button" class="wheel-hub-pill-btn" id="hub-batch-details" title="Open Batch Details">Details</button>` : ""}
-            <button type="button" class="wheel-hub-pill-btn" id="hub-dismiss-btn">Close</button>
+            ${canOpenBatch ? `<button type="button" class="wheel-hub-pill-btn" id="hub-batch-details" title="${escapeHtml(t(l, "wheel.openBatchDetailsTitle"))}">${escapeHtml(t(l, "common.details"))}</button>` : ""}
+            <button type="button" class="wheel-hub-pill-btn" id="hub-dismiss-btn">${escapeHtml(t(l, "common.close"))}</button>
           </div>
         </div>
       `;
@@ -535,40 +585,39 @@ export function mountWheelView(root: HTMLElement): () => void {
       });
       hubEl.querySelector("#hub-copy-diag")?.addEventListener("click", async (e) => {
         e.stopPropagation();
-        const btn = e.currentTarget as HTMLButtonElement;
-        btn.disabled = true;
-        btn.textContent = "Copying…";
+        diagBtnState = "copying";
+        diagBtnFailReason = "";
+        renderHub();
         clearDiagResetTimer();
         try {
           const res = await copyDiagnosticsToClipboard();
           if (disposed || phase !== "error") return;
           if (res.ok) {
-            diagBtnLabel = "Copied!";
-            diagBtnTitle = "Redacted diagnostics copied to clipboard";
+            diagBtnState = "copied";
+            diagBtnFailReason = "";
           } else {
-            diagBtnLabel = "Copy Failed";
-            diagBtnTitle =
-              res.error || "Clipboard unavailable — open Settings → About → Copy Diagnostics";
+            diagBtnState = "failed";
+            diagBtnFailReason = res.error || "";
           }
           renderHub();
           diagResetTimer = window.setTimeout(() => {
             diagResetTimer = null;
             if (!disposed && phase === "error") {
-              diagBtnLabel = "Copy Diagnostics";
-              diagBtnTitle = "Copy redacted diagnostics report";
+              diagBtnState = "idle";
+              diagBtnFailReason = "";
               renderHub();
             }
           }, 2000);
         } catch (err) {
           if (disposed || phase !== "error") return;
-          diagBtnLabel = "Copy Failed";
-          diagBtnTitle = formatError(err);
+          diagBtnState = "failed";
+          diagBtnFailReason = formatError(err);
           renderHub();
           diagResetTimer = window.setTimeout(() => {
             diagResetTimer = null;
             if (!disposed && phase === "error") {
-              diagBtnLabel = "Copy Diagnostics";
-              diagBtnTitle = "Copy redacted diagnostics report";
+              diagBtnState = "idle";
+              diagBtnFailReason = "";
               renderHub();
             }
           }, 2000);
@@ -586,17 +635,17 @@ export function mountWheelView(root: HTMLElement): () => void {
 
     if (state.mode === "new") {
       const folderLabel = basename(state.targetFolder || "Desktop");
-      let subtitle = "Esc to cancel";
+      let subtitle = t(l, "wheel.escToCancel");
       let subClass = "is-muted";
       if (hoveredSlot) {
         if (hoveredSlot.kind === "more") {
-          subtitle = "More templates →";
+          subtitle = t(l, "wheel.moreTemplates");
           subClass = "";
         } else if (hoveredSlot.kind === "back") {
-          subtitle = "← Previous items";
+          subtitle = t(l, "wheel.prevItems");
           subClass = "";
         } else if (!hoveredSlot.item.enabled) {
-          subtitle = hoveredSlot.item.disabledReason ?? "Unavailable";
+          subtitle = hoveredSlot.item.disabledReason ?? t(l, "wheel.unavailable");
           subClass = "is-error";
         } else {
           subtitle = hoveredSlot.item.subtitle;
@@ -619,32 +668,32 @@ export function mountWheelView(root: HTMLElement): () => void {
         <div class="wheel-hub-thumb-wrap">
           <div class="wheel-hub-thumb-fallback">${UI_ICONS.drop}</div>
         </div>
-        <div class="wheel-hub-title">Drop files here</div>
-        <div class="wheel-hub-subtitle is-muted">Esc to cancel</div>
+        <div class="wheel-hub-title">${escapeHtml(t(l, "wheel.dropFilesHere"))}</div>
+        <div class="wheel-hub-subtitle is-muted">${escapeHtml(t(l, "wheel.escToCancel"))}</div>
       `;
       return;
     }
 
-    let subtitle = "Esc to cancel";
+    let subtitle = t(l, "wheel.escToCancel");
     let subtitleTitle = "";
     let subClass = "is-muted";
     if (state.compatibleFormats.length === 0 && state.batchActions.length === 0) {
-      const rawMsg = state.availabilityMessage || "No common format";
+      const rawMsg = state.availabilityMessage || t(l, "wheel.noCommonFormat");
       subtitleTitle = rawMsg;
-      const lines = rawMsg.split("\n").map((l) => l.trim()).filter(Boolean);
+      const lines = rawMsg.split("\n").map((ln) => ln.trim()).filter(Boolean);
       subtitle = lines.length > 1 && /^\d+\s+files?\s+selected$/i.test(lines[0])
         ? lines.slice(1).join(" · ")
-        : lines.join(" · ") || "No common format";
+        : lines.join(" · ") || t(l, "wheel.noCommonFormat");
       subClass = "is-error";
     } else if (hoveredSlot) {
       if (hoveredSlot.kind === "more") {
-        subtitle = "Next formats →";
+        subtitle = t(l, "wheel.nextFormats");
         subClass = "";
       } else if (hoveredSlot.kind === "back") {
-        subtitle = "← Previous formats";
+        subtitle = t(l, "wheel.prevFormats");
         subClass = "";
       } else if (!hoveredSlot.item.enabled) {
-        subtitle = hoveredSlot.item.disabledReason ?? "Unavailable";
+        subtitle = hoveredSlot.item.disabledReason ?? t(l, "wheel.unavailable");
         subClass = "is-error";
       } else {
         subtitle = hoveredSlot.item.subtitle;
@@ -670,7 +719,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       ${
         showMultiBtn
           ? `<div class="wheel-hub-actions">
-               <button type="button" class="wheel-hub-pill-btn" id="hub-multi-btn" title="Open Batch Multi-Format Converter (or Shift+Click any sector)">Multi</button>
+               <button type="button" class="wheel-hub-pill-btn" id="hub-multi-btn" title="${escapeHtml(t(l, "wheel.multiBtnTitle"))}">${escapeHtml(t(l, "wheel.multiBtn"))}</button>
              </div>`
           : ""
       }
@@ -722,7 +771,7 @@ export function mountWheelView(root: HTMLElement): () => void {
 
     const slot = bounded >= 0 ? slots[bounded] : undefined;
     if (slot) {
-      announce(formatSectorAriaLabel(slot, bounded, slots.length));
+      announce(formatSectorAriaLabel(slot, bounded, slots.length, lang()));
     }
     if (slot && isSlotActionable(slot)) {
       void playWheelFeedback("tick");
@@ -741,7 +790,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           void playWheelFeedback("level");
           renderSectors();
           renderHub();
-          announce(formatPageFlipAnnouncement(page, totalPages), { force: true });
+          announce(formatPageFlipAnnouncement(page, totalPages, lang()), { force: true });
         }, DRAG_DWELL_MS);
       }
     }
@@ -782,7 +831,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     renderSectors();
     updateProgressVisuals();
     renderHub();
-    announce(formatProgressMilestoneAnnouncement(formatLabel, 0), { force: true });
+    announce(formatProgressMilestoneAnnouncement(formatLabel, 0, lang()), { force: true });
 
     const tick = () => {
       if (disposed || phase !== "converting") return;
@@ -833,6 +882,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           ok: true,
           succeeded: lastResults.length || state.files.length || 1,
           outputFormat: activeTargetFormat || activeActionLabel,
+          lang: lang(),
         }),
         { force: true },
       );
@@ -845,7 +895,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       progressArcEl.classList.add("is-error");
       progressArcEl.classList.remove("is-success");
       lastErrorMsg =
-        payload.error || failedUnit?.error || "One or more files failed to convert.";
+        payload.error || failedUnit?.error || t(lang(), "wheel.oneOrMoreFailed");
       const canceled = /cancel/i.test(lastErrorMsg);
       const failedCount = lastResults.filter((r) => Boolean(r.error)).length || 1;
       void playWheelFeedback("error");
@@ -859,6 +909,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           canceled,
           failed: failedCount,
           errorMessage: lastErrorMsg,
+          lang: lang(),
         }),
         { force: true },
       );
@@ -872,7 +923,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   async function commitFormatConversion(formatId: string): Promise<void> {
     if (getPhase() !== "idle" || state.files.length === 0) return;
     const filesSnapshot = [...state.files];
-    const meta = getFormatMeta(formatId);
+    const meta = getFormatMeta(formatId, lang());
     conversionInFlight = true;
     void playWheelFeedback("generic");
     startConversionVisual(meta.shortLabel);
@@ -916,7 +967,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     renderSectors();
     updateProgressVisuals();
     renderHub();
-    announce(`Creating ${kind.label}`, { force: true });
+    announce(t(lang(), "wheel.creatingKind", { label: kind.label }), { force: true });
 
     try {
       const res = await executeCreateNew(kind.id, state.targetFolder);
@@ -932,7 +983,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       void playWheelFeedback("success");
       renderHub();
       announce(
-        formatCompletionAnnouncement({ ok: true, createdLabel: createdName }),
+        formatCompletionAnnouncement({ ok: true, createdLabel: createdName, lang: lang() }),
         { force: true },
       );
       clearAutoClose();
@@ -954,7 +1005,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       shellEl.classList.add("is-error-shake");
       renderHub();
       announce(
-        formatCompletionAnnouncement({ ok: false, errorMessage: lastErrorMsg }),
+        formatCompletionAnnouncement({ ok: false, errorMessage: lastErrorMsg, lang: lang() }),
         { force: true },
       );
     }
@@ -975,7 +1026,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       void playWheelFeedback("level");
       renderSectors();
       renderHub();
-      announce(formatPageFlipAnnouncement(page, totalPages), { force: true });
+      announce(formatPageFlipAnnouncement(page, totalPages, lang()), { force: true });
       if (wasFocusInsideSectors) {
         const firstFocusIdx = slots.findIndex((s) => isSlotActionable(s));
         if (firstFocusIdx >= 0) {
@@ -1062,8 +1113,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     activeTargetFormat = "";
     lastAnnouncedMilestone = -1;
     lastErrorMsg = "";
-    diagBtnLabel = "Copy Diagnostics";
-    diagBtnTitle = "Copy redacted diagnostics report";
+    diagBtnState = "idle";
+    diagBtnFailReason = "";
     lastResults = [];
     clearDwell();
     clearAutoClose();
@@ -1120,6 +1171,7 @@ export function mountWheelView(root: HTMLElement): () => void {
         optionCount: currentItemsCount,
         page,
         totalPages,
+        lang: lang(),
       }),
       { force: true },
     );
@@ -1501,6 +1553,7 @@ export function mountWheelView(root: HTMLElement): () => void {
             formatProgressMilestoneAnnouncement(
               activeTargetFormat || activeActionLabel || "output",
               milestone,
+              lang(),
             ),
           );
         }
@@ -1508,6 +1561,13 @@ export function mountWheelView(root: HTMLElement): () => void {
       events.onConversionComplete((payload) => {
         if (disposed || !conversionInFlight || phase !== "converting") return;
         handleConversionComplete(payload);
+      }),
+      events.onPrefsChanged((updated) => {
+        if (disposed) return;
+        prefs = updated;
+        updateModePillUI();
+        renderSectors();
+        renderHub();
       }),
       events.onTemplatesChanged(() => {
         if (disposed) return;

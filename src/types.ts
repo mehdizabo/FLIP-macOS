@@ -1,5 +1,7 @@
 export type RouteName = "wheel" | "settings" | "batch" | "onboarding";
 
+export type AppLanguage = "en" | "it";
+
 export type WheelMode = "convert" | "new";
 
 export type FormatFamily =
@@ -57,6 +59,7 @@ export interface AppPreferences {
   newFileVisibleKinds: string[];
   recentConversions: RecentConversion[];
   onboardingCompleted?: boolean;
+  language: AppLanguage | string;
 }
 
 export interface ConversionResult {

@@ -1,3 +1,5 @@
+import { t } from "./i18n";
+
 export const WHEEL_CANVAS_SIZE = 440;
 export const WHEEL_CENTER = WHEEL_CANVAS_SIZE / 2; // 220
 export const WHEEL_OUTER_RADIUS = 170; // 340px ring inside 440px canvas
@@ -49,6 +51,7 @@ export const DEFAULT_PREFERRED_FORMATS: readonly string[] = [
   "AAC",
   "AIFF",
   "ALAC",
+  "CAF",
   "XLSX",
   "PPTX",
   "REMOVE_BG",
@@ -445,19 +448,34 @@ export function formatSectorAriaLabel(
   slot: PaginatedSlot<SectorAnnouncementItem>,
   index: number,
   total: number,
+  lang = "en",
 ): string {
   const safeTotal = Math.max(1, Math.trunc(total));
   const sectorNum = Math.max(1, Math.min(safeTotal, Math.trunc(index) + 1));
   if (slot.kind === "more") {
-    return `More options, page ${slot.targetPage + 1}, sector ${sectorNum} of ${safeTotal}`;
+    return t(lang, "vo.moreOptions", {
+      page: slot.targetPage + 1,
+      sector: sectorNum,
+      total: safeTotal,
+    });
   }
   if (slot.kind === "back") {
-    return `Previous options, page ${slot.targetPage + 1}, sector ${sectorNum} of ${safeTotal}`;
+    return t(lang, "vo.prevOptions", {
+      page: slot.targetPage + 1,
+      sector: sectorNum,
+      total: safeTotal,
+    });
   }
-  const base = `${slot.item.subtitle}, sector ${sectorNum} of ${safeTotal}`;
+  const base = t(lang, "vo.sectorItem", {
+    subtitle: slot.item.subtitle,
+    sector: sectorNum,
+    total: safeTotal,
+  });
   if (slot.item.enabled === false) {
     const reason = slot.item.disabledReason?.trim();
-    return reason ? `${base}, unavailable (${reason})` : `${base}, unavailable`;
+    return reason
+      ? t(lang, "vo.sectorUnavailableReason", { base, reason })
+      : t(lang, "vo.sectorUnavailable", { base });
   }
   return base;
 }
@@ -468,27 +486,50 @@ export function formatWheelOpenAnnouncement(params: {
   optionCount: number;
   page?: number;
   totalPages?: number;
+  lang?: string;
 }): string {
+  const lang = params.lang ?? "en";
   const page = Math.max(0, Math.trunc(params.page ?? 0));
   const totalPages = Math.max(1, Math.trunc(params.totalPages ?? 1));
-  const pageSuffix = totalPages > 1 ? `, page ${page + 1} of ${totalPages}` : "";
+  const pageSuffix =
+    totalPages > 1
+      ? t(lang, "vo.pageSuffix", { page: page + 1, totalPages })
+      : "";
   if (params.mode === "new") {
-    return `Create New File wheel opened, ${params.optionCount} options${pageSuffix}.`;
+    return t(lang, "vo.openNew", {
+      optionCount: params.optionCount,
+      pageSuffix,
+    });
   }
   if (params.fileCount <= 0) {
-    return "Convert wheel opened. No files selected yet.";
+    return t(lang, "vo.openConvertEmpty");
   }
-  const noun = params.fileCount === 1 ? "file" : "files";
+  const noun =
+    params.fileCount === 1
+      ? t(lang, "vo.fileSingular")
+      : t(lang, "vo.filePlural");
   if (params.optionCount === 0) {
-    return `Convert wheel opened for ${params.fileCount} ${noun}. No compatible output formats.`;
+    return t(lang, "vo.openConvertNone", {
+      fileCount: params.fileCount,
+      noun,
+    });
   }
-  return `Convert wheel opened for ${params.fileCount} ${noun}, ${params.optionCount} options${pageSuffix}.`;
+  return t(lang, "vo.openConvertReady", {
+    fileCount: params.fileCount,
+    noun,
+    optionCount: params.optionCount,
+    pageSuffix,
+  });
 }
 
-export function formatPageFlipAnnouncement(page: number, totalPages: number): string {
+export function formatPageFlipAnnouncement(
+  page: number,
+  totalPages: number,
+  lang = "en",
+): string {
   const safeTotal = Math.max(1, Math.trunc(totalPages));
   const safePage = Math.max(0, Math.min(safeTotal - 1, Math.trunc(page)));
-  return `Page ${safePage + 1} of ${safeTotal}`;
+  return t(lang, "vo.pageFlip", { page: safePage + 1, totalPages: safeTotal });
 }
 
 export function getProgressMilestoneBucket(percent: number): number {
@@ -502,12 +543,13 @@ export function getProgressMilestoneBucket(percent: number): number {
 export function formatProgressMilestoneAnnouncement(
   targetFormat: string,
   bucketPercent: number,
+  lang = "en",
 ): string {
   const fmt = targetFormat.trim().toUpperCase();
   if (bucketPercent <= 0) {
-    return `Converting to ${fmt}`;
+    return t(lang, "vo.convertingTo", { fmt });
   }
-  return `Converting to ${fmt}, ${bucketPercent}% complete`;
+  return t(lang, "vo.convertingProgress", { fmt, pct: bucketPercent });
 }
 
 export function formatCompletionAnnouncement(params: {
@@ -518,22 +560,30 @@ export function formatCompletionAnnouncement(params: {
   outputFormat?: string;
   createdLabel?: string;
   errorMessage?: string;
+  lang?: string;
 }): string {
+  const lang = params.lang ?? "en";
   if (params.createdLabel) {
-    return `Created ${params.createdLabel}.`;
+    return t(lang, "vo.created", { label: params.createdLabel });
   }
   if (params.canceled) {
-    return "Conversion canceled.";
+    return t(lang, "vo.canceled");
   }
   if (params.ok) {
     const count = params.succeeded ?? 1;
-    const fmt = params.outputFormat ? ` to ${params.outputFormat.toUpperCase()}` : "";
-    return `Converted ${count} ${count === 1 ? "file" : "files"}${fmt}.`;
+    const noun = count === 1 ? t(lang, "vo.fileSingular") : t(lang, "vo.filePlural");
+    const fmtSuffix = params.outputFormat
+      ? t(lang, "vo.convertedFmtSuffix", {
+          fmt: params.outputFormat.toUpperCase(),
+        })
+      : "";
+    return t(lang, "vo.converted", { count, noun, fmtSuffix });
   }
   const reason = params.errorMessage?.trim();
   if (reason) {
-    return `Conversion failed: ${reason}`;
+    return t(lang, "vo.failedReason", { reason });
   }
-  const failed = params.failed ?? 1;
-  return `Conversion failed for ${failed} ${failed === 1 ? "file" : "files"}.`;
+  const count = params.failed ?? 1;
+  const noun = count === 1 ? t(lang, "vo.fileSingular") : t(lang, "vo.filePlural");
+  return t(lang, "vo.failedCount", { count, noun });
 }

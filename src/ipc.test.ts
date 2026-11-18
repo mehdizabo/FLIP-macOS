@@ -55,6 +55,8 @@ describe("Frontend IPC surface & contract alignment", () => {
     expect(prefs.ffmpegPath).toBeNull();
     expect(prefs.pandocPath).toBeNull();
     expect(prefs.onboardingCompleted).toBe(false);
+    expect(prefs.language).toBe("en");
+    expect(prefs.preferredFormats.audio).toContain("CAF");
     expect(Array.isArray(prefs.newFileVisibleKinds)).toBe(true);
     expect(Array.isArray(prefs.recentConversions)).toBe(true);
     expect(Object.keys(prefs.preferredFormats)).toEqual([
@@ -163,11 +165,18 @@ describe("Frontend IPC surface & contract alignment", () => {
       expect(qa1.cliSymlinkPath).toBe("/Users/demo/.local/bin/flip");
 
       const prefs = await getPreferences();
+      const prefsUpdates: string[] = [];
+      const uPrefs = await events.onPrefsChanged((p) => prefsUpdates.push(p.language));
       prefs.dragTrigger = "Space";
+      prefs.language = "it";
       prefs.preferredFormats.document = ["EPUB", "MD"];
       const saved = await savePreferences(prefs);
       expect(saved.dragTrigger).toBe("Space");
+      expect(saved.language).toBe("it");
+      expect(prefsUpdates).toEqual(["it"]);
+      uPrefs();
       const reloaded = await getPreferences();
+      expect(reloaded.language).toBe("it");
       expect(reloaded.preferredFormats.document.slice(0, 2)).toEqual(["EPUB", "MD"]);
       expect(reloaded.preferredFormats.document).toContain("HEIC");
       expect((await getRecentConversions()).length).toBeGreaterThan(0);
@@ -301,5 +310,40 @@ describe("Frontend IPC surface & contract alignment", () => {
     expect(defaultPreferences().preferredFormats.pdf).toContain("TIFF");
     expect(defaultPreferences().preferredFormats.pdf.slice(0, 7)).toContain("OPTIMIZE_PDF");
     expect(defaultPreferences().preferredFormats.image.slice(0, 7)).toContain("REMOVE_BG");
+  });
+
+  test("native zero-FFmpeg audio policy supports CAF and FLAC while keeping MP3/OGG/OPUS FFmpeg-gated", () => {
+    const wavNoFf = inspectFilesLocally(["/tmp/tone.wav"], { ffmpeg: false });
+    expect(wavNoFf.family).toBe("audio");
+    expect(wavNoFf.compatibleFormats).toContain("CAF");
+    expect(wavNoFf.compatibleFormats).toContain("FLAC");
+    expect(wavNoFf.compatibleFormats).toContain("AIFF");
+    expect(wavNoFf.compatibleFormats).toContain("M4A");
+    expect(wavNoFf.compatibleFormats).toContain("ALAC");
+    expect(wavNoFf.compatibleFormats).not.toContain("WAV");
+    expect(wavNoFf.compatibleFormats).not.toContain("MP3");
+    expect(wavNoFf.compatibleFormats).not.toContain("OGG");
+    expect(wavNoFf.compatibleFormats).not.toContain("OPUS");
+
+    const cafNoFf = inspectFilesLocally(["/tmp/sound.caf"], { ffmpeg: false });
+    expect(cafNoFf.compatibleFormats).toContain("WAV");
+    expect(cafNoFf.compatibleFormats).toContain("FLAC");
+    expect(cafNoFf.compatibleFormats).not.toContain("CAF");
+
+    const flacNoFf = inspectFilesLocally(["/tmp/lossless.flac"], { ffmpeg: false });
+    expect(flacNoFf.compatibleFormats).toContain("CAF");
+    expect(flacNoFf.compatibleFormats).toContain("WAV");
+    expect(flacNoFf.compatibleFormats).not.toContain("FLAC");
+
+    const aacNoFf = inspectFilesLocally(["/tmp/voice.aac"], { ffmpeg: false });
+    expect(aacNoFf.compatibleFormats).toContain("CAF");
+    expect(aacNoFf.compatibleFormats).toContain("FLAC");
+
+    const oggNoFf = inspectFilesLocally(["/tmp/podcast.ogg"], { ffmpeg: false });
+    expect(oggNoFf.compatibleFormats).toEqual(["ZIP"]);
+
+    const opusWithFf = inspectFilesLocally(["/tmp/podcast.opus"], { ffmpeg: true });
+    expect(opusWithFf.compatibleFormats).toContain("CAF");
+    expect(opusWithFf.compatibleFormats).toContain("MP3");
   });
 });

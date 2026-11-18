@@ -44,6 +44,7 @@ pub struct AppPreferences {
     pub recent_conversions: Vec<RecentConversion>,
     #[serde(default)]
     pub onboarding_completed: bool,
+    pub language: String,
 }
 
 impl Default for AppPreferences {
@@ -72,6 +73,7 @@ impl Default for AppPreferences {
             new_file_visible_kinds: default_new_file_kinds(),
             recent_conversions: Vec::new(),
             onboarding_completed: false,
+            language: "en".to_string(),
         }
     }
 }
@@ -114,7 +116,7 @@ pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
     );
     map.insert(
         "audio".to_string(),
-        vec!["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "OGG", "OPUS", "AAC"]
+        vec!["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"]
             .into_iter()
             .map(String::from)
             .collect(),
@@ -223,6 +225,12 @@ impl AppPreferences {
         if !matches!(self.pdf_page_size.to_lowercase().as_str(), "a4" | "letter") {
             self.pdf_page_size = "a4".to_string();
         }
+        let lang = self.language.trim().to_ascii_lowercase();
+        self.language = if lang == "it" || lang.starts_with("it-") || lang.starts_with("it_") {
+            "it".to_string()
+        } else {
+            "en".to_string()
+        };
         if self.mouse_trigger_button.is_some_and(|b| !(2..=5).contains(&b)) {
             self.mouse_trigger_button = None;
         }
@@ -351,5 +359,33 @@ mod tests {
         assert!(prefs.preferred_formats["pdf"].contains(&"TIFF".to_string()));
         assert!(prefs.preferred_formats["pdf"].contains(&"OPTIMIZE_PDF".to_string()));
         assert!(prefs.preferred_formats["image"].contains(&"REMOVE_BG".to_string()));
+        assert!(prefs.preferred_formats["audio"].contains(&"CAF".to_string()));
+    }
+
+    #[test]
+    fn language_defaults_to_en_and_sanitizes_cleanly() {
+        let def = AppPreferences::default();
+        assert_eq!(def.language, "en");
+
+        let mut it_prefs = AppPreferences {
+            language: " IT ".to_string(),
+            ..Default::default()
+        };
+        it_prefs.sanitize();
+        assert_eq!(it_prefs.language, "it");
+
+        let mut bad_prefs = AppPreferences {
+            language: "fr-FR".to_string(),
+            ..Default::default()
+        };
+        bad_prefs.sanitize();
+        assert_eq!(bad_prefs.language, "en");
+
+        let mut empty_prefs = AppPreferences {
+            language: "".to_string(),
+            ..Default::default()
+        };
+        empty_prefs.sanitize();
+        assert_eq!(empty_prefs.language, "en");
     }
 }

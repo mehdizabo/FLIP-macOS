@@ -5,7 +5,9 @@ use flip_lib::core::preferences::AppPreferences;
 use flip_lib::engines::create_new::{
     built_in_kinds, create_new_item, ensure_templates_dir_initialized, scan_user_templates,
 };
-use flip_lib::engines::{bridge, convert_files, detect_tools, media, resolve_target_dir, EngineError};
+use flip_lib::engines::{
+    bridge, convert_files, detect_tools, media, resolve_target_dir, validate_output, EngineError,
+};
 use image::{GenericImageView, ImageBuffer, ImageFormat, Rgba};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -364,6 +366,7 @@ fn media_native_and_ffmpeg_conversions_and_cancellation() {
                 "M4A".into(),
                 "AAC".into(),
                 "ALAC".into(),
+                "CAF".into(),
             ],
             &prefs,
             &cancel,
@@ -2034,4 +2037,139 @@ print("CROP_ROT_OK")
     );
 
     assert_no_residual_staging(dir.path());
+}
+
+fn write_pcm16_wav(path: &Path, sample_rate: u32, channels: u16, frames: usize) {
+    let data_bytes = (frames * channels as usize * 2) as u32;
+    let riff_size = 36 + data_bytes;
+    let byte_rate = sample_rate * channels as u32 * 2;
+    let block_align = channels * 2;
+    let mut out = Vec::with_capacity(44 + data_bytes as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&riff_size.to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&byte_rate.to_le_bytes());
+    out.extend_from_slice(&block_align.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data_bytes.to_le_bytes());
+    for i in 0..frames {
+        let val = ((2.0 * std::f64::consts::PI * 440.0 * (i as f64) / (sample_rate as f64)).sin()
+            * 14000.0) as i16;
+        for _ in 0..channels {
+            out.extend_from_slice(&val.to_le_bytes());
+        }
+    }
+    fs::write(path, out).expect("write synthetic wav");
+}
+
+#[test]
+fn native_zero_ffmpeg_audio_caf_and_flac_roundtrips() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut native_tools = detect_tools(Some(&prefs));
+    native_tools.ffmpeg = None;
+    native_tools.ffprobe = None;
+
+    // 1. Standard 1s stereo WAV -> CAF -> WAV and WAV -> FLAC -> WAV (with tools.ffmpeg = None)
+    let wav_1s = dir.path().join("tone_1s.wav");
+    write_pcm16_wav(&wav_1s, 44100, 2, 44100);
+
+    let out_caf = dir.path().join("tone_1s.caf");
+    media::convert(&wav_1s, "CAF", &out_caf, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&out_caf, "CAF").unwrap();
+    assert_eq!(&fs::read(&out_caf).unwrap()[0..4], b"caff");
+
+    let caf_to_wav = dir.path().join("from_caf.wav");
+    media::convert(&out_caf, "WAV", &caf_to_wav, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&caf_to_wav, "WAV").unwrap();
+
+    let out_flac = dir.path().join("tone_1s.flac");
+    media::convert(&wav_1s, "FLAC", &out_flac, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&out_flac, "FLAC").unwrap();
+    let flac_bytes = fs::read(&out_flac).unwrap();
+    assert_eq!(&flac_bytes[0..4], b"fLaC");
+    assert!(flac_bytes.len() > 1000, "1s FLAC must contain real encoded frames");
+
+    let flac_to_wav = dir.path().join("from_flac.wav");
+    media::convert(&out_flac, "WAV", &flac_to_wav, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&flac_to_wav, "WAV").unwrap();
+
+    // 2. Cross-conversions without FFmpeg: FLAC <-> CAF, M4A -> CAF/FLAC, AIFF -> CAF, ALAC -> CAF
+    let flac_to_caf = dir.path().join("f2c.caf");
+    media::convert(&out_flac, "CAF", &flac_to_caf, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&flac_to_caf, "CAF").unwrap();
+
+    let caf_to_flac = dir.path().join("c2f.flac");
+    media::convert(&out_caf, "FLAC", &caf_to_flac, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&caf_to_flac, "FLAC").unwrap();
+
+    let out_m4a = dir.path().join("tone_1s.m4a");
+    media::convert(&wav_1s, "M4A", &out_m4a, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&out_m4a, "M4A").unwrap();
+
+    let m4a_to_caf = dir.path().join("m4a2c.caf");
+    media::convert(&out_m4a, "CAF", &m4a_to_caf, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&m4a_to_caf, "CAF").unwrap();
+
+    let m4a_to_flac = dir.path().join("m4a2f.flac");
+    media::convert(&out_m4a, "FLAC", &m4a_to_flac, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&m4a_to_flac, "FLAC").unwrap();
+
+    let out_aiff = dir.path().join("tone_1s.aiff");
+    media::convert(&wav_1s, "AIFF", &out_aiff, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&out_aiff, "AIFF").unwrap();
+    let aiff_to_caf = dir.path().join("aiff2c.caf");
+    media::convert(&out_aiff, "CAF", &aiff_to_caf, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&aiff_to_caf, "CAF").unwrap();
+
+    let out_alac = dir.path().join("tone_1s.alac");
+    media::convert(&wav_1s, "ALAC", &out_alac, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&out_alac, "ALAC").unwrap();
+    let alac_to_caf = dir.path().join("alac2c.caf");
+    media::convert(&out_alac, "CAF", &alac_to_caf, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&alac_to_caf, "CAF").unwrap();
+
+    // 3. Short audio fixture (< 4608 frames, e.g. flip-tick.wav = 1764 frames) still produces valid FLAC & CAF
+    let tick_wav = repo_root().join("src-tauri/resources/flip-tick.wav");
+    let tick_flac = dir.path().join("tick.flac");
+    media::convert(&tick_wav, "FLAC", &tick_flac, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&tick_flac, "FLAC").unwrap();
+    let tick_back = dir.path().join("tick_back.wav");
+    media::convert(&tick_flac, "WAV", &tick_back, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&tick_back, "WAV").unwrap();
+
+    // 4. Reject header-only 42-byte FLAC in validate_output
+    let broken_flac = dir.path().join("broken_42b.flac");
+    fs::write(&broken_flac, vec![b'f', b'L', b'a', b'C', 0, 0, 0, 34]).unwrap();
+    assert!(validate_output(&broken_flac, "FLAC").is_err());
+
+    // 5. MP3/OGG/OPUS outputs remain FFmpeg-gated when tools.ffmpeg = None
+    for gated in ["MP3", "OGG", "OPUS"] {
+        let out_gated = dir.path().join(format!("gated.{}", gated.to_ascii_lowercase()));
+        let err = media::convert(&wav_1s, gated, &out_gated, &native_tools, &cancel, &|_| {}).unwrap_err();
+        assert!(
+            matches!(err, EngineError::Unsupported(_)),
+            "expected Unsupported for {gated} without FFmpeg, got {err:?}"
+        );
+    }
+
+    let ogg_stub = dir.path().join("clip.ogg");
+    fs::write(&ogg_stub, b"OggS").unwrap();
+    let ogg_err = media::convert(
+        &ogg_stub,
+        "WAV",
+        &dir.path().join("ogg.wav"),
+        &native_tools,
+        &cancel,
+        &|_| {},
+    )
+    .unwrap_err();
+    assert!(matches!(ogg_err, EngineError::Unsupported(_)));
 }

@@ -254,12 +254,38 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
             }
         }
         "FLAC" => {
+            if meta.len() <= 42 {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "FLAC output contains header only without audio frames".to_string(),
+                ));
+            }
             let mut f = File::open(path)?;
             let mut hdr = [0u8; 4];
             if f.read(&mut hdr)? < 4 || &hdr != b"fLaC" {
                 return Err(EngineError::ValidationFailed(
                     path.display().to_string(),
                     "Invalid FLAC header".to_string(),
+                ));
+            }
+        }
+        "CAF" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 4];
+            if f.read(&mut hdr)? < 4 || &hdr != b"caff" {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid Core Audio Format (CAF) header".to_string(),
+                ));
+            }
+        }
+        "AAC" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 2];
+            if f.read(&mut hdr)? < 2 || hdr[0] != 0xFF || (hdr[1] & 0xF0) != 0xF0 {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid AAC ADTS header".to_string(),
                 ));
             }
         }

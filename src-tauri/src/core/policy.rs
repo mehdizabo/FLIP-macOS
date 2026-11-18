@@ -84,7 +84,9 @@ pub const IMAGE_EXTS: &[&str] = &[
     "ico",
 ];
 pub const DATA_EXTS: &[&str] = &["json", "yaml", "yml", "toml", "xml", "csv"];
-pub const AUDIO_NATIVE_EXTS: &[&str] = &["wav", "aiff", "aif", "m4a", "aac", "alac", "caf", "mp3"];
+pub const AUDIO_NATIVE_EXTS: &[&str] = &[
+    "wav", "aiff", "aif", "m4a", "aac", "alac", "caf", "flac", "mp3",
+];
 pub const AUDIO_ALL_EXTS: &[&str] = &[
     "mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf",
 ];
@@ -158,9 +160,9 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
         }
         e if AUDIO_ALL_EXTS.contains(&e) => {
             if caps.ffmpeg {
-                vec!["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "OGG", "OPUS", "AAC"]
+                vec!["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"]
             } else if AUDIO_NATIVE_EXTS.contains(&e) {
-                vec!["M4A", "WAV", "AIFF", "ALAC"]
+                vec!["M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF"]
             } else {
                 vec![]
             }
@@ -381,6 +383,7 @@ pub fn order_formats(
             "FLAC",
             "AIFF",
             "ALAC",
+            "CAF",
             "OGG",
             "OPUS",
             "AAC",
@@ -770,7 +773,26 @@ mod tests {
 
         assert!(outputs(&["table.csv"], &native).contains(&"JSON".to_string()));
         assert!(outputs(&["audio.mp3"], &with_ff).contains(&"WAV".to_string()));
+        assert!(outputs(&["audio.mp3"], &with_ff).contains(&"CAF".to_string()));
         assert_eq!(outputs(&["audio.ogg"], &native), vec!["ZIP".to_string()]);
+        assert_eq!(outputs(&["audio.opus"], &native), vec!["ZIP".to_string()]);
+
+        // Zero-FFmpeg native audio matrix: WAV, AIFF, M4A, AAC, FLAC, CAF -> WAV, AIFF, M4A, ALAC, CAF, FLAC
+        for ext in ["wav", "aiff", "m4a", "aac", "flac", "caf"] {
+            let file = format!("track.{ext}");
+            let out = outputs(&[file.as_str()], &native);
+            let same = canonical_format_for_ext(ext);
+            for target in ["WAV", "AIFF", "M4A", "ALAC", "CAF", "FLAC"] {
+                if target == same {
+                    assert!(!out.contains(&target.to_string()), "{file} should not target self {target}");
+                } else {
+                    assert!(out.contains(&target.to_string()), "{file} missing native target {target}");
+                }
+            }
+            for gated in ["MP3", "OGG", "OPUS"] {
+                assert!(!out.contains(&gated.to_string()), "{file} unexpectedly exposed {gated} without FFmpeg");
+            }
+        }
 
         // PDF and archive policy rules
         let pdf_out = outputs(&["doc.pdf"], &native);

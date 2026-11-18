@@ -1,6 +1,8 @@
+import { normalizeLanguage, t } from "../i18n";
 import { UI_ICONS } from "../icons";
 import {
   escapeHtml,
+  events,
   formatError,
   getPermissionsStatus,
   getPreferences,
@@ -24,7 +26,10 @@ export function mountOnboardingView(root: HTMLElement): () => void {
     inputMonitoring: false,
   };
 
+  const lang = () => normalizeLanguage(prefs?.language);
+
   function render(): void {
+    const l = lang();
     const dragKey = prefs?.dragTrigger ?? "Down";
     const idleCombo = prefs?.idleShortcut ?? "Option+Shift+Space";
     const axGranted = perms.accessibility;
@@ -34,74 +39,57 @@ export function mountOnboardingView(root: HTMLElement): () => void {
     if (step === 0) {
       contentHtml = `
         <div class="onboarding-hero">
-          <span class="status-pill is-ok" style="align-self:flex-start">Step 1 of 3 · Drag &amp; Flip</span>
-          <h1>Convert any Finder file mid-drag</h1>
-          <p>
-            Start dragging one or more files from Finder or your Desktop and press
-            <span class="kbd-cap">${escapeHtml(dragKey)}</span> (or hold the key first, then drag).
-            FLIP's Liquid Glass wheel appears right under your cursor — drop onto any format to save a non-overwriting copy next to the original.
-          </p>
+          <span class="status-pill is-ok" style="align-self:flex-start">${escapeHtml(t(l, "ob.step1Badge"))}</span>
+          <h1>${escapeHtml(t(l, "ob.step1Title"))}</h1>
+          <p>${t(l, "ob.step1Body", { dragKey: escapeHtml(dragKey) })}</p>
           <div class="glass-card" style="background:var(--bg-inset);box-shadow:none">
-            <div style="font-weight:600;margin-bottom:4px">100% Local · Original Stem Preserved</div>
-            <div class="setting-desc">
-              <code>photo.heic</code> → <code>photo.png</code> (or <code>photo 2.png</code> if one already exists). Zero cloud uploads.
-            </div>
+            <div style="font-weight:600;margin-bottom:4px">${escapeHtml(t(l, "ob.step1CardTitle"))}</div>
+            <div class="setting-desc">${t(l, "ob.step1CardDesc")}</div>
           </div>
         </div>
       `;
     } else if (step === 1) {
       contentHtml = `
         <div class="onboarding-hero">
-          <span class="status-pill is-ok" style="align-self:flex-start">Step 2 of 3 · Idle &amp; Create New File</span>
-          <h1>Create New Files in Finder from anywhere</h1>
-          <p>
-            Press <span class="kbd-cap">${escapeHtml(idleCombo)}</span> without dragging:
-            if files are selected in Finder, FLIP opens in <strong>Convert</strong> mode; otherwise it opens in
-            <strong>New File</strong> mode targeting your active Finder folder.
-          </p>
+          <span class="status-pill is-ok" style="align-self:flex-start">${escapeHtml(t(l, "ob.step2Badge"))}</span>
+          <h1>${escapeHtml(t(l, "ob.step2Title"))}</h1>
+          <p>${t(l, "ob.step2Body", { idleCombo: escapeHtml(idleCombo) })}</p>
           <div class="glass-card" style="background:var(--bg-inset);box-shadow:none">
-            <div style="font-weight:600;margin-bottom:4px">Instant Finder Inline Rename</div>
-            <div class="setting-desc">
-              Create Folders, Markdown, Word, Spreadsheets, Scripts, Clipboard captures, or custom Templates — then start typing the final filename immediately.
-            </div>
+            <div style="font-weight:600;margin-bottom:4px">${escapeHtml(t(l, "ob.step2CardTitle"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "ob.step2CardDesc"))}</div>
           </div>
         </div>
       `;
     } else {
       contentHtml = `
         <div class="onboarding-hero">
-          <span class="status-pill ${axGranted && autoGranted ? "is-ok" : "is-warn"}" style="align-self:flex-start">Step 3 of 3 · macOS Permissions</span>
-          <h1>Enable Accessibility &amp; Finder Automation</h1>
-          <p>
-            Accessibility lets FLIP intercept your drag key only during a drag (without affecting normal typing) and trigger Finder inline rename.
-            Automation lets FLIP read the active Finder selection and folder.
-          </p>
+          <span class="status-pill ${axGranted && autoGranted ? "is-ok" : "is-warn"}" style="align-self:flex-start">${escapeHtml(t(l, "ob.step3Badge"))}</span>
+          <h1>${escapeHtml(t(l, "ob.step3Title"))}</h1>
+          <p>${escapeHtml(t(l, "ob.step3Body"))}</p>
           <div class="glass-card" style="padding:12px 14px">
             <div class="setting-row">
               <div>
-                <div class="setting-label">Accessibility</div>
-                <div class="setting-desc">Drag trigger key &amp; inline Finder rename</div>
+                <div class="setting-label">${escapeHtml(t(l, "ob.axLabel"))}</div>
+                <div class="setting-desc">${escapeHtml(t(l, "ob.axDesc"))}</div>
               </div>
               <div style="display:flex;gap:8px;align-items:center">
-                <span class="status-pill ${axGranted ? "is-ok" : "is-warn"}">${axGranted ? "Granted" : "Required"}</span>
-                ${axGranted ? "" : `<button type="button" class="btn btn-primary btn-sm" id="ob-grant-ax">Grant Permission</button>`}
-                <button type="button" class="btn btn-sm" id="ob-open-ax">System Settings</button>
+                <span class="status-pill ${axGranted ? "is-ok" : "is-warn"}">${escapeHtml(axGranted ? t(l, "settings.engines.granted") : t(l, "ob.required"))}</span>
+                ${axGranted ? "" : `<button type="button" class="btn btn-primary btn-sm" id="ob-grant-ax">${escapeHtml(t(l, "settings.engines.grantBtn"))}</button>`}
+                <button type="button" class="btn btn-sm" id="ob-open-ax">${escapeHtml(t(l, "ob.systemSettings"))}</button>
               </div>
             </div>
             <div class="setting-row">
               <div>
-                <div class="setting-label">Finder Automation</div>
-                <div class="setting-desc">Active Finder folder &amp; selected items</div>
+                <div class="setting-label">${escapeHtml(t(l, "ob.autoLabel"))}</div>
+                <div class="setting-desc">${escapeHtml(t(l, "ob.autoDesc"))}</div>
               </div>
               <div style="display:flex;gap:8px;align-items:center">
                 <span class="status-pill ${autoGranted ? "is-ok" : "is-warn"}">${escapeHtml(perms.automationFinder)}</span>
-                <button type="button" class="btn btn-sm" id="ob-open-auto">System Settings</button>
+                <button type="button" class="btn btn-sm" id="ob-open-auto">${escapeHtml(t(l, "ob.systemSettings"))}</button>
               </div>
             </div>
           </div>
-          <div class="setting-desc">
-            Without permissions, FLIP still works in <strong>Limited Mode</strong>: summon the wheel with your global hotkey and drop files directly onto it.
-          </div>
+          <div class="setting-desc">${t(l, "ob.limitedHint")}</div>
           ${permError ? `<div class="status-pill is-bad" style="align-self:flex-start">${escapeHtml(permError)}</div>` : ""}
         </div>
       `;
@@ -114,11 +102,11 @@ export function mountOnboardingView(root: HTMLElement): () => void {
             <div class="brand-header" style="padding:0">
               <div class="brand-mark">F</div>
               <div>
-                <div class="brand-title">Welcome to FLIP</div>
-                <div class="brand-sub">Liquid Glass File Converter &amp; New File Ring</div>
+                <div class="brand-title">${escapeHtml(t(l, "ob.welcomeTitle"))}</div>
+                <div class="brand-sub">${escapeHtml(t(l, "ob.welcomeSub"))}</div>
               </div>
             </div>
-            <button type="button" class="btn btn-sm" id="ob-refresh">${UI_ICONS.refresh}</button>
+            <button type="button" class="btn btn-sm" id="ob-refresh" aria-label="${escapeHtml(t(l, "common.refresh"))}">${UI_ICONS.refresh}</button>
           </div>
 
           <div class="step-indicators">
@@ -128,13 +116,13 @@ export function mountOnboardingView(root: HTMLElement): () => void {
           ${contentHtml}
 
           <div class="onboarding-footer">
-            <button type="button" class="btn" id="ob-skip">Skip (Limited Mode)</button>
+            <button type="button" class="btn" id="ob-skip">${escapeHtml(t(l, "ob.skipLimited"))}</button>
             <div style="display:flex;gap:8px">
-              ${step > 0 ? `<button type="button" class="btn" id="ob-back">Back</button>` : ""}
+              ${step > 0 ? `<button type="button" class="btn" id="ob-back">${escapeHtml(t(l, "ob.back"))}</button>` : ""}
               ${
                 step < 2
-                  ? `<button type="button" class="btn btn-primary" id="ob-next">Next</button>`
-                  : `<button type="button" class="btn btn-primary" id="ob-finish">Finish Setup</button>`
+                  ? `<button type="button" class="btn btn-primary" id="ob-next">${escapeHtml(t(l, "ob.next"))}</button>`
+                  : `<button type="button" class="btn btn-primary" id="ob-finish">${escapeHtml(t(l, "ob.finish"))}</button>`
               }
             </div>
           </div>
@@ -202,10 +190,22 @@ export function mountOnboardingView(root: HTMLElement): () => void {
     render();
   }
 
+  let unlistenPrefs: (() => void) | null = null;
+  void events.onPrefsChanged((updated) => {
+    if (!disposed) {
+      prefs = updated;
+      render();
+    }
+  }).then((fn) => {
+    if (disposed) fn();
+    else unlistenPrefs = fn;
+  });
+
   render();
   void refreshPerms();
 
   return () => {
     disposed = true;
+    if (unlistenPrefs) unlistenPrefs();
   };
 }

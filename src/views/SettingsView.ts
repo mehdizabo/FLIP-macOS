@@ -1,6 +1,7 @@
+import { normalizeLanguage, t, type TranslationKey } from "../i18n";
 import { UI_ICONS } from "../icons";
-import { moveFormatToIndex, reorderFormatList } from "../wheelGeometry";
 import {
+  basename,
   checkForUpdates,
   consumeSettingsNavigation,
   copyDiagnosticsToClipboard,
@@ -19,11 +20,11 @@ import {
   openReleaseUrl,
   openTemplatesFolder,
   openWindow,
+  playWheelFeedback,
   requestPermission,
   revealInFinder,
   revealLogs,
   savePreferences,
-  basename,
 } from "../ipc";
 import type {
   AppPreferences,
@@ -38,6 +39,7 @@ import type {
   UpdateCheckResult,
   UserTemplateInfo,
 } from "../types";
+import { moveFormatToIndex, reorderFormatList } from "../wheelGeometry";
 
 type SettingsTab =
   | "general"
@@ -47,21 +49,21 @@ type SettingsTab =
   | "engines"
   | "about";
 
-const DRAG_PRESETS: Array<{ id: string; label: string }> = [
-  { id: "Down", label: "Down Arrow" },
-  { id: "Space", label: "Space" },
-  { id: "Tab", label: "Tab" },
-  { id: "Fn", label: "Fn" },
-  { id: "F8", label: "F8" },
+const DRAG_PRESETS: Array<{ id: string; key: TranslationKey }> = [
+  { id: "Down", key: "settings.shortcuts.presetDown" },
+  { id: "Space", key: "settings.shortcuts.presetSpace" },
+  { id: "Tab", key: "settings.shortcuts.presetTab" },
+  { id: "Fn", key: "settings.shortcuts.presetFn" },
+  { id: "F8", key: "settings.shortcuts.presetF8" },
 ];
 
-const FAMILY_LABELS: Array<{ key: string; label: string }> = [
-  { key: "image", label: "Images" },
-  { key: "pdf", label: "PDF Outputs" },
-  { key: "document", label: "Documents" },
-  { key: "data", label: "Structured Data" },
-  { key: "audio", label: "Audio" },
-  { key: "video", label: "Video" },
+const FAMILY_LABELS: Array<{ key: string; labelKey: TranslationKey }> = [
+  { key: "image", labelKey: "settings.formats.familyImage" },
+  { key: "pdf", labelKey: "settings.formats.familyPdf" },
+  { key: "document", labelKey: "settings.formats.familyDocument" },
+  { key: "data", labelKey: "settings.formats.familyData" },
+  { key: "audio", labelKey: "settings.formats.familyAudio" },
+  { key: "video", labelKey: "settings.formats.familyVideo" },
 ];
 
 export function mountSettingsView(root: HTMLElement): () => void {
@@ -80,7 +82,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
   let recent: RecentConversion[] = [];
 
   let recordingTarget: "drag" | "idle" | null = null;
-  let recorderFeedback = "";
+  let recorderFeedbackKey: TranslationKey | null = null;
+  let recorderFeedbackVars: Record<string, string | number> | undefined;
   let recorderFeedbackTarget: "drag" | "idle" | null = null;
   let saveToastTimer: number | null = null;
 
@@ -92,9 +95,11 @@ export function mountSettingsView(root: HTMLElement): () => void {
   let diagFallbackText = "";
   let diagCopyTimer: number | null = null;
 
+  const lang = () => normalizeLanguage(prefs.language);
+
   root.innerHTML = `
     <div class="settings-shell">
-      <aside class="settings-sidebar" aria-label="Settings Navigation">
+      <aside class="settings-sidebar" id="settings-sidebar" aria-label="${escapeHtml(t(lang(), "nav.ariaLabel"))}">
         <div class="brand-header">
           <div class="brand-mark">F</div>
           <div>
@@ -103,26 +108,48 @@ export function mountSettingsView(root: HTMLElement): () => void {
           </div>
         </div>
         <nav class="nav-list" id="settings-nav">
-          <button type="button" class="nav-item is-active" data-tab="general">${UI_ICONS.settings}<span>General</span></button>
-          <button type="button" class="nav-item" data-tab="shortcuts">${UI_ICONS.keyboard}<span>Shortcuts</span></button>
-          <button type="button" class="nav-item" data-tab="formats">${UI_ICONS.sliders}<span>Formats &amp; Quality</span></button>
-          <button type="button" class="nav-item" data-tab="newfile">${UI_ICONS.newFile}<span>New File &amp; Templates</span></button>
-          <button type="button" class="nav-item" data-tab="engines">${UI_ICONS.shield}<span>Engines &amp; Permissions</span></button>
-          <button type="button" class="nav-item" data-tab="about">${UI_ICONS.info}<span>About</span></button>
+          <button type="button" class="nav-item is-active" data-tab="general">${UI_ICONS.settings}<span data-nav-label="general">${escapeHtml(t(lang(), "nav.general"))}</span></button>
+          <button type="button" class="nav-item" data-tab="shortcuts">${UI_ICONS.keyboard}<span data-nav-label="shortcuts">${escapeHtml(t(lang(), "nav.shortcuts"))}</span></button>
+          <button type="button" class="nav-item" data-tab="formats">${UI_ICONS.sliders}<span data-nav-label="formats">${escapeHtml(t(lang(), "nav.formats"))}</span></button>
+          <button type="button" class="nav-item" data-tab="newfile">${UI_ICONS.newFile}<span data-nav-label="newfile">${escapeHtml(t(lang(), "nav.newFile"))}</span></button>
+          <button type="button" class="nav-item" data-tab="engines">${UI_ICONS.shield}<span data-nav-label="engines">${escapeHtml(t(lang(), "nav.engines"))}</span></button>
+          <button type="button" class="nav-item" data-tab="about">${UI_ICONS.info}<span data-nav-label="about">${escapeHtml(t(lang(), "nav.about"))}</span></button>
         </nav>
         <div class="sidebar-footer">
-          <button type="button" class="btn" id="nav-open-batch">${UI_ICONS.convert}<span>Batch Converter</span></button>
-          <button type="button" class="btn" id="nav-open-onboarding"><span>Setup Tour…</span></button>
+          <button type="button" class="btn" id="nav-open-batch">${UI_ICONS.convert}<span id="nav-batch-label">${escapeHtml(t(lang(), "nav.batchConverter"))}</span></button>
+          <button type="button" class="btn" id="nav-open-onboarding"><span id="nav-onboarding-label">${escapeHtml(t(lang(), "nav.setupTour"))}</span></button>
         </div>
       </aside>
       <main class="settings-main" id="settings-main"></main>
     </div>
   `;
 
+  const sidebarEl = root.querySelector<HTMLElement>("#settings-sidebar")!;
   const navEl = root.querySelector<HTMLElement>("#settings-nav")!;
   const mainEl = root.querySelector<HTMLElement>("#settings-main")!;
 
-  function showSavedToast(label = "Saved"): void {
+  function updateSidebarLocalization(): void {
+    const l = lang();
+    sidebarEl.setAttribute("aria-label", t(l, "nav.ariaLabel"));
+    const navMap: Record<SettingsTab, TranslationKey> = {
+      general: "nav.general",
+      shortcuts: "nav.shortcuts",
+      formats: "nav.formats",
+      newfile: "nav.newFile",
+      engines: "nav.engines",
+      about: "nav.about",
+    };
+    for (const tab of Object.keys(navMap) as SettingsTab[]) {
+      const span = navEl.querySelector<HTMLElement>(`[data-nav-label="${tab}"]`);
+      if (span) span.textContent = t(l, navMap[tab]);
+    }
+    const batchLabel = root.querySelector<HTMLElement>("#nav-batch-label");
+    if (batchLabel) batchLabel.textContent = t(l, "nav.batchConverter");
+    const onboardingLabel = root.querySelector<HTMLElement>("#nav-onboarding-label");
+    if (onboardingLabel) onboardingLabel.textContent = t(l, "nav.setupTour");
+  }
+
+  function showSavedToast(label = t(lang(), "common.saved")): void {
     const toast = mainEl.querySelector<HTMLElement>("#save-toast");
     if (!toast) return;
     toast.textContent = label;
@@ -154,10 +181,12 @@ export function mountSettingsView(root: HTMLElement): () => void {
       mutator(draft);
       try {
         prefs = await savePreferences(draft);
-        if (!disposed) showSavedToast("Saved");
+        if (!disposed) showSavedToast(t(lang(), "common.saved"));
         return true;
       } catch (err) {
-        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+        if (!disposed) {
+          showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
+        }
         return false;
       }
     });
@@ -178,17 +207,19 @@ export function mountSettingsView(root: HTMLElement): () => void {
   }
 
   function renderMain(): void {
+    updateSidebarLocalization();
     for (const btn of Array.from(navEl.querySelectorAll<HTMLButtonElement>(".nav-item"))) {
       btn.classList.toggle("is-active", btn.dataset.tab === activeTab);
     }
 
+    const l = lang();
     const headerTitle: Record<SettingsTab, string> = {
-      general: "General",
-      shortcuts: "Shortcuts & Triggers",
-      formats: "Formats & Quality",
-      newfile: "New File & Templates",
-      engines: "Engines & Permissions",
-      about: "About FLIP",
+      general: t(l, "settings.title.general"),
+      shortcuts: t(l, "settings.title.shortcuts"),
+      formats: t(l, "settings.title.formats"),
+      newfile: t(l, "settings.title.newfile"),
+      engines: t(l, "settings.title.engines"),
+      about: t(l, "settings.title.about"),
     };
 
     let bodyHtml = "";
@@ -215,8 +246,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
 
     mainEl.innerHTML = `
       <div class="page-header">
-        <h1 class="page-title">${headerTitle[activeTab]}</h1>
-        <span class="save-toast" id="save-toast">Saved</span>
+        <h1 class="page-title">${escapeHtml(headerTitle[activeTab])}</h1>
+        <span class="save-toast" id="save-toast">${escapeHtml(t(l, "common.saved"))}</span>
       </div>
       ${bodyHtml}
     `;
@@ -225,18 +256,29 @@ export function mountSettingsView(root: HTMLElement): () => void {
   }
 
   function renderGeneralTab(): string {
+    const l = lang();
     return `
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Behavior &amp; Feedback</h2>
-            <p class="card-subtitle">Core desktop behavior on macOS</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.general.behaviorTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.general.behaviorSub"))}</p>
           </div>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Launch at login</div>
-            <div class="setting-desc">Keep FLIP ready in the menu bar when you sign in.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.languageLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.languageDesc"))}</div>
+          </div>
+          <select class="mac-select" id="pref-language" aria-label="${escapeHtml(t(l, "settings.general.languageLabel"))}">
+            <option value="en" ${l === "en" ? "selected" : ""}>${escapeHtml(t(l, "settings.general.langEn"))}</option>
+            <option value="it" ${l === "it" ? "selected" : ""}>${escapeHtml(t(l, "settings.general.langIt"))}</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.launchLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.launchDesc"))}</div>
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-launchAtLogin" ${prefs.launchAtLogin ? "checked" : ""} />
@@ -245,8 +287,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Wheel tick sound</div>
-            <div class="setting-desc">Play crisp acoustic feedback when moving across sectors.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.soundLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.soundDesc"))}</div>
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-soundEnabled" ${prefs.soundEnabled ? "checked" : ""} />
@@ -255,8 +297,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Trackpad haptics</div>
-            <div class="setting-desc">Subtle Force Touch alignment feedback on sector snap.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.hapticsLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.hapticsDesc"))}</div>
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-hapticsEnabled" ${prefs.hapticsEnabled ? "checked" : ""} />
@@ -265,8 +307,15 @@ export function mountSettingsView(root: HTMLElement): () => void {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Completion notifications</div>
-            <div class="setting-desc">Show a macOS notification when long conversions or batch jobs finish.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.testFeedbackLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.testFeedbackDesc"))}</div>
+          </div>
+          <button type="button" class="btn btn-sm" id="btn-test-wheel-feedback">${escapeHtml(t(l, "settings.general.testFeedbackBtn"))}</button>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.notificationsLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.notificationsDesc"))}</div>
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-notificationsEnabled" ${prefs.notificationsEnabled ? "checked" : ""} />
@@ -278,14 +327,14 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">File Creation &amp; Output Paths</h2>
-            <p class="card-subtitle">Conversions keep the original stem without overwriting</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.general.pathsTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.general.pathsSub"))}</p>
           </div>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Auto-inline-rename on Create New File</div>
-            <div class="setting-desc">Select the new item in Finder and immediately open inline rename.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.autoRenameLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.autoRenameDesc"))}</div>
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-autoRenameOnCreate" ${prefs.autoRenameOnCreate ? "checked" : ""} />
@@ -294,8 +343,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Open file after creating</div>
-            <div class="setting-desc">Launch the created file in its default macOS app right away.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.openAfterLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.openAfterDesc"))}</div>
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-openAfterCreating" ${prefs.openAfterCreating ? "checked" : ""} />
@@ -304,15 +353,15 @@ export function mountSettingsView(root: HTMLElement): () => void {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Output subfolder</div>
-            <div class="setting-desc">Optional subfolder beside the source file (leave blank for same folder).</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.subfolderLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.subfolderDesc"))}</div>
           </div>
-          <input type="text" class="mac-input" id="pref-outputSubfolder" placeholder="Same folder" value="${escapeHtml(prefs.outputSubfolder ?? "")}" />
+          <input type="text" class="mac-input" id="pref-outputSubfolder" placeholder="${escapeHtml(t(l, "settings.general.subfolderPlaceholder"))}" value="${escapeHtml(prefs.outputSubfolder ?? "")}" />
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Fallback Create New folder</div>
-            <div class="setting-desc">Used when no Finder folder is focused (defaults to Desktop).</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.fallbackLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.fallbackDesc"))}</div>
           </div>
           <input type="text" class="mac-input" id="pref-fallbackFolder" placeholder="~/Desktop" value="${escapeHtml(prefs.fallbackFolder ?? "")}" />
         </div>
@@ -321,23 +370,25 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="setting-row">
           <div>
-            <div class="setting-label">Diagnostic Logs</div>
-            <div class="setting-desc">Inspect local JSONL events in ~/Library/Logs/FLIP.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.logsLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.logsDesc"))}</div>
           </div>
-          <button type="button" class="btn" id="btn-reveal-logs">${UI_ICONS.finder}<span>Reveal Logs</span></button>
+          <button type="button" class="btn" id="btn-reveal-logs">${UI_ICONS.finder}<span>${escapeHtml(t(l, "settings.general.revealLogs"))}</span></button>
         </div>
       </section>
     `;
   }
 
   function renderShortcutsTab(): string {
+    const l = lang();
     const mouseVal = prefs.mouseTriggerButton === null ? "" : String(prefs.mouseTriggerButton);
+    const feedbackMsg = recorderFeedbackKey ? t(l, recorderFeedbackKey, recorderFeedbackVars) : "";
     return `
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Drag Trigger Key</h2>
-            <p class="card-subtitle">Press while dragging files from Finder (or hold before starting a drag)</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.shortcuts.dragTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.shortcuts.dragSub"))}</p>
           </div>
           <div>${formatKeycaps(prefs.dragTrigger)}</div>
         </div>
@@ -345,23 +396,23 @@ export function mountSettingsView(root: HTMLElement): () => void {
           <div class="recorder-pill ${recordingTarget === "drag" ? "is-recording" : ""}" id="drag-recorder-status">
             ${
               recordingTarget === "drag"
-                ? "Press a single key (Esc to cancel)…"
-                : `Current: ${escapeHtml(prefs.dragTrigger)}`
+                ? escapeHtml(t(l, "settings.shortcuts.dragPrompt"))
+                : escapeHtml(t(l, "settings.shortcuts.current", { value: prefs.dragTrigger }))
             }
           </div>
           <button type="button" class="btn" id="btn-record-drag">
-            ${recordingTarget === "drag" ? "Cancel" : "Record Custom Key…"}
+            ${escapeHtml(recordingTarget === "drag" ? t(l, "common.cancel") : t(l, "settings.shortcuts.recordCustom"))}
           </button>
         </div>
         <div class="preset-row">
           ${DRAG_PRESETS.map(
             (p) =>
-              `<button type="button" class="btn btn-sm ${prefs.dragTrigger.toLowerCase() === p.id.toLowerCase() ? "btn-primary" : ""}" data-drag-preset="${escapeHtml(p.id)}">${escapeHtml(p.label)}</button>`,
+              `<button type="button" class="btn btn-sm ${prefs.dragTrigger.toLowerCase() === p.id.toLowerCase() ? "btn-primary" : ""}" data-drag-preset="${escapeHtml(p.id)}">${escapeHtml(t(l, p.key))}</button>`,
           ).join("")}
         </div>
         ${
-          recorderFeedback && recorderFeedbackTarget === "drag"
-            ? `<p class="setting-desc" style="margin-top:8px;color:var(--accent)">${escapeHtml(recorderFeedback)}</p>`
+          feedbackMsg && recorderFeedbackTarget === "drag"
+            ? `<p class="setting-desc" style="margin-top:8px;color:var(--accent)">${escapeHtml(feedbackMsg)}</p>`
             : ""
         }
       </section>
@@ -369,8 +420,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Idle Global Shortcut</h2>
-            <p class="card-subtitle">Opens Convert wheel for selected Finder files, or New File wheel in active folder</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.shortcuts.idleTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.shortcuts.idleSub"))}</p>
           </div>
           <div>${formatKeycaps(prefs.idleShortcut)}</div>
         </div>
@@ -378,18 +429,18 @@ export function mountSettingsView(root: HTMLElement): () => void {
           <div class="recorder-pill ${recordingTarget === "idle" ? "is-recording" : ""}" id="idle-recorder-status">
             ${
               recordingTarget === "idle"
-                ? "Press modifier + key combo (Esc to cancel)…"
-                : `Current: ${escapeHtml(prefs.idleShortcut)}`
+                ? escapeHtml(t(l, "settings.shortcuts.idlePrompt"))
+                : escapeHtml(t(l, "settings.shortcuts.current", { value: prefs.idleShortcut }))
             }
           </div>
           <button type="button" class="btn" id="btn-record-idle">
-            ${recordingTarget === "idle" ? "Cancel" : "Record Shortcut…"}
+            ${escapeHtml(recordingTarget === "idle" ? t(l, "common.cancel") : t(l, "settings.shortcuts.recordIdle"))}
           </button>
-          <button type="button" class="btn btn-sm" id="btn-reset-idle">Reset Default (⌥⇧Space)</button>
+          <button type="button" class="btn btn-sm" id="btn-reset-idle">${escapeHtml(t(l, "settings.shortcuts.resetIdle"))}</button>
         </div>
         ${
-          recorderFeedback && recorderFeedbackTarget === "idle"
-            ? `<p class="setting-desc" style="margin-top:8px;color:var(--accent)">${escapeHtml(recorderFeedback)}</p>`
+          feedbackMsg && recorderFeedbackTarget === "idle"
+            ? `<p class="setting-desc" style="margin-top:8px;color:var(--accent)">${escapeHtml(feedbackMsg)}</p>`
             : ""
         }
       </section>
@@ -397,14 +448,14 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="setting-row">
           <div>
-            <div class="setting-label">Mouse Button Trigger (Hold &amp; Release)</div>
-            <div class="setting-desc">Optional Logi / multi-button mouse trigger supporting hold-and-release selection.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.shortcuts.mouseTitle"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.shortcuts.mouseDesc"))}</div>
           </div>
           <select class="mac-select" id="pref-mouseTriggerButton">
-            <option value="" ${mouseVal === "" ? "selected" : ""}>Disabled</option>
-            <option value="2" ${mouseVal === "2" ? "selected" : ""}>Middle Click (Btn 2)</option>
-            <option value="3" ${mouseVal === "3" ? "selected" : ""}>Mouse Button 4</option>
-            <option value="4" ${mouseVal === "4" ? "selected" : ""}>Mouse Button 5</option>
+            <option value="" ${mouseVal === "" ? "selected" : ""}>${escapeHtml(t(l, "settings.shortcuts.mouseDisabled"))}</option>
+            <option value="2" ${mouseVal === "2" ? "selected" : ""}>${escapeHtml(t(l, "settings.shortcuts.mouseBtn2"))}</option>
+            <option value="3" ${mouseVal === "3" ? "selected" : ""}>${escapeHtml(t(l, "settings.shortcuts.mouseBtn3"))}</option>
+            <option value="4" ${mouseVal === "4" ? "selected" : ""}>${escapeHtml(t(l, "settings.shortcuts.mouseBtn4"))}</option>
           </select>
         </div>
       </section>
@@ -412,6 +463,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
   }
 
   function renderFormatsTab(): string {
+    const l = lang();
     const familyFormats =
       prefs.preferredFormats[selectedFamily] ??
       defaultPreferences().preferredFormats[selectedFamily] ??
@@ -420,14 +472,14 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Image Encoding &amp; Privacy</h2>
-            <p class="card-subtitle">Applies to JPEG, HEIC, and WebP conversions</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.formats.imageTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.formats.imageSub"))}</p>
           </div>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Image quality</div>
-            <div class="setting-desc">Higher values preserve more detail at larger file sizes.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.formats.qualityLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.formats.qualityDesc"))}</div>
           </div>
           <div style="display:flex;align-items:center;gap:10px">
             <input type="range" class="mac-range" id="pref-imageQuality" min="10" max="100" step="1" value="${prefs.imageQuality}" />
@@ -436,8 +488,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Preserve EXIF metadata</div>
-            <div class="setting-desc">Keep camera, color profile, and orientation tags when supported.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.formats.exifLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.formats.exifDesc"))}</div>
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-preserveExif" ${prefs.preserveExif ? "checked" : ""} />
@@ -446,8 +498,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Strip GPS location from EXIF</div>
-            <div class="setting-desc">Remove geolocation coordinates for safer sharing.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.formats.gpsLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.formats.gpsDesc"))}</div>
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-stripGpsExif" ${prefs.stripGpsExif ? "checked" : ""} />
@@ -459,14 +511,14 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">PDF Page &amp; Render Defaults</h2>
-            <p class="card-subtitle">Controls document-to-PDF layout and PDF-to-image resolution</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.formats.pdfTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.formats.pdfSub"))}</p>
           </div>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">PDF page size</div>
-            <div class="setting-desc">Page geometry for document and data exports.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.formats.pdfSizeLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.formats.pdfSizeDesc"))}</div>
           </div>
           <div class="segmented" id="seg-pdfPageSize">
             <button type="button" data-val="a4" class="${prefs.pdfPageSize.toLowerCase() === "a4" ? "is-active" : ""}">A4</button>
@@ -475,8 +527,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">PDF render DPI</div>
-            <div class="setting-desc">Resolution when rasterizing PDF pages to PNG, JPG, HEIC, or WebP.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.formats.pdfDpiLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.formats.pdfDpiDesc"))}</div>
           </div>
           <div class="segmented" id="seg-pdfDpi">
             ${[144, 200, 300]
@@ -492,26 +544,26 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Preferred Format Order</h2>
-            <p class="card-subtitle">Top 7 formats appear immediately on Ring Page 1 for each family; drag or reorder below</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.formats.orderTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.formats.orderSub"))}</p>
           </div>
-          <button type="button" class="btn btn-sm" id="btn-reset-family-order" aria-label="Reset format order for this family to default">Reset to Default</button>
+          <button type="button" class="btn btn-sm" id="btn-reset-family-order" aria-label="${escapeHtml(t(l, "settings.formats.resetOrderAria"))}">${escapeHtml(t(l, "settings.formats.resetOrder"))}</button>
         </div>
         <div class="preset-row" style="margin-bottom:10px" role="tablist" aria-label="Format family">
           ${FAMILY_LABELS.map(
             (f) =>
-              `<button type="button" role="tab" aria-selected="${selectedFamily === f.key ? "true" : "false"}" class="btn btn-sm ${selectedFamily === f.key ? "btn-primary" : ""}" data-family-tab="${f.key}">${f.label}</button>`,
+              `<button type="button" role="tab" aria-selected="${selectedFamily === f.key ? "true" : "false"}" class="btn btn-sm ${selectedFamily === f.key ? "btn-primary" : ""}" data-family-tab="${f.key}">${escapeHtml(t(l, f.labelKey))}</button>`,
           ).join("")}
         </div>
-        <div class="format-chips" role="list" aria-label="Preferred formats order for ${escapeHtml(selectedFamily)}">
+        <div class="format-chips" role="list" aria-label="${escapeHtml(selectedFamily)}">
           ${familyFormats
             .map(
               (fmt, idx) => `
               <div class="format-order-chip" role="listitem" draggable="true" data-chip-index="${idx}" data-format-tag="${escapeHtml(fmt)}">
                 <span style="opacity:0.5;font-size:10.5px">${idx + 1}.</span>
                 <span>${escapeHtml(fmt)}</span>
-                <button type="button" data-move-fmt="${idx}" data-dir="-1" ${idx === 0 ? "disabled" : ""} aria-label="Move ${escapeHtml(fmt)} earlier (left or up), position ${idx + 1} of ${familyFormats.length}" title="Move earlier (Left / Up)">◀</button>
-                <button type="button" data-move-fmt="${idx}" data-dir="1" ${idx === familyFormats.length - 1 ? "disabled" : ""} aria-label="Move ${escapeHtml(fmt)} later (right or down), position ${idx + 1} of ${familyFormats.length}" title="Move later (Right / Down)">▶</button>
+                <button type="button" data-move-fmt="${idx}" data-dir="-1" ${idx === 0 ? "disabled" : ""} aria-label="${escapeHtml(t(l, "settings.formats.moveEarlierAria", { fmt, pos: idx + 1, total: familyFormats.length }))}" title="${escapeHtml(t(l, "settings.formats.moveEarlierTitle"))}">◀</button>
+                <button type="button" data-move-fmt="${idx}" data-dir="1" ${idx === familyFormats.length - 1 ? "disabled" : ""} aria-label="${escapeHtml(t(l, "settings.formats.moveLaterAria", { fmt, pos: idx + 1, total: familyFormats.length }))}" title="${escapeHtml(t(l, "settings.formats.moveLaterTitle"))}">▶</button>
               </div>
             `,
             )
@@ -522,24 +574,28 @@ export function mountSettingsView(root: HTMLElement): () => void {
   }
 
   function renderNewFileTab(): string {
+    const l = lang();
     const clipBadge = clipboardInfo?.available
-      ? `<span class="status-pill is-ok"><span class="status-dot"></span>Ready (.${escapeHtml(clipboardInfo.extension || "txt")})</span>`
-      : `<span class="status-pill is-warn"><span class="status-dot"></span>Clipboard empty</span>`;
+      ? `<span class="status-pill is-ok"><span class="status-dot"></span>${escapeHtml(t(l, "settings.newfile.clipReady", { ext: clipboardInfo.extension || "txt" }))}</span>`
+      : `<span class="status-pill is-warn"><span class="status-dot"></span>${escapeHtml(t(l, "settings.newfile.clipEmpty"))}</span>`;
 
     return `
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Clipboard Creation Preview</h2>
-            <p class="card-subtitle">Create files directly from macOS pasteboard images, PDF, RTF, URLs, or text</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.newfile.clipTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.newfile.clipSub"))}</p>
           </div>
           ${clipBadge}
         </div>
         <p class="setting-desc">
           ${
             clipboardInfo?.available
-              ? `Detected <strong>${escapeHtml(clipboardInfo.kind)}</strong> payload. Choosing "From Clipboard" in the New File wheel will save <code>Clipboard &lt;timestamp&gt;.${escapeHtml(clipboardInfo.extension)}</code>.`
-              : "Copy an image, PDF, rich text, URL, or plain text to enable instant Clipboard file creation."
+              ? t(l, "settings.newfile.clipDetected", {
+                  kind: escapeHtml(clipboardInfo.kind),
+                  ext: escapeHtml(clipboardInfo.extension),
+                })
+              : escapeHtml(t(l, "settings.newfile.clipEmptyDesc"))
           }
         </p>
       </section>
@@ -547,8 +603,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Built-In File Kinds</h2>
-            <p class="card-subtitle">Pin your favorites to Page 1 of the New File wheel</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.newfile.kindsTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.newfile.kindsSub"))}</p>
           </div>
         </div>
         <div class="kinds-grid">
@@ -561,7 +617,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
                   <div>
                     <div style="font-weight:600">${escapeHtml(k.name)}</div>
                     <div style="font-size:11px;color:var(--text-muted)">
-                      ${escapeHtml(extText)}${k.available ? "" : " · unavailable"}
+                      ${escapeHtml(extText)}${k.available ? "" : escapeHtml(t(l, "settings.newfile.unavailableTag"))}
                     </div>
                   </div>
                   <input type="checkbox" data-visible-kind="${escapeHtml(k.id)}" ${pinned ? "checked" : ""} />
@@ -575,29 +631,29 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">User Templates</h2>
-            <p class="card-subtitle">Drop any file into <code>~/Library/Application Support/FLIP/Templates</code></p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.newfile.templatesTitle"))}</h2>
+            <p class="card-subtitle">${t(l, "settings.newfile.templatesSub")}</p>
           </div>
           <button type="button" class="btn btn-primary btn-sm" id="btn-open-templates">
-            ${UI_ICONS.folder}<span>Open Templates Folder</span>
+            ${UI_ICONS.folder}<span>${escapeHtml(t(l, "settings.newfile.openTemplates"))}</span>
           </button>
         </div>
         <p class="setting-desc" style="margin-bottom:10px">
-          Text templates automatically expand <code>{{date}}</code>, <code>{{time}}</code>, <code>{{user}}</code>, and <code>{{folder}}</code>.
+          ${t(l, "settings.newfile.templatesHint")}
         </p>
         ${
           templates.length === 0
-            ? `<div class="setting-desc">No custom templates added yet. Click "Open Templates Folder" to add your own.</div>`
+            ? `<div class="setting-desc">${escapeHtml(t(l, "settings.newfile.templatesEmpty"))}</div>`
             : `<div class="batch-file-list">
                 ${templates
                   .map(
-                    (t) => `
+                    (tmpl) => `
                   <div class="batch-file-item">
                     <div>
-                      <strong>${escapeHtml(t.name)}</strong>
-                      ${t.group ? `<span class="code-chip" style="margin-left:6px">${escapeHtml(t.group)}</span>` : ""}
+                      <strong>${escapeHtml(tmpl.name)}</strong>
+                      ${tmpl.group ? `<span class="code-chip" style="margin-left:6px">${escapeHtml(tmpl.group)}</span>` : ""}
                     </div>
-                    <span class="code-chip">${escapeHtml(t.extension ? `.${t.extension}` : "file")}</span>
+                    <span class="code-chip">${escapeHtml(tmpl.extension ? `.${tmpl.extension}` : "file")}</span>
                   </div>
                 `,
                   )
@@ -609,6 +665,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
   }
 
   function renderEnginesTab(): string {
+    const l = lang();
     const axOk = permissions?.accessibility ?? false;
     const autoState = permissions?.automationFinder ?? "unknown";
     const autoOk = autoState === "granted";
@@ -617,10 +674,10 @@ export function mountSettingsView(root: HTMLElement): () => void {
     const qaAllInstalled = qaConvert && qaNew;
     const qaAnyInstalled = qaConvert || qaNew;
     const qaLabel = qaAllInstalled
-      ? "Installed"
+      ? t(l, "settings.engines.qaInstalled")
       : qaAnyInstalled
-        ? "Partial"
-        : "Not Installed";
+        ? t(l, "settings.engines.qaPartial")
+        : t(l, "settings.engines.qaNotInstalled");
     const cliLinked = Boolean(quickActions?.cliSymlinkPath);
     const cliExe = quickActions?.cliExecutable ?? "/Applications/FLIP.app/Contents/MacOS/flip";
 
@@ -628,38 +685,38 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">macOS Permissions</h2>
-            <p class="card-subtitle">Required for drag-key capture, global shortcuts, and Finder inline rename</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.engines.permsTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.engines.permsSub"))}</p>
           </div>
-          <button type="button" class="btn btn-sm" id="btn-refresh-diagnostics">${UI_ICONS.refresh}<span>Refresh</span></button>
+          <button type="button" class="btn btn-sm" id="btn-refresh-diagnostics">${UI_ICONS.refresh}<span>${escapeHtml(t(l, "common.refresh"))}</span></button>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Accessibility &amp; Input Monitoring</div>
-            <div class="setting-desc">Captures drag trigger key without hijacking normal typing and sends Return for inline rename.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.engines.axLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.engines.axDesc"))}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span class="status-pill ${axOk ? "is-ok" : "is-warn"}">
-              <span class="status-dot"></span>${axOk ? "Granted" : "Not Granted"}
+              <span class="status-dot"></span>${escapeHtml(axOk ? t(l, "settings.engines.granted") : t(l, "settings.engines.notGranted"))}
             </span>
             ${
               axOk
                 ? ""
-                : `<button type="button" class="btn btn-primary btn-sm" id="btn-grant-ax">Grant Permission</button>`
+                : `<button type="button" class="btn btn-primary btn-sm" id="btn-grant-ax">${escapeHtml(t(l, "settings.engines.grantBtn"))}</button>`
             }
-            <button type="button" class="btn btn-sm" id="btn-open-ax">Open System Settings</button>
+            <button type="button" class="btn btn-sm" id="btn-open-ax">${escapeHtml(t(l, "settings.engines.openSystemSettings"))}</button>
           </div>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Finder Automation</div>
-            <div class="setting-desc">Reads selected files and active insertion folder directly from Finder.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.engines.autoLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.engines.autoDesc"))}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span class="status-pill ${autoOk ? "is-ok" : "is-warn"}">
               <span class="status-dot"></span>${escapeHtml(autoState)}
             </span>
-            <button type="button" class="btn btn-sm" id="btn-open-automation">Open System Settings</button>
+            <button type="button" class="btn btn-sm" id="btn-open-automation">${escapeHtml(t(l, "settings.engines.openSystemSettings"))}</button>
           </div>
         </div>
       </section>
@@ -667,8 +724,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Native Apple Frameworks &amp; iWork</h2>
-            <p class="card-subtitle">Built-in hardware-accelerated local engines (no internet required)</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.engines.nativeTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.engines.nativeSub"))}</p>
           </div>
         </div>
         <div class="kinds-grid">
@@ -687,7 +744,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
             <div class="kind-chip">
               <span style="font-weight:600">${item.name}</span>
               <span class="status-pill ${item.ok ? "is-ok" : "is-warn"}">
-                <span class="status-dot"></span>${item.ok ? "Ready" : "Missing"}
+                <span class="status-dot"></span>${escapeHtml(item.ok ? t(l, "settings.engines.ready") : t(l, "settings.engines.missing"))}
               </span>
             </div>
           `,
@@ -699,64 +756,66 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Optional Local CLI Engines</h2>
-            <p class="card-subtitle">Unlocks MKV/WebM/MP3/FLAC/OGG transcoding and FB2/RST books (EPUB 3 is built-in)</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.engines.cliTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.engines.cliSub"))}</p>
           </div>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">FFmpeg ${engines?.ffmpeg ? `<span class="status-pill is-ok" style="margin-left:6px"><span class="status-dot"></span>Detected</span>` : `<span class="status-pill is-warn" style="margin-left:6px"><span class="status-dot"></span>Not Found</span>`}</div>
-            <div class="setting-desc">${engines?.ffmpeg ? escapeHtml(engines.ffmpeg) : "Install via Homebrew: <code>brew install ffmpeg</code>"}</div>
+            <div class="setting-label">FFmpeg ${engines?.ffmpeg ? `<span class="status-pill is-ok" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.detected"))}</span>` : `<span class="status-pill is-warn" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.notFound"))}</span>`}</div>
+            <div class="setting-desc">${engines?.ffmpeg ? escapeHtml(engines.ffmpeg) : t(l, "settings.engines.installFfmpeg")}</div>
           </div>
-          <input type="text" class="mac-input" id="pref-ffmpegPath" placeholder="Auto-detect" value="${escapeHtml(prefs.ffmpegPath ?? "")}" />
+          <input type="text" class="mac-input" id="pref-ffmpegPath" placeholder="${escapeHtml(t(l, "settings.engines.autoDetect"))}" value="${escapeHtml(prefs.ffmpegPath ?? "")}" />
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Pandoc ${engines?.pandoc ? `<span class="status-pill is-ok" style="margin-left:6px"><span class="status-dot"></span>Detected</span>` : `<span class="status-pill is-warn" style="margin-left:6px"><span class="status-dot"></span>Not Found</span>`}</div>
-            <div class="setting-desc">${engines?.pandoc ? escapeHtml(engines.pandoc) : "Install via Homebrew: <code>brew install pandoc</code>"}</div>
+            <div class="setting-label">Pandoc ${engines?.pandoc ? `<span class="status-pill is-ok" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.detected"))}</span>` : `<span class="status-pill is-warn" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.notFound"))}</span>`}</div>
+            <div class="setting-desc">${engines?.pandoc ? escapeHtml(engines.pandoc) : t(l, "settings.engines.installPandoc")}</div>
           </div>
-          <input type="text" class="mac-input" id="pref-pandocPath" placeholder="Auto-detect" value="${escapeHtml(prefs.pandocPath ?? "")}" />
+          <input type="text" class="mac-input" id="pref-pandocPath" placeholder="${escapeHtml(t(l, "settings.engines.autoDetect"))}" value="${escapeHtml(prefs.pandocPath ?? "")}" />
         </div>
       </section>
 
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Finder Quick Actions, URL Scheme &amp; CLI</h2>
-            <p class="card-subtitle">Integrate FLIP with Finder context Quick Actions, <code>flip://</code> URLs, and Terminal</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.engines.qaTitle"))}</h2>
+            <p class="card-subtitle">${t(l, "settings.engines.qaSub")}</p>
           </div>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Finder Quick Actions</div>
-            <div class="setting-desc">Installs <code>Convert with FLIP.workflow</code> &amp; <code>New File with FLIP.workflow</code> into <code>~/Library/Services</code>.</div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.engines.qaLabel"))}</div>
+            <div class="setting-desc">${t(l, "settings.engines.qaDesc")}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span class="status-pill ${qaAllInstalled ? "is-ok" : "is-warn"}">
-              <span class="status-dot"></span>${qaLabel}
+              <span class="status-dot"></span>${escapeHtml(qaLabel)}
             </span>
             <button type="button" class="btn btn-primary btn-sm" id="btn-install-quick-actions">
-              ${qaAllInstalled ? "Reinstall Quick Actions" : "Install Quick Actions"}
+              ${escapeHtml(qaAllInstalled ? t(l, "settings.engines.qaReinstallBtn") : t(l, "settings.engines.qaInstallBtn"))}
             </button>
           </div>
         </div>
         <div class="setting-row">
           <div>
-            <div class="setting-label">Terminal CLI &amp; <code>flip://</code> Scheme</div>
+            <div class="setting-label">${t(l, "settings.engines.cliSchemeLabel")}</div>
             <div class="setting-desc">
               ${
                 cliLinked
-                  ? `Linked at <code>${escapeHtml(quickActions?.cliSymlinkPath ?? "")}</code>. Supports <code>flip convert … --to …</code> and <code>flip new …</code>.`
-                  : `Link <code>~/.local/bin/flip</code> → <code>${escapeHtml(cliExe)}</code> for Terminal &amp; Raycast.`
+                  ? t(l, "settings.engines.cliLinkedDesc", {
+                      path: escapeHtml(quickActions?.cliSymlinkPath ?? ""),
+                    })
+                  : t(l, "settings.engines.cliUnlinkedDesc", { exe: escapeHtml(cliExe) })
               }
             </div>
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span class="status-pill ${cliLinked ? "is-ok" : "is-warn"}">
-              <span class="status-dot"></span>${cliLinked ? "Linked" : "Not Linked"}
+              <span class="status-dot"></span>${escapeHtml(cliLinked ? t(l, "settings.engines.linked") : t(l, "settings.engines.notLinked"))}
             </span>
             <button type="button" class="btn btn-sm" id="btn-install-cli-symlink">
-              ${cliLinked ? "Relink CLI" : "Install CLI Symlink"}
+              ${escapeHtml(cliLinked ? t(l, "settings.engines.relinkCli") : t(l, "settings.engines.installCli"))}
             </button>
           </div>
         </div>
@@ -765,36 +824,37 @@ export function mountSettingsView(root: HTMLElement): () => void {
   }
 
   function renderAboutTab(): string {
+    const l = lang();
     let updateBodyHtml = `
       <div class="setting-desc">
-        Current version: <code>0.1.0</code>. Click <strong>Check for Updates…</strong> to query GitHub Releases, or <strong>Copy Diagnostics</strong> to export a redacted Markdown report (home paths replaced with <code>~</code>).
+        ${t(l, "settings.about.updatesHint")}
       </div>
     `;
 
     if (updateChecking) {
       updateBodyHtml = `
         <div style="display:flex;align-items:center;gap:8px">
-          <span class="status-pill is-warn"><span class="status-dot"></span>Checking…</span>
-          <span class="setting-desc" style="margin:0">Querying GitHub Releases (8s timeout)…</span>
+          <span class="status-pill is-warn"><span class="status-dot"></span>${escapeHtml(t(l, "settings.about.checking"))}</span>
+          <span class="setting-desc" style="margin:0">${escapeHtml(t(l, "settings.about.checkingDesc"))}</span>
         </div>
       `;
     } else if (updateError) {
       updateBodyHtml = `
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span class="status-pill is-warn"><span class="status-dot"></span>Check Failed</span>
+          <span class="status-pill is-warn"><span class="status-dot"></span>${escapeHtml(t(l, "settings.about.checkFailed"))}</span>
           <span class="setting-desc" style="margin:0">${escapeHtml(updateError)}</span>
         </div>
       `;
     } else if (updateResult) {
       const pubDate = updateResult.publishedAt
-        ? ` · Published ${escapeHtml(updateResult.publishedAt.slice(0, 10))}`
+        ? ` · ${escapeHtml(updateResult.publishedAt.slice(0, 10))}`
         : "";
       if (updateResult.updateAvailable) {
         updateBodyHtml = `
           <div style="display:flex;flex-direction:column;gap:8px">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <span class="status-pill is-ok"><span class="status-dot"></span>Update Available: ${escapeHtml(updateResult.latestTag)}</span>
-              <span class="setting-desc" style="margin:0">Installed: ${escapeHtml(updateResult.currentVersion)}${pubDate}</span>
+              <span class="status-pill is-ok"><span class="status-dot"></span>${escapeHtml(t(l, "settings.about.updateAvailable", { tag: updateResult.latestTag }))}</span>
+              <span class="setting-desc" style="margin:0">${escapeHtml(t(l, "settings.about.installedVersion", { version: updateResult.currentVersion, pubDate }))}</span>
             </div>
             ${
               updateResult.body
@@ -802,8 +862,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
                 : ""
             }
             <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button type="button" class="btn btn-primary btn-sm" id="btn-open-release-url">Open Release on GitHub</button>
-              <button type="button" class="btn btn-sm" id="btn-copy-release-url">Copy Release URL</button>
+              <button type="button" class="btn btn-primary btn-sm" id="btn-open-release-url">${escapeHtml(t(l, "settings.about.openRelease"))}</button>
+              <button type="button" class="btn btn-sm" id="btn-copy-release-url">${escapeHtml(t(l, "settings.about.copyReleaseUrl"))}</button>
             </div>
           </div>
         `;
@@ -811,10 +871,10 @@ export function mountSettingsView(root: HTMLElement): () => void {
         updateBodyHtml = `
           <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-              <span class="status-pill is-ok"><span class="status-dot"></span>Up to Date</span>
-              <span class="setting-desc" style="margin:0">FLIP ${escapeHtml(updateResult.currentVersion)} is current (latest GitHub tag: <code>${escapeHtml(updateResult.latestTag)}</code>${pubDate}).</span>
+              <span class="status-pill is-ok"><span class="status-dot"></span>${escapeHtml(t(l, "settings.about.upToDate"))}</span>
+              <span class="setting-desc" style="margin:0">${t(l, "settings.about.upToDateDesc", { version: escapeHtml(updateResult.currentVersion), tag: escapeHtml(updateResult.latestTag), pubDate })}</span>
             </div>
-            <button type="button" class="btn btn-sm" id="btn-open-release-url">Releases Page</button>
+            <button type="button" class="btn btn-sm" id="btn-open-release-url">${escapeHtml(t(l, "settings.about.releasesPage"))}</button>
           </div>
         `;
       }
@@ -823,7 +883,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
     const diagFallbackHtml =
       diagCopiedState === "manual" && diagFallbackText
         ? `<div style="margin-top:10px">
-             <div class="setting-desc" style="margin-bottom:4px">Clipboard access is restricted. Copy the redacted diagnostics bundle below:</div>
+             <div class="setting-desc" style="margin-bottom:4px">${escapeHtml(t(l, "settings.about.diagFallbackDesc"))}</div>
              <textarea class="mac-input diag-textarea" id="about-diag-fallback" readonly rows="7">${escapeHtml(diagFallbackText)}</textarea>
            </div>`
         : "";
@@ -832,35 +892,34 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">FLIP for macOS</h2>
-            <p class="card-subtitle">Version 0.1.0 · Target: macOS 27.2.1 Golden Gate · MIT License</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.about.appTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.about.appSub"))}</p>
           </div>
           <span class="code-chip">The Tiny Foundry</span>
         </div>
         <p class="setting-desc">
-          100% local Liquid Glass radial file converter and Create New File utility for Finder.
-          Zero cloud uploads, atomic staging, non-overwriting Finder-style naming, and native Apple Vision OCR / PDFKit / AVFoundation support.
+          ${escapeHtml(t(l, "settings.about.appDesc"))}
         </p>
         <div class="preset-row" style="margin-top:12px">
-          <button type="button" class="btn btn-primary btn-sm" id="btn-about-wheel">Preview Wheel</button>
-          <button type="button" class="btn btn-sm" id="btn-about-batch">Batch Converter</button>
-          <button type="button" class="btn btn-sm" id="btn-about-tour">Welcome Tour</button>
-          <button type="button" class="btn btn-sm" id="btn-about-logs">Reveal Logs</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btn-about-wheel">${escapeHtml(t(l, "settings.about.previewWheel"))}</button>
+          <button type="button" class="btn btn-sm" id="btn-about-batch">${escapeHtml(t(l, "nav.batchConverter"))}</button>
+          <button type="button" class="btn btn-sm" id="btn-about-tour">${escapeHtml(t(l, "settings.about.welcomeTour"))}</button>
+          <button type="button" class="btn btn-sm" id="btn-about-logs">${escapeHtml(t(l, "settings.general.revealLogs"))}</button>
         </div>
       </section>
 
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Updates &amp; Redacted Diagnostics</h2>
-            <p class="card-subtitle">Optional GitHub Release check and privacy-safe troubleshooting bundle</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.about.updatesTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.about.updatesSub"))}</p>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button type="button" class="btn btn-primary btn-sm" id="btn-check-updates" ${updateChecking ? "disabled" : ""}>
-              ${updateChecking ? "Checking…" : "Check for Updates…"}
+              ${escapeHtml(updateChecking ? t(l, "settings.about.checking") : t(l, "settings.about.checkUpdates"))}
             </button>
             <button type="button" class="btn btn-sm" id="btn-copy-diagnostics">
-              ${diagCopiedState === "copied" ? "Copied!" : "Copy Diagnostics"}
+              ${escapeHtml(diagCopiedState === "copied" ? t(l, "common.copied") : t(l, "common.copyDiagnostics"))}
             </button>
           </div>
         </div>
@@ -871,14 +930,14 @@ export function mountSettingsView(root: HTMLElement): () => void {
       <section class="glass-card">
         <div class="card-header">
           <div>
-            <h2 class="card-title">Recent Conversions</h2>
-            <p class="card-subtitle">Quickly locate recently generated files in Finder</p>
+            <h2 class="card-title">${escapeHtml(t(l, "settings.about.recentTitle"))}</h2>
+            <p class="card-subtitle">${escapeHtml(t(l, "settings.about.recentSub"))}</p>
           </div>
-          <button type="button" class="btn btn-sm" id="btn-refresh-recent">${UI_ICONS.refresh}<span>Refresh</span></button>
+          <button type="button" class="btn btn-sm" id="btn-refresh-recent">${UI_ICONS.refresh}<span>${escapeHtml(t(l, "common.refresh"))}</span></button>
         </div>
         ${
           recent.length === 0
-            ? `<p class="setting-desc">No conversions recorded yet in this session.</p>`
+            ? `<p class="setting-desc">${escapeHtml(t(l, "settings.about.recentEmpty"))}</p>`
             : `<div class="batch-results-list">
                 ${recent
                   .map(
@@ -888,7 +947,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
                       <div style="font-weight:600">${escapeHtml(item.sourceName)} → ${escapeHtml(item.targetFormat)}</div>
                       <div style="font-size:11.5px;color:var(--text-muted)" title="${escapeHtml(item.outputPath)}">${escapeHtml(basename(item.outputPath))}</div>
                     </div>
-                    <button type="button" class="btn btn-sm" data-reveal-recent="${idx}">${UI_ICONS.finder}<span>Show in Finder</span></button>
+                    <button type="button" class="btn btn-sm" data-reveal-recent="${idx}">${UI_ICONS.finder}<span>${escapeHtml(t(l, "common.showInFinder"))}</span></button>
                   </div>
                 `,
                   )
@@ -901,47 +960,82 @@ export function mountSettingsView(root: HTMLElement): () => void {
 
   function bindTabHandlers(): void {
     // General
+    mainEl.querySelector<HTMLSelectElement>("#pref-language")?.addEventListener("change", (e) => {
+      const nextLang = normalizeLanguage((e.target as HTMLSelectElement).value);
+      void persistPrefs((d) => {
+        d.language = nextLang;
+      }).then((ok) => {
+        if (ok && !disposed) {
+          renderMain();
+          showSavedToast(t(lang(), "common.saved"));
+        }
+      });
+    });
     mainEl.querySelector<HTMLInputElement>("#pref-launchAtLogin")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.launchAtLogin = checked; }).then((ok) => {
+      void persistPrefs((d) => {
+        d.launchAtLogin = checked;
+      }).then((ok) => {
         if (!ok && !disposed) renderMain();
       });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-soundEnabled")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.soundEnabled = checked; });
+      void persistPrefs((d) => {
+        d.soundEnabled = checked;
+      });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-hapticsEnabled")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.hapticsEnabled = checked; });
+      void persistPrefs((d) => {
+        d.hapticsEnabled = checked;
+      });
+    });
+    mainEl.querySelector<HTMLButtonElement>("#btn-test-wheel-feedback")?.addEventListener("click", () => {
+      void playWheelFeedback("tick");
+      showSavedToast(
+        prefs.soundEnabled || prefs.hapticsEnabled
+          ? t(lang(), "settings.general.testFeedbackPlayed")
+          : t(lang(), "settings.general.testFeedbackMuted"),
+      );
     });
     mainEl.querySelector<HTMLInputElement>("#pref-notificationsEnabled")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.notificationsEnabled = checked; });
+      void persistPrefs((d) => {
+        d.notificationsEnabled = checked;
+      });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-autoRenameOnCreate")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.autoRenameOnCreate = checked; });
+      void persistPrefs((d) => {
+        d.autoRenameOnCreate = checked;
+      });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-openAfterCreating")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.openAfterCreating = checked; });
+      void persistPrefs((d) => {
+        d.openAfterCreating = checked;
+      });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-outputSubfolder")?.addEventListener("change", (e) => {
       const input = e.target as HTMLInputElement;
       const raw = input.value.trim().replace(/^\/+|\/+$/g, "");
       if (raw.includes("..")) {
         input.value = prefs.outputSubfolder ?? "";
-        showSavedToast("Subfolder cannot contain '..'");
+        showSavedToast(t(lang(), "settings.general.subfolderInvalid"));
         return;
       }
       const safe = raw || null;
       input.value = safe ?? "";
-      void persistPrefs((d) => { d.outputSubfolder = safe; });
+      void persistPrefs((d) => {
+        d.outputSubfolder = safe;
+      });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-fallbackFolder")?.addEventListener("change", (e) => {
       const raw = (e.target as HTMLInputElement).value.trim();
-      void persistPrefs((d) => { d.fallbackFolder = raw || null; });
+      void persistPrefs((d) => {
+        d.fallbackFolder = raw || null;
+      });
     });
     mainEl.querySelector("#btn-reveal-logs")?.addEventListener("click", () => void revealLogs());
 
@@ -949,28 +1043,36 @@ export function mountSettingsView(root: HTMLElement): () => void {
     mainEl.querySelector("#btn-record-drag")?.addEventListener("click", () => {
       recordingTarget = recordingTarget === "drag" ? null : "drag";
       recorderFeedbackTarget = recordingTarget;
-      recorderFeedback = recordingTarget ? "Press one key without modifiers." : "";
+      recorderFeedbackKey = recordingTarget ? "settings.shortcuts.hintDrag" : null;
+      recorderFeedbackVars = undefined;
       renderMain();
     });
     mainEl.querySelector("#btn-record-idle")?.addEventListener("click", () => {
       recordingTarget = recordingTarget === "idle" ? null : "idle";
       recorderFeedbackTarget = recordingTarget;
-      recorderFeedback = recordingTarget ? "Press modifier + key (e.g. Option+Shift+Space)." : "";
+      recorderFeedbackKey = recordingTarget ? "settings.shortcuts.hintIdle" : null;
+      recorderFeedbackVars = undefined;
       renderMain();
     });
     mainEl.querySelector("#btn-reset-idle")?.addEventListener("click", () => {
       recordingTarget = null;
-      recorderFeedback = "";
+      recorderFeedbackKey = null;
+      recorderFeedbackVars = undefined;
       recorderFeedbackTarget = null;
-      void persistPrefs((d) => { d.idleShortcut = "Option+Shift+Space"; }).then(renderMain);
+      void persistPrefs((d) => {
+        d.idleShortcut = "Option+Shift+Space";
+      }).then(renderMain);
     });
     mainEl.querySelectorAll<HTMLButtonElement>("[data-drag-preset]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const key = btn.dataset.dragPreset!;
         recordingTarget = null;
-        recorderFeedback = "";
+        recorderFeedbackKey = null;
+        recorderFeedbackVars = undefined;
         recorderFeedbackTarget = null;
-        void persistPrefs((d) => { d.dragTrigger = key; }).then(renderMain);
+        void persistPrefs((d) => {
+          d.dragTrigger = key;
+        }).then(renderMain);
       });
     });
     mainEl.querySelector<HTMLSelectElement>("#pref-mouseTriggerButton")?.addEventListener("change", (e) => {
@@ -988,26 +1090,36 @@ export function mountSettingsView(root: HTMLElement): () => void {
     });
     qualRange?.addEventListener("change", () => {
       const n = Math.max(10, Math.min(100, Number(qualRange.value)));
-      void persistPrefs((d) => { d.imageQuality = n; });
+      void persistPrefs((d) => {
+        d.imageQuality = n;
+      });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-preserveExif")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.preserveExif = checked; });
+      void persistPrefs((d) => {
+        d.preserveExif = checked;
+      });
     });
     mainEl.querySelector<HTMLInputElement>("#pref-stripGpsExif")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
-      void persistPrefs((d) => { d.stripGpsExif = checked; });
+      void persistPrefs((d) => {
+        d.stripGpsExif = checked;
+      });
     });
     mainEl.querySelectorAll<HTMLButtonElement>("#seg-pdfPageSize button").forEach((btn) => {
       btn.addEventListener("click", () => {
         const val = btn.dataset.val!;
-        void persistPrefs((d) => { d.pdfPageSize = val; }).then(renderMain);
+        void persistPrefs((d) => {
+          d.pdfPageSize = val;
+        }).then(renderMain);
       });
     });
     mainEl.querySelectorAll<HTMLButtonElement>("#seg-pdfDpi button").forEach((btn) => {
       btn.addEventListener("click", () => {
         const val = Number(btn.dataset.val!);
-        void persistPrefs((d) => { d.pdfDpi = val; }).then(renderMain);
+        void persistPrefs((d) => {
+          d.pdfDpi = val;
+        }).then(renderMain);
       });
     });
     mainEl.querySelectorAll<HTMLButtonElement>("[data-family-tab]").forEach((btn) => {
@@ -1124,7 +1236,9 @@ export function mountSettingsView(root: HTMLElement): () => void {
         permissions = await requestPermission("accessibility_prompt");
         if (!disposed) renderMain();
       } catch (err) {
-        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+        if (!disposed) {
+          showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
+        }
       }
     });
     mainEl.querySelector("#btn-open-ax")?.addEventListener("click", async () => {
@@ -1132,7 +1246,9 @@ export function mountSettingsView(root: HTMLElement): () => void {
         permissions = await requestPermission("open_accessibility");
         if (!disposed) renderMain();
       } catch (err) {
-        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+        if (!disposed) {
+          showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
+        }
       }
     });
     mainEl.querySelector("#btn-open-automation")?.addEventListener("click", async () => {
@@ -1140,26 +1256,34 @@ export function mountSettingsView(root: HTMLElement): () => void {
         permissions = await requestPermission("open_automation");
         if (!disposed) renderMain();
       } catch (err) {
-        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+        if (!disposed) {
+          showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
+        }
       }
     });
     mainEl.querySelector<HTMLInputElement>("#pref-ffmpegPath")?.addEventListener("change", (e) => {
       const val = (e.target as HTMLInputElement).value.trim();
-      void persistPrefs((d) => { d.ffmpegPath = val || null; }).then(refreshDiagnostics);
+      void persistPrefs((d) => {
+        d.ffmpegPath = val || null;
+      }).then(refreshDiagnostics);
     });
     mainEl.querySelector<HTMLInputElement>("#pref-pandocPath")?.addEventListener("change", (e) => {
       const val = (e.target as HTMLInputElement).value.trim();
-      void persistPrefs((d) => { d.pandocPath = val || null; }).then(refreshDiagnostics);
+      void persistPrefs((d) => {
+        d.pandocPath = val || null;
+      }).then(refreshDiagnostics);
     });
     mainEl.querySelector("#btn-install-quick-actions")?.addEventListener("click", async () => {
       try {
         quickActions = await installFinderQuickActions(false);
         if (!disposed) {
           renderMain();
-          showSavedToast("Quick Actions installed");
+          showSavedToast(t(lang(), "settings.engines.qaSavedToast"));
         }
       } catch (err) {
-        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+        if (!disposed) {
+          showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
+        }
       }
     });
     mainEl.querySelector("#btn-install-cli-symlink")?.addEventListener("click", async () => {
@@ -1167,10 +1291,12 @@ export function mountSettingsView(root: HTMLElement): () => void {
         quickActions = await installFinderQuickActions(true);
         if (!disposed) {
           renderMain();
-          showSavedToast("CLI symlink & Quick Actions ready");
+          showSavedToast(t(lang(), "settings.engines.cliSavedToast"));
         }
       } catch (err) {
-        if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+        if (!disposed) {
+          showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
+        }
       }
     });
 
@@ -1187,7 +1313,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
         await openReleaseUrl(updateResult.htmlUrl);
       } catch (err) {
         if (!disposed) {
-          showSavedToast(`Error: ${formatError(err)}`);
+          showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
         }
       }
     });
@@ -1195,7 +1321,11 @@ export function mountSettingsView(root: HTMLElement): () => void {
       if (!updateResult?.htmlUrl) return;
       const copyRes = await copyTextWithFallback(updateResult.htmlUrl);
       if (!disposed) {
-        showSavedToast(copyRes.ok ? "Release URL copied" : "Copy failed");
+        showSavedToast(
+          copyRes.ok
+            ? t(lang(), "settings.about.releaseUrlCopied")
+            : t(lang(), "common.copyFailed"),
+        );
       }
     });
     mainEl.querySelector("#btn-refresh-recent")?.addEventListener("click", async () => {
@@ -1215,7 +1345,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
     const targetEl = ev.target;
     if (targetEl instanceof Element && targetEl.closest("input, textarea, select")) {
       recordingTarget = null;
-      recorderFeedback = "";
+      recorderFeedbackKey = null;
+      recorderFeedbackVars = undefined;
       recorderFeedbackTarget = null;
       return;
     }
@@ -1228,14 +1359,16 @@ export function mountSettingsView(root: HTMLElement): () => void {
     if (ev.key === "Escape") {
       recordingTarget = null;
       recorderFeedbackTarget = activeTarget;
-      recorderFeedback = "Recording cancelled.";
+      recorderFeedbackKey = "settings.shortcuts.recCancelled";
+      recorderFeedbackVars = undefined;
       renderMain();
       return;
     }
 
     if (ev.key === "Enter") {
       recorderFeedbackTarget = activeTarget;
-      recorderFeedback = "Escape and Return are reserved keys.";
+      recorderFeedbackKey = "settings.shortcuts.recReserved";
+      recorderFeedbackVars = undefined;
       renderMain();
       return;
     }
@@ -1248,7 +1381,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
     const token = mapBrowserKeyToToken(ev);
     if (!token) {
       recorderFeedbackTarget = activeTarget;
-      recorderFeedback = `Unsupported key: ${ev.key}`;
+      recorderFeedbackKey = "settings.shortcuts.recUnsupported";
+      recorderFeedbackVars = { key: ev.key };
       renderMain();
       return;
     }
@@ -1256,14 +1390,18 @@ export function mountSettingsView(root: HTMLElement): () => void {
     if (activeTarget === "drag") {
       if (ev.metaKey || ev.altKey || ev.ctrlKey || ev.shiftKey) {
         recorderFeedbackTarget = "drag";
-        recorderFeedback = "Press one single key without Command, Option, Control, or Shift.";
+        recorderFeedbackKey = "settings.shortcuts.recDragNoMods";
+        recorderFeedbackVars = undefined;
         renderMain();
         return;
       }
       recordingTarget = null;
-      recorderFeedback = "";
+      recorderFeedbackKey = null;
+      recorderFeedbackVars = undefined;
       recorderFeedbackTarget = null;
-      void persistPrefs((d) => { d.dragTrigger = token; }).then(renderMain);
+      void persistPrefs((d) => {
+        d.dragTrigger = token;
+      }).then(renderMain);
       return;
     }
 
@@ -1271,7 +1409,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
     const isFn = /^F([1-9]|1[0-2])$/.test(token);
     if (!ev.metaKey && !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !isFn) {
       recorderFeedbackTarget = "idle";
-      recorderFeedback = "Idle shortcut requires at least one modifier (Command, Option, Control, Shift) or F1–F12.";
+      recorderFeedbackKey = "settings.shortcuts.recIdleNeedMod";
+      recorderFeedbackVars = undefined;
       renderMain();
       return;
     }
@@ -1284,9 +1423,12 @@ export function mountSettingsView(root: HTMLElement): () => void {
     parts.push(token);
 
     recordingTarget = null;
-    recorderFeedback = "";
+    recorderFeedbackKey = null;
+    recorderFeedbackVars = undefined;
     recorderFeedbackTarget = null;
-    void persistPrefs((d) => { d.idleShortcut = parts.join("+"); }).then(renderMain);
+    void persistPrefs((d) => {
+      d.idleShortcut = parts.join("+");
+    }).then(renderMain);
   };
 
   window.addEventListener("keydown", onRecorderKeyDown, true);
@@ -1298,7 +1440,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
     if (!btn) return;
     activeTab = btn.dataset.tab as SettingsTab;
     recordingTarget = null;
-    recorderFeedback = "";
+    recorderFeedbackKey = null;
+    recorderFeedbackVars = undefined;
     recorderFeedbackTarget = null;
     renderMain();
     if (activeTab === "engines" || activeTab === "newfile" || activeTab === "about") {
@@ -1337,7 +1480,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
       if (res.ok) {
         diagCopiedState = "copied";
         diagFallbackText = "";
-        showSavedToast("Redacted diagnostics copied");
+        showSavedToast(t(lang(), "settings.about.diagCopiedToast"));
         if (activeTab === "about") renderMain();
         if (diagCopyTimer !== null) window.clearTimeout(diagCopyTimer);
         diagCopyTimer = window.setTimeout(() => {
@@ -1350,11 +1493,13 @@ export function mountSettingsView(root: HTMLElement): () => void {
       } else {
         diagCopiedState = "manual";
         diagFallbackText = res.report;
-        showSavedToast("Clipboard unavailable — copy below");
+        showSavedToast(t(lang(), "settings.about.diagManualToast"));
         if (activeTab === "about") renderMain();
       }
     } catch (err) {
-      if (!disposed) showSavedToast(`Error: ${formatError(err)}`);
+      if (!disposed) {
+        showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
+      }
     }
   }
 
@@ -1386,7 +1531,8 @@ export function mountSettingsView(root: HTMLElement): () => void {
     if (payload.tab) {
       activeTab = payload.tab;
       recordingTarget = null;
-      recorderFeedback = "";
+      recorderFeedbackKey = null;
+      recorderFeedbackVars = undefined;
       recorderFeedbackTarget = null;
     }
     renderMain();
@@ -1410,22 +1556,35 @@ export function mountSettingsView(root: HTMLElement): () => void {
 
   let unlistenNavigate: (() => void) | null = null;
   let unlistenTemplates: (() => void) | null = null;
+  let unlistenPrefs: (() => void) | null = null;
   void (async () => {
-    const [navFn, tmplFn] = await Promise.all([
+    const [navFn, tmplFn, prefsFn] = await Promise.all([
       events.onSettingsNavigate((payload) => handleSettingsNavigate(payload, true)),
       events.onTemplatesChanged(() => {
         if (!disposed && activeTab === "newfile") {
           void refreshDiagnostics();
         }
       }),
+      events.onPrefsChanged((updated) => {
+        if (disposed) return;
+        const langChanged = normalizeLanguage(updated.language) !== lang();
+        prefs = updated;
+        if (!recordingTarget && (langChanged || !mainEl.contains(document.activeElement))) {
+          renderMain();
+        } else {
+          updateSidebarLocalization();
+        }
+      }),
     ]);
     if (disposed) {
       navFn();
       tmplFn();
+      prefsFn();
       return;
     }
     unlistenNavigate = navFn;
     unlistenTemplates = tmplFn;
+    unlistenPrefs = prefsFn;
 
     const pendingNav = await consumeSettingsNavigation().catch(() => null);
     if (disposed) return;
@@ -1448,6 +1607,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
     if (diagCopyTimer !== null) window.clearTimeout(diagCopyTimer);
     if (unlistenNavigate) unlistenNavigate();
     if (unlistenTemplates) unlistenTemplates();
+    if (unlistenPrefs) unlistenPrefs();
     window.removeEventListener("keydown", onRecorderKeyDown, true);
   };
 }

@@ -18,10 +18,21 @@ pub fn convert(
     let ext = ext_lower(source);
     let fmt = format.trim().to_ascii_uppercase();
 
-    // Fast native VideoToolbox/AVFoundation path when FFmpeg is not required or when target is M4A/MOV/M4V/MP4 from native video
+    // Fast native VideoToolbox/AVFoundation/ExtAudioFile path when FFmpeg is absent
     let source_is_native_av = matches!(
         ext.as_str(),
-        "mp4" | "mov" | "m4v" | "m4a" | "wav" | "aiff" | "aif" | "aac" | "caf" | "alac" | "mp3"
+        "mp4"
+            | "mov"
+            | "m4v"
+            | "m4a"
+            | "wav"
+            | "aiff"
+            | "aif"
+            | "aac"
+            | "caf"
+            | "alac"
+            | "flac"
+            | "mp3"
     );
 
     if tools.ffmpeg.is_none() {
@@ -41,8 +52,8 @@ pub fn convert(
             unit_progress(100);
             return Ok(());
         }
-        if matches!(fmt.as_str(), "WAV" | "AIFF" | "ALAC") {
-            return convert_via_afconvert(source, &fmt, output, cancel, unit_progress);
+        if matches!(fmt.as_str(), "WAV" | "AIFF" | "ALAC" | "CAF" | "FLAC") {
+            return convert_via_native_audio(source, &fmt, output, cancel, unit_progress);
         }
         return Err(EngineError::Unsupported(format!(
             "FFmpeg is required to convert to {fmt}. Install via `brew install ffmpeg`."
@@ -80,6 +91,17 @@ pub fn convert(
             "2".into(),
         ]),
         "ALAC" => args.extend(["-vn".into(), "-acodec".into(), "alac".into(), "-f".into(), "ipod".into()]),
+        "CAF" => args.extend([
+            "-vn".into(),
+            "-acodec".into(),
+            "pcm_s16le".into(),
+            "-ar".into(),
+            "44100".into(),
+            "-ac".into(),
+            "2".into(),
+            "-f".into(),
+            "caf".into(),
+        ]),
         "MP3" => args.extend(["-vn".into(), "-acodec".into(), "libmp3lame".into(), "-q:a".into(), "2".into()]),
         "FLAC" => args.extend(["-vn".into(), "-acodec".into(), "flac".into()]),
         "OGG" => {
@@ -211,20 +233,13 @@ pub fn convert(
     run_ffmpeg_with_progress(ffmpeg, &args, total_secs, cancel, unit_progress)
 }
 
-fn convert_via_afconvert(
+fn convert_via_native_audio(
     source: &Path,
     fmt: &str,
     output: &Path,
     cancel: &Arc<AtomicBool>,
     unit_progress: &dyn Fn(u8),
 ) -> Result<(), EngineError> {
-    let afconvert = Path::new("/usr/bin/afconvert");
-    if !afconvert.is_file() {
-        return Err(EngineError::Unsupported(
-            "afconvert not found and FFmpeg is not installed".to_string(),
-        ));
-    }
-
     let ext = ext_lower(source);
     let mut temp_m4a: Option<PathBuf> = None;
     let audio_input = if matches!(ext.as_str(), "mp4" | "mov" | "m4v") {
@@ -238,16 +253,44 @@ fn convert_via_afconvert(
     };
 
     unit_progress(55);
-    let mut args = match fmt {
-        "WAV" => vec!["-f".into(), "WAVE".into(), "-d".into(), "LEI16@44100".into()],
-        "AIFF" => vec!["-f".into(), "AIFF".into(), "-d".into(), "BEI16@44100".into()],
-        "ALAC" => vec!["-f".into(), "m4af".into(), "-d".into(), "alac".into()],
-        _ => return Err(EngineError::Unsupported(format!("afconvert unsupported: {fmt}"))),
+    let res: Result<(), EngineError> = if fmt == "FLAC" {
+        // Use Swift bridge ExtAudioFile encoder directly so <4608-frame clips select a smaller FLAC block size cleanly.
+        bridge::convert_av(&audio_input, "FLAC", output, Some(cancel))
+            .map(|_| ())
+            .map_err(EngineError::from)
+    } else {
+        let afconvert = Path::new("/usr/bin/afconvert");
+        if afconvert.is_file() {
+            let mut args = match fmt {
+                "WAV" => vec!["-f".into(), "WAVE".into(), "-d".into(), "LEI16@44100".into()],
+                "AIFF" => vec!["-f".into(), "AIFF".into(), "-d".into(), "BEI16@44100".into()],
+                "ALAC" => vec!["-f".into(), "m4af".into(), "-d".into(), "alac".into()],
+                "CAF" => vec!["-f".into(), "caff".into(), "-d".into(), "LEI16".into()],
+                _ => {
+                    if let Some(tmp) = temp_m4a {
+                        let _ = std::fs::remove_file(tmp);
+                    }
+                    return Err(EngineError::Unsupported(format!(
+                        "Native audio unsupported: {fmt}"
+                    )));
+                }
+            };
+            args.push(audio_input.to_string_lossy().into_owned());
+            args.push(output.to_string_lossy().into_owned());
+            bridge::run_external_command(afconvert, &args, None, 120, Some(cancel))
+                .map(|_| ())
+                .map_err(EngineError::from)
+        } else if fmt == "CAF" {
+            bridge::convert_av(&audio_input, "CAF", output, Some(cancel))
+                .map(|_| ())
+                .map_err(EngineError::from)
+        } else {
+            Err(EngineError::Unsupported(
+                "afconvert not found and FFmpeg is not installed".to_string(),
+            ))
+        }
     };
-    args.push(audio_input.to_string_lossy().into_owned());
-    args.push(output.to_string_lossy().into_owned());
 
-    let res = bridge::run_external_command(afconvert, &args, None, 120, Some(cancel));
     if let Some(tmp) = temp_m4a {
         let _ = std::fs::remove_file(tmp);
     }

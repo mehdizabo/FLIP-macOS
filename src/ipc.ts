@@ -1,6 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { normalizeLanguage } from "./i18n";
 import type {
   AppPreferences,
   ConversionCompletePayload,
@@ -139,12 +140,13 @@ export function defaultPreferences(): AppPreferences {
         "RST",
       ],
       data: ["JSON", "YAML", "TOML", "CSV", "XML", "MD", "HTML", "PDF", "TXT"],
-      audio: ["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "OGG", "OPUS", "AAC"],
+      audio: ["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"],
       video: ["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"],
     },
     newFileVisibleKinds: ["folder", "txt", "md", "rtf", "docx", "xlsx", "html", "clipboard"],
     recentConversions: [],
     onboardingCompleted: false,
+    language: "en",
   };
 }
 
@@ -257,6 +259,7 @@ let mockCancelRequested = false;
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns", "ico"]);
 const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "csv"]);
+export const AUDIO_NATIVE_EXTS = new Set(["wav", "aiff", "aif", "m4a", "aac", "alac", "caf", "flac", "mp3"]);
 const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf"]);
 const VIDEO_EXTS = new Set(["mp4", "mkv", "webm", "avi", "mov", "wmv", "m4v"]);
 const ARCHIVE_EXTS = new Set(["zip"]);
@@ -286,8 +289,10 @@ function canonicalForExt(ext: string): string {
 
 function mockTargetsForExt(
   ext: string,
-  hasPandoc = false,
+  caps: { pandoc?: boolean; ffmpeg?: boolean } = {},
 ): { targets: string[]; family: FormatFamily | null } {
+  const hasPandoc = Boolean(caps.pandoc);
+  const hasFfmpeg = caps.ffmpeg ?? true;
   if (IMAGE_EXTS.has(ext)) {
     return {
       targets: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP"],
@@ -301,10 +306,28 @@ function mockTargetsForExt(
     return { targets: ["JSON", "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"], family: "data" };
   }
   if (AUDIO_EXTS.has(ext)) {
-    return { targets: ["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "OGG", "OPUS", "AAC"], family: "audio" };
+    if (hasFfmpeg) {
+      return {
+        targets: ["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"],
+        family: "audio",
+      };
+    }
+    if (AUDIO_NATIVE_EXTS.has(ext)) {
+      return {
+        targets: ["M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF"],
+        family: "audio",
+      };
+    }
+    return { targets: [], family: "audio" };
   }
   if (VIDEO_EXTS.has(ext)) {
-    return { targets: ["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"], family: "video" };
+    if (hasFfmpeg) {
+      return { targets: ["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"], family: "video" };
+    }
+    if (ext === "mp4" || ext === "mov" || ext === "m4v") {
+      return { targets: ["MP4", "MOV", "M4V", "M4A", "WAV", "GIF"], family: "video" };
+    }
+    return { targets: [], family: "video" };
   }
   if (ext === "pdf") {
     const targets = [
@@ -359,7 +382,7 @@ function mockTargetsForExt(
 
 export function inspectFilesLocally(
   paths: string[],
-  caps: { pandoc?: boolean } = {},
+  caps: { pandoc?: boolean; ffmpeg?: boolean } = {},
 ): InspectFilesResult {
   if (paths.length === 0) {
     return {
@@ -377,7 +400,7 @@ export function inspectFilesLocally(
   for (const p of paths) {
     const ext = extLower(p);
     const same = canonicalForExt(ext);
-    const { targets, family } = mockTargetsForExt(ext, Boolean(caps.pandoc));
+    const { targets, family } = mockTargetsForExt(ext, caps);
     if (primaryFamily === null) primaryFamily = family;
     const filtered = targets.filter((t) => t !== same && (paths.length === 1 || t !== "UNZIP"));
     if (shared === null) {
@@ -738,6 +761,7 @@ export async function getPreferences(): Promise<AppPreferences> {
     return {
       ...defaults,
       ...mock,
+      language: normalizeLanguage(mock.language),
       preferredFormats: mergePreferredFormats(defaults.preferredFormats, mock.preferredFormats),
     };
   }
@@ -745,17 +769,25 @@ export async function getPreferences(): Promise<AppPreferences> {
   return {
     ...defaults,
     ...prefs,
+    language: normalizeLanguage(prefs.language),
     preferredFormats: mergePreferredFormats(defaults.preferredFormats, prefs.preferredFormats),
   };
 }
 
 export async function savePreferences(prefs: AppPreferences): Promise<AppPreferences> {
+  const sanitized: AppPreferences = {
+    ...prefs,
+    language: normalizeLanguage(prefs.language),
+  };
   if (!isTauriRuntime()) {
-    saveMockPrefs(prefs);
-    return prefs;
+    saveMockPrefs(sanitized);
+    emitMockEvent("prefs:changed", sanitized);
+    return sanitized;
   }
-  const res = await invoke<AppPreferences | void>("save_preferences", { prefs });
-  return res ?? prefs;
+  const res = await invoke<AppPreferences | void>("save_preferences", { prefs: sanitized });
+  return res
+    ? { ...res, language: normalizeLanguage(res.language) }
+    : sanitized;
 }
 
 export async function getEngineStatus(): Promise<EngineStatus> {
@@ -1110,6 +1142,8 @@ export const events = {
     subscribeEvent<SettingsNavigatePayload>("settings:navigate", cb),
   onTemplatesChanged: (cb: (p: { count: number }) => void) =>
     subscribeEvent<{ count: number }>("templates:changed", cb),
+  onPrefsChanged: (cb: (p: AppPreferences) => void) =>
+    subscribeEvent<AppPreferences>("prefs:changed", cb),
 };
 
 export interface NativeDragDropCallbacks {

@@ -541,6 +541,7 @@ pub fn merge_and_validate_preferences(
 #[tauri::command]
 pub fn save_preferences(
     prefs: AppPreferences,
+    app: AppHandle,
     state: State<'_, Arc<HostState>>,
 ) -> Result<AppPreferences, String> {
     let saved = {
@@ -560,6 +561,7 @@ pub fn save_preferences(
     };
 
     state.sync_monitor_config();
+    let _ = app.emit("prefs:changed", &saved);
     Ok(saved)
 }
 

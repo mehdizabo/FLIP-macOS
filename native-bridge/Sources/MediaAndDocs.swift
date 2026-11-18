@@ -6,6 +6,7 @@ import CoreML
 import CoreImage
 import Quartz
 import AVFoundation
+import AudioToolbox
 import QuickLookThumbnailing
 import UniformTypeIdentifiers
 import ImageIO
@@ -1442,6 +1443,211 @@ enum MediaAndDocs {
         return ["ok": true, "output": outURL.path, "frames": totalFramesWritten]
     }
 
+    private static func convertAudioViaExtAudioFile(inURL: URL, format: String, outURL: URL) throws -> [String: Any] {
+        var inExt: ExtAudioFileRef?
+        let openStatus = ExtAudioFileOpenURL(inURL as CFURL, &inExt)
+        guard openStatus == noErr, let inRef = inExt else {
+            throw BridgeError.operationFailed("Could not open audio file via ExtAudioFile (\(openStatus)): \(inURL.path)")
+        }
+        defer { ExtAudioFileDispose(inRef) }
+
+        var srcDesc = AudioStreamBasicDescription()
+        var asbdSize = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        let fmtStatus = ExtAudioFileGetProperty(inRef, kExtAudioFileProperty_FileDataFormat, &asbdSize, &srcDesc)
+        guard fmtStatus == noErr else {
+            throw BridgeError.operationFailed("Could not inspect audio format (\(fmtStatus)): \(inURL.path)")
+        }
+
+        let sampleRate = srcDesc.mSampleRate > 0 ? srcDesc.mSampleRate : 44100.0
+        let channels = max(1, srcDesc.mChannelsPerFrame)
+        let bytesPerFrame = 2 * channels
+        var clientDesc = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: bytesPerFrame,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: bytesPerFrame,
+            mChannelsPerFrame: channels,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+
+        let setInClientStatus = ExtAudioFileSetProperty(inRef, kExtAudioFileProperty_ClientDataFormat, asbdSize, &clientDesc)
+        guard setInClientStatus == noErr else {
+            throw BridgeError.operationFailed("Failed to configure PCM decoder format (\(setInClientStatus))")
+        }
+
+        // Buffer up to 4608 frames before opening output so short (<4608 frame) inputs choose a matching FLAC block size.
+        let prefillCap: UInt32 = 4608
+        let prefillBytes = Int(prefillCap * bytesPerFrame)
+        let prefillBuf = UnsafeMutableRawPointer.allocate(byteCount: prefillBytes, alignment: 4)
+        defer { prefillBuf.deallocate() }
+        prefillBuf.initializeMemory(as: UInt8.self, repeating: 0, count: prefillBytes)
+
+        var prefillFrames: UInt32 = 0
+        while prefillFrames < prefillCap {
+            let remaining = prefillCap - prefillFrames
+            let offsetPtr = prefillBuf.advanced(by: Int(prefillFrames * bytesPerFrame))
+            var nFrames = remaining
+            var abl = AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(
+                    mNumberChannels: channels,
+                    mDataByteSize: remaining * bytesPerFrame,
+                    mData: offsetPtr
+                )
+            )
+            let readErr = ExtAudioFileRead(inRef, &nFrames, &abl)
+            if readErr != noErr {
+                throw BridgeError.operationFailed("Failed reading audio frames (\(readErr))")
+            }
+            if nFrames == 0 {
+                break
+            }
+            prefillFrames += nFrames
+        }
+
+        guard prefillFrames > 0 else {
+            throw BridgeError.operationFailed("Audio file contains no decodable frames: \(inURL.path)")
+        }
+
+        let fmtUpper = format.uppercased()
+        let fileTypeID: AudioFileTypeID
+        var dstDesc: AudioStreamBasicDescription
+        var initialFramesToWrite = prefillFrames
+
+        switch fmtUpper {
+        case "FLAC":
+            fileTypeID = kAudioFileFLACType
+            let blockSize: UInt32
+            if prefillFrames >= 4608 {
+                blockSize = 4608
+            } else if prefillFrames >= 1152 {
+                blockSize = 1152
+            } else if prefillFrames >= 576 {
+                blockSize = 576
+            } else {
+                blockSize = 192
+                if prefillFrames < 192 {
+                    initialFramesToWrite = 192
+                }
+            }
+            dstDesc = AudioStreamBasicDescription(
+                mSampleRate: sampleRate,
+                mFormatID: kAudioFormatFLAC,
+                mFormatFlags: 0,
+                mBytesPerPacket: 0,
+                mFramesPerPacket: blockSize,
+                mBytesPerFrame: 0,
+                mChannelsPerFrame: channels,
+                mBitsPerChannel: 0,
+                mReserved: 0
+            )
+        case "CAF":
+            fileTypeID = kAudioFileCAFType
+            dstDesc = clientDesc
+        default:
+            throw BridgeError.invalidArguments("ExtAudioFile audio export does not support \(format)")
+        }
+
+        var outExt: ExtAudioFileRef?
+        let createStatus = ExtAudioFileCreateWithURL(
+            outURL as CFURL,
+            fileTypeID,
+            &dstDesc,
+            nil,
+            AudioFileFlags.eraseFile.rawValue,
+            &outExt
+        )
+        guard createStatus == noErr, let outRef = outExt else {
+            throw BridgeError.operationFailed("Failed creating \(fmtUpper) audio output (\(createStatus)): \(outURL.path)")
+        }
+
+        var disposed = false
+        defer {
+            if !disposed {
+                ExtAudioFileDispose(outRef)
+            }
+        }
+
+        let setOutClientStatus = ExtAudioFileSetProperty(outRef, kExtAudioFileProperty_ClientDataFormat, asbdSize, &clientDesc)
+        guard setOutClientStatus == noErr else {
+            try? FileManager.default.removeItem(at: outURL)
+            throw BridgeError.operationFailed("Failed to configure \(fmtUpper) encoder format (\(setOutClientStatus))")
+        }
+
+        var initialABL = AudioBufferList(
+            mNumberBuffers: 1,
+            mBuffers: AudioBuffer(
+                mNumberChannels: channels,
+                mDataByteSize: initialFramesToWrite * bytesPerFrame,
+                mData: prefillBuf
+            )
+        )
+        let firstWriteErr = ExtAudioFileWrite(outRef, initialFramesToWrite, &initialABL)
+        guard firstWriteErr == noErr else {
+            try? FileManager.default.removeItem(at: outURL)
+            throw BridgeError.operationFailed("Failed writing \(fmtUpper) initial frames (\(firstWriteErr))")
+        }
+
+        var totalWritten: UInt64 = UInt64(initialFramesToWrite)
+        if prefillFrames == prefillCap {
+            let chunkCap: UInt32 = 4096
+            let chunkBytes = Int(chunkCap * bytesPerFrame)
+            let chunkBuf = UnsafeMutableRawPointer.allocate(byteCount: chunkBytes, alignment: 4)
+            defer { chunkBuf.deallocate() }
+
+            while true {
+                var nFrames = chunkCap
+                var abl = AudioBufferList(
+                    mNumberBuffers: 1,
+                    mBuffers: AudioBuffer(
+                        mNumberChannels: channels,
+                        mDataByteSize: UInt32(chunkBytes),
+                        mData: chunkBuf
+                    )
+                )
+                let readErr = ExtAudioFileRead(inRef, &nFrames, &abl)
+                if readErr != noErr {
+                    try? FileManager.default.removeItem(at: outURL)
+                    throw BridgeError.operationFailed("Failed reading audio stream (\(readErr))")
+                }
+                if nFrames == 0 {
+                    break
+                }
+                let writeErr = ExtAudioFileWrite(outRef, nFrames, &abl)
+                if writeErr != noErr {
+                    try? FileManager.default.removeItem(at: outURL)
+                    throw BridgeError.operationFailed("Failed writing \(fmtUpper) frames (\(writeErr))")
+                }
+                totalWritten += UInt64(nFrames)
+            }
+        }
+
+        disposed = true
+        let disposeStatus = ExtAudioFileDispose(outRef)
+        guard disposeStatus == noErr else {
+            try? FileManager.default.removeItem(at: outURL)
+            throw BridgeError.operationFailed("Failed finalizing \(fmtUpper) output (\(disposeStatus))")
+        }
+
+        let attrs = try? FileManager.default.attributesOfItem(atPath: outURL.path)
+        let outSize = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+        let minSize = fmtUpper == "FLAC" ? 43 : 1
+        guard outSize >= minSize else {
+            try? FileManager.default.removeItem(at: outURL)
+            throw BridgeError.operationFailed("\(fmtUpper) encoding produced incomplete output (\(outSize) bytes)")
+        }
+
+        return [
+            "ok": true,
+            "output": outURL.path,
+            "frames": totalWritten,
+            "engine": "ExtAudioFile"
+        ]
+    }
+
     static func convertAV(inputPath: String, format: String, outputPath: String) throws -> [String: Any] {
         let inURL = URL(fileURLWithPath: inputPath)
         let outURL = URL(fileURLWithPath: outputPath)
@@ -1449,6 +1655,9 @@ enum MediaAndDocs {
 
         if fmtUpper == "GIF" {
             return try convertVideoToGIF(inURL: inURL, outURL: outURL)
+        }
+        if fmtUpper == "FLAC" || fmtUpper == "CAF" {
+            return try convertAudioViaExtAudioFile(inURL: inURL, format: fmtUpper, outURL: outURL)
         }
 
         let preset: String
