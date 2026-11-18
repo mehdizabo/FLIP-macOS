@@ -1,3 +1,6 @@
+use flip_lib::core::ipc_socket::{
+    send_command, start_server, IpcCommand, IpcResponse, IpcSocketError,
+};
 use flip_lib::core::logging::redact_user_paths;
 use flip_lib::core::policy::FormatFamily;
 use flip_lib::core::preferences::{expand_tilde_path, AppPreferences, RecentConversion};
@@ -668,4 +671,119 @@ fn info_plist_registers_flip_url_scheme() {
             .unwrap();
         assert!(status.success(), "src-tauri/Info.plist must pass plutil -lint");
     }
+}
+
+#[test]
+fn unix_socket_ipc_roundtrips_permissions_and_stale_recovery() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
+
+    let dir = tempdir().unwrap();
+    let sock_dir = dir.path().join("flip-ipc");
+    let sock_path = sock_dir.join("flip-instance.sock");
+
+    // 1. Create a stale socket left behind by an abruptly terminated listener
+    fs::create_dir_all(&sock_dir).unwrap();
+    {
+        let _stale = UnixListener::bind(&sock_path).unwrap();
+    }
+    assert!(sock_path.exists(), "stale socket file should exist before start_server");
+
+    // 2. start_server safely recovers stale socket, secures 0o700 dir + 0o600 socket, and serves commands
+    let log: Arc<Mutex<Vec<IpcCommand>>> = Arc::new(Mutex::new(Vec::new()));
+    let log_srv = Arc::clone(&log);
+    let mut server = start_server(&sock_path, move |cmd| {
+        log_srv.lock().unwrap().push(cmd.clone());
+        match cmd {
+            IpcCommand::Ping => IpcResponse::ok("pong"),
+            IpcCommand::Activate => IpcResponse::ok("activated"),
+            IpcCommand::OpenUrl { url } => IpcResponse::ok(format!("url:{url}")),
+            IpcCommand::OpenWheel { mode, files, .. } => {
+                IpcResponse::ok(format!("wheel:{}:{}", mode.unwrap_or_default(), files.len()))
+            }
+            IpcCommand::OpenSettings => IpcResponse::ok("settings"),
+            IpcCommand::OpenBatch { files } => IpcResponse::ok(format!("batch:{}", files.len())),
+            IpcCommand::Quit => IpcResponse::ok("quitting"),
+        }
+    })
+    .expect("start_server must recover stale socket");
+
+    let dir_mode = fs::metadata(&sock_dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(dir_mode, 0o700, "socket parent directory must have 0o700 permissions");
+    let sock_mode = fs::symlink_metadata(&sock_path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(sock_mode, 0o600, "socket file must have 0o600 permissions");
+
+    // 3. Attempting to start a second server on the active socket must fail without killing active server
+    let dup = start_server(&sock_path, |_| IpcResponse::ok("dup"));
+    assert!(
+        matches!(dup, Err(IpcSocketError::AlreadyRunning(_))),
+        "second start_server must refuse to clobber active listener"
+    );
+
+    // 4. Roundtrip all control commands
+    let r_ping = send_command(&sock_path, &IpcCommand::Ping).unwrap();
+    assert!(r_ping.ok);
+    assert_eq!(r_ping.message.as_deref(), Some("pong"));
+
+    let r_act = send_command(&sock_path, &IpcCommand::Activate).unwrap();
+    assert!(r_act.ok);
+
+    let r_url = send_command(
+        &sock_path,
+        &IpcCommand::OpenUrl {
+            url: "flip://wheel?mode=new".into(),
+        },
+    )
+    .unwrap();
+    assert!(r_url.ok);
+    assert_eq!(r_url.message.as_deref(), Some("url:flip://wheel?mode=new"));
+
+    let r_wheel = send_command(
+        &sock_path,
+        &IpcCommand::OpenWheel {
+            mode: Some("convert".into()),
+            files: vec!["/tmp/a.png".into()],
+            folder: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(r_wheel.message.as_deref(), Some("wheel:convert:1"));
+
+    let r_settings = send_command(&sock_path, &IpcCommand::OpenSettings).unwrap();
+    assert_eq!(r_settings.message.as_deref(), Some("settings"));
+
+    let r_batch = send_command(
+        &sock_path,
+        &IpcCommand::OpenBatch {
+            files: vec!["/tmp/1.png".into(), "/tmp/2.jpg".into()],
+        },
+    )
+    .unwrap();
+    assert_eq!(r_batch.message.as_deref(), Some("batch:2"));
+
+    let r_quit = send_command(&sock_path, &IpcCommand::Quit).unwrap();
+    assert_eq!(r_quit.message.as_deref(), Some("quitting"));
+
+    assert_eq!(log.lock().unwrap().len(), 7);
+
+    // 5. Symlink socket refusal
+    let link_sock = dir.path().join("evil-link.sock");
+    std::os::unix::fs::symlink(&sock_path, &link_sock).unwrap();
+    assert!(matches!(
+        send_command(&link_sock, &IpcCommand::Ping),
+        Err(IpcSocketError::InvalidSocketPath(_))
+    ));
+    assert!(matches!(
+        start_server(&link_sock, |_| IpcResponse::ok("nope")),
+        Err(IpcSocketError::InvalidSocketPath(_))
+    ));
+
+    // 6. Stopping server removes socket cleanly and subsequent send reports NotRunning
+    server.stop();
+    assert!(!sock_path.exists());
+    assert!(matches!(
+        send_command(&sock_path, &IpcCommand::Ping),
+        Err(IpcSocketError::NotRunning(_))
+    ));
 }

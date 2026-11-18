@@ -3,6 +3,7 @@ pub mod core;
 pub mod engines;
 pub mod host;
 
+use crate::core::ipc_socket::{self, IpcCommand, IpcResponse, IpcServerHandle};
 use crate::core::logging::log_event;
 use crate::core::preferences::AppPreferences;
 use crate::core::quick_actions::{parse_flip_url, FlipUrlAction};
@@ -15,11 +16,12 @@ use host::{
     commands::{record_recent_conversion, spawn_completion_notification},
     configure_wheel_overlay, monitor, present_wheel_at, query_finder_context_or_fallback,
     resolve_wav_path, show_standard_window, tray, wheel_overlay_config, HostState,
+    WheelStatePayload,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, RunEvent, Url};
 
 struct UrlConversionBusyGuard {
@@ -35,6 +37,96 @@ impl Drop for UrlConversionBusyGuard {
     }
 }
 
+fn dispatch_open_batch(
+    app: &AppHandle,
+    state: &Arc<HostState>,
+    files: Vec<String>,
+) -> Result<(), String> {
+    state.opened_from_url.store(true, Ordering::Relaxed);
+    if !files.is_empty() {
+        if let Ok(mut w) = state.wheel.lock() {
+            if !w.is_open {
+                w.payload.files = files.clone();
+            }
+        }
+    }
+    show_standard_window(app, state, "batch")?;
+    if !files.is_empty() {
+        if let Some(win) = app.get_webview_window("batch") {
+            let _ = win.emit(
+                "batch:files",
+                json!({ "files": files, "results": null }),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn dispatch_open_wheel(
+    app: &AppHandle,
+    state: &Arc<HostState>,
+    mode: &str,
+    files: Vec<String>,
+    folder: Option<String>,
+) -> Result<WheelStatePayload, String> {
+    state.opened_from_url.store(true, Ordering::Relaxed);
+    let normalized_mode = mode.trim().to_ascii_lowercase();
+    if !matches!(normalized_mode.as_str(), "convert" | "new" | "auto" | "") {
+        return Err(format!("Invalid wheel mode: {mode}"));
+    }
+    if let Some(ref f) = folder {
+        if !Path::new(f).is_dir() {
+            return Err(format!("Target folder does not exist: {f}"));
+        }
+    }
+
+    let prefs = state.prefs.lock().map(|g| g.clone()).unwrap_or_default();
+    let (resolved_mode, resolved_files, resolved_folder) = if normalized_mode == "new" {
+        let target = match folder {
+            Some(f) => f,
+            None => query_finder_context_or_fallback(&prefs).1,
+        };
+        ("new", Vec::new(), Some(target))
+    } else if normalized_mode == "convert" {
+        let (ctx_files, ctx_folder) = if files.is_empty() {
+            query_finder_context_or_fallback(&prefs)
+        } else {
+            (
+                files,
+                prefs.resolved_fallback_folder().to_string_lossy().into_owned(),
+            )
+        };
+        ("convert", ctx_files, folder.or(Some(ctx_folder)))
+    } else {
+        let (ctx_files, ctx_folder) = if files.is_empty() {
+            query_finder_context_or_fallback(&prefs)
+        } else {
+            (
+                files,
+                prefs.resolved_fallback_folder().to_string_lossy().into_owned(),
+            )
+        };
+        let eff_mode = if ctx_files.is_empty() {
+            "new"
+        } else {
+            "convert"
+        };
+        (eff_mode, ctx_files, folder.or(Some(ctx_folder)))
+    };
+
+    present_wheel_at(
+        app,
+        state,
+        resolved_mode,
+        resolved_files,
+        false,
+        resolved_folder,
+        None,
+        None,
+        None,
+    )
+}
+
 fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipUrlAction) {
     state.opened_from_url.store(true, Ordering::Relaxed);
     match action {
@@ -42,22 +134,7 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
             let _ = show_standard_window(app, state, "settings");
         }
         FlipUrlAction::OpenBatch { files } => {
-            if !files.is_empty() {
-                if let Ok(mut w) = state.wheel.lock() {
-                    if !w.is_open {
-                        w.payload.files = files.clone();
-                    }
-                }
-            }
-            let _ = show_standard_window(app, state, "batch");
-            if !files.is_empty() {
-                if let Some(win) = app.get_webview_window("batch") {
-                    let _ = win.emit(
-                        "batch:files",
-                        json!({ "files": files, "results": null }),
-                    );
-                }
-            }
+            let _ = dispatch_open_batch(app, state, files);
         }
         FlipUrlAction::OpenWheel {
             mode,
@@ -67,44 +144,7 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
             let app_h = app.clone();
             let state_arc = Arc::clone(state);
             std::thread::spawn(move || {
-                let prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
-                let (resolved_mode, resolved_files, resolved_folder) = if mode == "new" {
-                    let target = match folder {
-                        Some(f) if Path::new(&f).is_dir() => f,
-                        _ => query_finder_context_or_fallback(&prefs).1,
-                    };
-                    ("new", Vec::new(), Some(target))
-                } else if mode == "convert" {
-                    let (ctx_files, ctx_folder) = if files.is_empty() {
-                        query_finder_context_or_fallback(&prefs)
-                    } else {
-                        (files, prefs.resolved_fallback_folder().to_string_lossy().into_owned())
-                    };
-                    ("convert", ctx_files, folder.or(Some(ctx_folder)))
-                } else {
-                    let (ctx_files, ctx_folder) = if files.is_empty() {
-                        query_finder_context_or_fallback(&prefs)
-                    } else {
-                        (files, prefs.resolved_fallback_folder().to_string_lossy().into_owned())
-                    };
-                    let eff_mode = if ctx_files.is_empty() {
-                        "new"
-                    } else {
-                        "convert"
-                    };
-                    (eff_mode, ctx_files, folder.or(Some(ctx_folder)))
-                };
-                let _ = present_wheel_at(
-                    &app_h,
-                    &state_arc,
-                    resolved_mode,
-                    resolved_files,
-                    false,
-                    resolved_folder,
-                    None,
-                    None,
-                    None,
-                );
+                let _ = dispatch_open_wheel(&app_h, &state_arc, &mode, files, folder);
             });
         }
         FlipUrlAction::CreateNew {
@@ -285,15 +325,168 @@ fn handle_opened_urls(app: &AppHandle, state: &Arc<HostState>, urls: &[Url]) {
     }
 }
 
+fn handle_ipc_command(app: &AppHandle, state: &Arc<HostState>, cmd: IpcCommand) -> IpcResponse {
+    match cmd {
+        IpcCommand::Ping => IpcResponse::ok("pong"),
+        IpcCommand::Activate => {
+            state.opened_from_url.store(true, Ordering::Relaxed);
+            for lbl in ["onboarding", "settings", "batch"] {
+                if let Some(win) = app.get_webview_window(lbl) {
+                    if win.is_visible().unwrap_or(false) {
+                        let _ = win.unminimize();
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                        return IpcResponse::ok(format!("activated {lbl}"));
+                    }
+                }
+            }
+            match dispatch_open_wheel(app, state, "auto", Vec::new(), None) {
+                Ok(_) => IpcResponse::ok("activated wheel"),
+                Err(err) => IpcResponse::err(err),
+            }
+        }
+        IpcCommand::OpenUrl { url } => {
+            if let Ok(parsed) = Url::parse(&url) {
+                if parsed.scheme().eq_ignore_ascii_case("flip") {
+                    match parse_flip_url(parsed.as_str()) {
+                        Ok(action) => {
+                            handle_flip_url_action(app, state, action);
+                            IpcResponse::ok("opened flip url")
+                        }
+                        Err(err) => IpcResponse::err(err),
+                    }
+                } else if parsed.scheme() == "file" {
+                    handle_opened_urls(app, state, &[parsed]);
+                    IpcResponse::ok("opened file url")
+                } else {
+                    IpcResponse::err(format!("Unsupported URL scheme: {}", parsed.scheme()))
+                }
+            } else {
+                match parse_flip_url(&url) {
+                    Ok(action) => {
+                        handle_flip_url_action(app, state, action);
+                        IpcResponse::ok("opened flip url")
+                    }
+                    Err(err) => IpcResponse::err(err),
+                }
+            }
+        }
+        IpcCommand::OpenWheel {
+            mode,
+            files,
+            folder,
+        } => {
+            let eff_mode = mode.as_deref().unwrap_or("auto");
+            match dispatch_open_wheel(app, state, eff_mode, files, folder) {
+                Ok(_) => IpcResponse::ok("opened wheel"),
+                Err(err) => IpcResponse::err(err),
+            }
+        }
+        IpcCommand::OpenSettings => {
+            state.opened_from_url.store(true, Ordering::Relaxed);
+            match show_standard_window(app, state, "settings") {
+                Ok(()) => IpcResponse::ok("opened settings"),
+                Err(err) => IpcResponse::err(err),
+            }
+        }
+        IpcCommand::OpenBatch { files } => match dispatch_open_batch(app, state, files) {
+            Ok(()) => IpcResponse::ok("opened batch"),
+            Err(err) => IpcResponse::err(err),
+        },
+        IpcCommand::Quit => {
+            state.shutting_down.store(true, Ordering::Relaxed);
+            state.send_monitor_command(serde_json::json!({ "cmd": "quit" }));
+            let app_h = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                app_h.exit(0);
+            });
+            IpcResponse::ok("quitting")
+        }
+    }
+}
+
+struct IpcServerCleanupGuard {
+    slot: Arc<Mutex<Option<IpcServerHandle>>>,
+}
+
+impl Drop for IpcServerCleanupGuard {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.slot.lock() {
+            if let Some(mut server) = guard.take() {
+                server.stop();
+            }
+        }
+    }
+}
+
+fn try_forward_to_running_instance(
+    socket_path: &Path,
+    initial_url: Option<&str>,
+    is_login_item: bool,
+) -> bool {
+    if is_login_item {
+        return startup::is_gui_instance_running() || ipc_socket::is_server_listening(socket_path);
+    }
+
+    let cmd = match initial_url {
+        Some(url) => IpcCommand::OpenUrl {
+            url: url.to_string(),
+        },
+        None => IpcCommand::Activate,
+    };
+
+    if let Ok(resp) = ipc_socket::send_command(socket_path, &cmd) {
+        if resp.ok {
+            return true;
+        }
+    }
+
+    if startup::is_gui_instance_running() {
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            if let Ok(resp) = ipc_socket::send_command(socket_path, &cmd) {
+                if resp.ok {
+                    return true;
+                }
+            }
+        }
+        return true;
+    }
+
+    false
+}
+
 pub fn run() {
     run_with_options(None, false);
 }
 
 pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
-    if is_login_item && startup::is_gui_instance_running() {
+    let socket_path = ipc_socket::default_socket_path();
+    if try_forward_to_running_instance(&socket_path, initial_url.as_deref(), is_login_item) {
         return;
     }
+
     let _gui_lock = startup::acquire_gui_lock();
+    if _gui_lock.is_none() {
+        if !is_login_item {
+            let cmd = match initial_url.as_deref() {
+                Some(url) => IpcCommand::OpenUrl {
+                    url: url.to_string(),
+                },
+                None => IpcCommand::Activate,
+            };
+            for _ in 0..40 {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+                if let Ok(resp) = ipc_socket::send_command(&socket_path, &cmd) {
+                    if resp.ok {
+                        return;
+                    }
+                }
+            }
+        }
+        return;
+    }
 
     let mut prefs = AppPreferences::load();
     prefs.sanitize();
@@ -303,6 +496,13 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
     let state_for_setup = Arc::clone(&host_state);
     let state_for_exit = Arc::clone(&host_state);
     let has_initial_url = initial_url.is_some();
+
+    let ipc_server_slot: Arc<Mutex<Option<IpcServerHandle>>> = Arc::new(Mutex::new(None));
+    let ipc_for_setup = Arc::clone(&ipc_server_slot);
+    let ipc_for_exit = Arc::clone(&ipc_server_slot);
+    let _ipc_cleanup_guard = IpcServerCleanupGuard {
+        slot: Arc::clone(&ipc_server_slot),
+    };
 
     let app = tauri::Builder::default()
         .manage(host_state)
@@ -329,6 +529,24 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
             }
 
             monitor::start_monitor_supervisor(app.handle().clone(), Arc::clone(&state_for_setup));
+
+            let app_for_ipc = app.handle().clone();
+            let state_for_ipc = Arc::clone(&state_for_setup);
+            match ipc_socket::start_server(&socket_path, move |cmd| {
+                handle_ipc_command(&app_for_ipc, &state_for_ipc, cmd)
+            }) {
+                Ok(handle) => {
+                    if let Ok(mut guard) = ipc_for_setup.lock() {
+                        *guard = Some(handle);
+                    }
+                }
+                Err(err) => {
+                    log_event(
+                        "ipc.server.error",
+                        Some(json!({ "error": err.to_string() })),
+                    );
+                }
+            }
 
             if let Some(raw_url) = initial_url.clone() {
                 let app_h = app.handle().clone();
@@ -357,6 +575,9 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
                     })
                     .await
                     .unwrap_or(false);
+
+                    // Give cold-launched CLI socket handoff a brief window before presenting onboarding.
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
                     let opened_url = state_for_onboarding.opened_from_url.load(Ordering::Relaxed);
                     let wheel_open = state_for_onboarding
@@ -413,6 +634,11 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
             RunEvent::Exit => {
                 state_for_exit.shutting_down.store(true, Ordering::Relaxed);
                 state_for_exit.send_monitor_command(serde_json::json!({ "cmd": "quit" }));
+                if let Ok(mut guard) = ipc_for_exit.lock() {
+                    if let Some(mut server) = guard.take() {
+                        server.stop();
+                    }
+                }
             }
             _ => {}
         }

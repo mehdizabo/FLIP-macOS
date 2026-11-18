@@ -1,4 +1,5 @@
 pub mod input_gate;
+pub mod ipc_socket;
 pub mod logging;
 pub mod naming;
 pub mod policy;

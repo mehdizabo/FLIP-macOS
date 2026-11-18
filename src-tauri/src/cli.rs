@@ -1,5 +1,8 @@
+use crate::core::ipc_socket::{self, IpcCommand, IpcResponse, IpcSocketError};
 use crate::core::preferences::{expand_tilde_path, AppPreferences};
-use crate::core::quick_actions::{parse_flip_url, FlipUrlAction};
+use crate::core::quick_actions::{
+    parse_flip_url, resolve_app_bundle_path, resolve_cli_executable, FlipUrlAction,
+};
 use crate::core::startup::LOGIN_ITEM_ARG;
 use crate::engines::create_new::create_new_item;
 use crate::engines::{convert_files, ConversionResult};
@@ -7,8 +10,10 @@ use crate::host::commands::ConversionCompletePayload;
 use serde_json::json;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
@@ -27,6 +32,15 @@ pub enum CliCommand {
         no_rename: bool,
         no_reveal: bool,
     },
+    Wheel {
+        mode: Option<String>,
+        files: Vec<PathBuf>,
+    },
+    Settings,
+    Batch {
+        files: Vec<PathBuf>,
+    },
+    Quit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,12 +67,20 @@ USAGE:\n  \
   flip                                         Launch menu bar app\n  \
   flip convert <file...> --to <FMT[,FMT2]>     Convert file(s) locally and print JSON\n  \
   flip new <kind> [--in <folder>] [--no-rename]\n                                               Create a new file/folder and print JSON\n  \
+  flip wheel [--mode convert|new] [files...]   Open the radial wheel (launches FLIP if needed)\n  \
+  flip settings                                Open FLIP Settings window\n  \
+  flip batch [files...]                        Open Batch & Multi-Format Converter window\n  \
+  flip quit                                    Quit running FLIP menu bar instance\n  \
   flip --help                                  Show this help message\n  \
   flip --version                               Show version information\n\n\
 EXAMPLES:\n  \
   flip convert photo.heic --to PNG,JPG\n  \
   flip new md --in ~/Desktop\n  \
-  flip new folder --in ~/Documents --no-rename\n",
+  flip new folder --in ~/Documents --no-rename\n  \
+  flip wheel --mode convert photo.heic\n  \
+  flip batch *.png\n  \
+  flip settings\n  \
+  flip quit\n",
         env!("CARGO_PKG_VERSION")
     )
 }
@@ -98,6 +120,10 @@ where
         "--version" | "-V" | "-v" | "version" => Ok(CliCommand::Version),
         "convert" => parse_convert_args(&filtered[1..]),
         "new" => parse_new_args(&filtered[1..]),
+        "wheel" => parse_wheel_args(&filtered[1..]),
+        "settings" => parse_settings_args(&filtered[1..]),
+        "batch" => parse_batch_args(&filtered[1..]),
+        "quit" => parse_quit_args(&filtered[1..]),
         arg if arg.starts_with("flip://") || arg.starts_with("FLIP://") => {
             match parse_flip_url(arg)? {
                 FlipUrlAction::Convert { files, formats } => Ok(CliCommand::Convert {
@@ -251,6 +277,96 @@ fn parse_new_args(args: &[String]) -> Result<CliCommand, String> {
     })
 }
 
+fn normalize_wheel_mode(raw: &str) -> Result<String, String> {
+    let m = raw.trim().to_ascii_lowercase();
+    match m.as_str() {
+        "convert" | "new" => Ok(m),
+        _ => Err(format!(
+            "Invalid `--mode` value `{raw}` for `wheel` (expected `convert` or `new`)."
+        )),
+    }
+}
+
+fn parse_wheel_args(args: &[String]) -> Result<CliCommand, String> {
+    let mut mode: Option<String> = None;
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut i = 0;
+    let mut positional_only = false;
+
+    while i < args.len() {
+        let arg = &args[i];
+        if !positional_only && arg == "--" {
+            positional_only = true;
+            i += 1;
+            continue;
+        }
+        if !positional_only && (arg == "--help" || arg == "-h") {
+            return Ok(CliCommand::Help);
+        }
+        if !positional_only && (arg == "--mode" || arg == "-m") {
+            let val = args
+                .get(i + 1)
+                .ok_or_else(|| format!("Missing value after `{arg}` (expected `convert` or `new`)."))?;
+            mode = Some(normalize_wheel_mode(val)?);
+            i += 2;
+            continue;
+        }
+        if !positional_only {
+            if let Some(val) = arg.strip_prefix("--mode=") {
+                mode = Some(normalize_wheel_mode(val)?);
+                i += 1;
+                continue;
+            }
+            if arg.starts_with('-') && arg != "-" {
+                return Err(format!("Unknown option for `wheel`: `{arg}`"));
+            }
+        }
+        files.push(PathBuf::from(arg));
+        i += 1;
+    }
+
+    Ok(CliCommand::Wheel { mode, files })
+}
+
+fn parse_settings_args(args: &[String]) -> Result<CliCommand, String> {
+    if let Some(arg) = args.first() {
+        if arg == "--help" || arg == "-h" {
+            return Ok(CliCommand::Help);
+        }
+        return Err(format!("Unexpected argument for `settings`: `{arg}`"));
+    }
+    Ok(CliCommand::Settings)
+}
+
+fn parse_batch_args(args: &[String]) -> Result<CliCommand, String> {
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut positional_only = false;
+    for arg in args {
+        if !positional_only && arg == "--" {
+            positional_only = true;
+            continue;
+        }
+        if !positional_only && (arg == "--help" || arg == "-h") {
+            return Ok(CliCommand::Help);
+        }
+        if !positional_only && arg.starts_with('-') && arg != "-" {
+            return Err(format!("Unknown option for `batch`: `{arg}`"));
+        }
+        files.push(PathBuf::from(arg));
+    }
+    Ok(CliCommand::Batch { files })
+}
+
+fn parse_quit_args(args: &[String]) -> Result<CliCommand, String> {
+    if let Some(arg) = args.first() {
+        if arg == "--help" || arg == "-h" {
+            return Ok(CliCommand::Help);
+        }
+        return Err(format!("Unexpected argument for `quit`: `{arg}`"));
+    }
+    Ok(CliCommand::Quit)
+}
+
 pub fn lexical_normalize(path: &Path) -> PathBuf {
     let mut parts: Vec<Component<'_>> = Vec::new();
     for comp in path.components() {
@@ -299,6 +415,176 @@ pub fn resolve_cli_path(raw: &Path, cwd: Option<&Path>) -> PathBuf {
     lexical_normalize(&abs)
 }
 
+pub fn launch_flip_host_app() -> Result<(), String> {
+    let current_exe = std::env::current_exe().ok();
+    if let Some(bundle) = resolve_app_bundle_path(current_exe.as_deref()) {
+        let status = Command::new("/usr/bin/open")
+            .arg("-g")
+            .arg("-a")
+            .arg(&bundle)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|e| format!("Failed to launch `{}`: {e}", bundle.display()))?;
+        if status.success() {
+            return Ok(());
+        }
+        return Err(format!(
+            "`open -a {}` exited with status {:?}",
+            bundle.display(),
+            status.code()
+        ));
+    }
+
+    if let Some(exe) = resolve_cli_executable(current_exe.as_deref()).or(current_exe) {
+        Command::new(&exe)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to launch `{}`: {e}", exe.display()))?;
+        return Ok(());
+    }
+
+    Err("Could not locate FLIP.app or executable to launch.".to_string())
+}
+
+fn ipc_command_name(cmd: &IpcCommand) -> &'static str {
+    match cmd {
+        IpcCommand::Ping => "ping",
+        IpcCommand::Activate => "activate",
+        IpcCommand::OpenUrl { .. } => "open_url",
+        IpcCommand::OpenWheel { .. } => "open_wheel",
+        IpcCommand::OpenSettings => "open_settings",
+        IpcCommand::OpenBatch { .. } => "open_batch",
+        IpcCommand::Quit => "quit",
+    }
+}
+
+fn format_ipc_outcome(cmd_name: &str, resp: IpcResponse, launched: bool) -> CliOutcome {
+    if resp.ok {
+        let stdout = serde_json::to_string_pretty(&json!({
+            "success": true,
+            "command": cmd_name,
+            "launched": launched,
+            "message": resp.message,
+            "pid": resp.pid,
+        }))
+        .unwrap_or_else(|_| "{\"success\":true}".to_string());
+        CliOutcome {
+            exit_code: 0,
+            stdout: format!("{stdout}\n"),
+            stderr: String::new(),
+        }
+    } else {
+        let msg = resp
+            .error
+            .unwrap_or_else(|| format!("Host rejected `{cmd_name}` command."));
+        let stdout = serde_json::to_string_pretty(&json!({
+            "success": false,
+            "command": cmd_name,
+            "launched": launched,
+            "error": msg,
+        }))
+        .unwrap_or_else(|_| "{\"success\":false}".to_string());
+        CliOutcome {
+            exit_code: 1,
+            stdout: format!("{stdout}\n"),
+            stderr: format!("{msg}\n"),
+        }
+    }
+}
+
+pub fn execute_control_command_with<L>(
+    ipc_cmd: IpcCommand,
+    socket_path: &Path,
+    launch_if_offline: bool,
+    wait_timeout: Duration,
+    mut launcher: L,
+) -> CliOutcome
+where
+    L: FnMut() -> Result<(), String>,
+{
+    let cmd_name = ipc_command_name(&ipc_cmd);
+
+    match ipc_socket::send_command(socket_path, &ipc_cmd) {
+        Ok(resp) => format_ipc_outcome(cmd_name, resp, false),
+        Err(IpcSocketError::NotRunning(_)) if !launch_if_offline => {
+            let msg = "FLIP is not running.".to_string();
+            let stdout = serde_json::to_string_pretty(&json!({
+                "success": false,
+                "command": cmd_name,
+                "running": false,
+                "error": msg,
+            }))
+            .unwrap_or_else(|_| "{\"success\":false}".to_string());
+            CliOutcome {
+                exit_code: 1,
+                stdout: format!("{stdout}\n"),
+                stderr: format!("{msg}\n"),
+            }
+        }
+        Err(IpcSocketError::NotRunning(_)) => {
+            if let Err(launch_err) = launcher() {
+                let stdout = serde_json::to_string_pretty(&json!({
+                    "success": false,
+                    "command": cmd_name,
+                    "launched": false,
+                    "error": launch_err,
+                }))
+                .unwrap_or_else(|_| "{\"success\":false}".to_string());
+                return CliOutcome {
+                    exit_code: 1,
+                    stdout: format!("{stdout}\n"),
+                    stderr: format!("{launch_err}\n"),
+                };
+            }
+
+            let deadline = Instant::now() + wait_timeout;
+            loop {
+                match ipc_socket::send_command(socket_path, &ipc_cmd) {
+                    Ok(resp) => return format_ipc_outcome(cmd_name, resp, true),
+                    Err(IpcSocketError::NotRunning(_)) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    Err(err) => {
+                        let msg = format!(
+                            "Launched FLIP, but IPC socket did not respond: {err}"
+                        );
+                        let stdout = serde_json::to_string_pretty(&json!({
+                            "success": false,
+                            "command": cmd_name,
+                            "launched": true,
+                            "error": msg,
+                        }))
+                        .unwrap_or_else(|_| "{\"success\":false}".to_string());
+                        return CliOutcome {
+                            exit_code: 1,
+                            stdout: format!("{stdout}\n"),
+                            stderr: format!("{msg}\n"),
+                        };
+                    }
+                }
+            }
+        }
+        Err(err) => {
+            let msg = err.to_string();
+            let stdout = serde_json::to_string_pretty(&json!({
+                "success": false,
+                "command": cmd_name,
+                "error": msg,
+            }))
+            .unwrap_or_else(|_| "{\"success\":false}".to_string());
+            CliOutcome {
+                exit_code: 1,
+                stdout: format!("{stdout}\n"),
+                stderr: format!("{msg}\n"),
+            }
+        }
+    }
+}
+
 pub fn execute_cli_command(cmd: CliCommand, prefs: &AppPreferences) -> CliOutcome {
     execute_cli_command_in(cmd, prefs, None)
 }
@@ -308,6 +594,28 @@ pub fn execute_cli_command_in(
     prefs: &AppPreferences,
     cwd: Option<&Path>,
 ) -> CliOutcome {
+    let default_sock = ipc_socket::default_socket_path();
+    execute_cli_command_with_ipc(
+        cmd,
+        prefs,
+        cwd,
+        &default_sock,
+        Duration::from_secs(5),
+        launch_flip_host_app,
+    )
+}
+
+pub fn execute_cli_command_with_ipc<L>(
+    cmd: CliCommand,
+    prefs: &AppPreferences,
+    cwd: Option<&Path>,
+    socket_path: &Path,
+    wait_timeout: Duration,
+    launcher: L,
+) -> CliOutcome
+where
+    L: FnMut() -> Result<(), String>,
+{
     match cmd {
         CliCommand::Help => CliOutcome {
             exit_code: 0,
@@ -427,6 +735,60 @@ pub fn execute_cli_command_in(
                 }
             }
         }
+        CliCommand::Wheel { mode, files } => {
+            let mut resolved_files: Vec<String> = files
+                .iter()
+                .map(|p| resolve_cli_path(p, cwd).to_string_lossy().into_owned())
+                .collect();
+            let folder = if mode.as_deref() == Some("new")
+                && resolved_files.len() == 1
+                && Path::new(&resolved_files[0]).is_dir()
+            {
+                Some(resolved_files.remove(0))
+            } else {
+                None
+            };
+            execute_control_command_with(
+                IpcCommand::OpenWheel {
+                    mode,
+                    files: resolved_files,
+                    folder,
+                },
+                socket_path,
+                true,
+                wait_timeout,
+                launcher,
+            )
+        }
+        CliCommand::Settings => execute_control_command_with(
+            IpcCommand::OpenSettings,
+            socket_path,
+            true,
+            wait_timeout,
+            launcher,
+        ),
+        CliCommand::Batch { files } => {
+            let resolved_files: Vec<String> = files
+                .iter()
+                .map(|p| resolve_cli_path(p, cwd).to_string_lossy().into_owned())
+                .collect();
+            execute_control_command_with(
+                IpcCommand::OpenBatch {
+                    files: resolved_files,
+                },
+                socket_path,
+                true,
+                wait_timeout,
+                launcher,
+            )
+        }
+        CliCommand::Quit => execute_control_command_with(
+            IpcCommand::Quit,
+            socket_path,
+            false,
+            wait_timeout,
+            launcher,
+        ),
         CliCommand::Gui { .. } => CliOutcome {
             exit_code: 0,
             stdout: String::new(),
@@ -668,5 +1030,173 @@ mod tests {
         .unwrap();
         let bad_dir_out = execute_cli_command(bad_dir_cmd, &prefs);
         assert_eq!(bad_dir_out.exit_code, 1);
+    }
+
+    #[test]
+    fn cli_parser_and_ipc_execution_for_wheel_settings_batch_and_quit() {
+        use std::sync::Mutex;
+
+        assert_eq!(
+            parse_cli_args(["flip", "wheel"]).unwrap(),
+            CliCommand::Wheel {
+                mode: None,
+                files: vec![],
+            }
+        );
+        assert_eq!(
+            parse_cli_args(["flip", "wheel", "--mode", "CONVERT", "a.png", "b.jpg"]).unwrap(),
+            CliCommand::Wheel {
+                mode: Some("convert".to_string()),
+                files: vec![PathBuf::from("a.png"), PathBuf::from("b.jpg")],
+            }
+        );
+        assert_eq!(
+            parse_cli_args(["flip", "wheel", "--mode=new", "--", "-file.txt"]).unwrap(),
+            CliCommand::Wheel {
+                mode: Some("new".to_string()),
+                files: vec![PathBuf::from("-file.txt")],
+            }
+        );
+        assert_eq!(
+            parse_cli_args(["flip", "settings"]).unwrap(),
+            CliCommand::Settings
+        );
+        assert_eq!(
+            parse_cli_args(["flip", "batch"]).unwrap(),
+            CliCommand::Batch { files: vec![] }
+        );
+        assert_eq!(
+            parse_cli_args(["flip", "batch", "one.png", "two.jpg"]).unwrap(),
+            CliCommand::Batch {
+                files: vec![PathBuf::from("one.png"), PathBuf::from("two.jpg")],
+            }
+        );
+        assert_eq!(parse_cli_args(["flip", "quit"]).unwrap(), CliCommand::Quit);
+
+        assert!(parse_cli_args(["flip", "wheel", "--mode", "bogus"]).is_err());
+        assert!(parse_cli_args(["flip", "wheel", "--mode"]).is_err());
+        assert!(parse_cli_args(["flip", "wheel", "--unknown"]).is_err());
+        assert!(parse_cli_args(["flip", "settings", "extra"]).is_err());
+        assert!(parse_cli_args(["flip", "batch", "--unknown"]).is_err());
+        assert!(parse_cli_args(["flip", "quit", "extra"]).is_err());
+
+        let dir = tempdir().unwrap();
+        let sock = dir.path().join("flip-cli-test.sock");
+        let work_dir = dir.path().join("work");
+        fs::create_dir_all(&work_dir).unwrap();
+        let prefs = AppPreferences::default();
+
+        // 1. Offline `flip quit` must NOT launch app and must return explicit offline JSON
+        let mut launch_calls = 0usize;
+        let offline_quit = execute_cli_command_with_ipc(
+            CliCommand::Quit,
+            &prefs,
+            Some(&work_dir),
+            &sock,
+            Duration::from_millis(400),
+            || {
+                launch_calls += 1;
+                Ok(())
+            },
+        );
+        assert_eq!(launch_calls, 0, "quit must never cold-launch host app");
+        assert_eq!(offline_quit.exit_code, 1);
+        let oq_json: serde_json::Value = serde_json::from_str(&offline_quit.stdout).unwrap();
+        assert_eq!(oq_json["success"], false);
+        assert_eq!(oq_json["running"], false);
+
+        // 2. Offline `flip settings` cold-launches host & retries IPC cleanly
+        let received: Arc<Mutex<Vec<IpcCommand>>> = Arc::new(Mutex::new(Vec::new()));
+        let rec_for_server = Arc::clone(&received);
+        let sock_for_launch = sock.clone();
+        let server_slot: Arc<Mutex<Option<ipc_socket::IpcServerHandle>>> =
+            Arc::new(Mutex::new(None));
+        let slot_for_launch = Arc::clone(&server_slot);
+
+        let cold_settings = execute_cli_command_with_ipc(
+            CliCommand::Settings,
+            &prefs,
+            Some(&work_dir),
+            &sock,
+            Duration::from_secs(2),
+            || {
+                let rec = Arc::clone(&rec_for_server);
+                let s_path = sock_for_launch.clone();
+                let slot = Arc::clone(&slot_for_launch);
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(60));
+                    let handle = ipc_socket::start_server(&s_path, move |cmd| {
+                        rec.lock().unwrap().push(cmd);
+                        IpcResponse::ok("handled")
+                    })
+                    .unwrap();
+                    *slot.lock().unwrap() = Some(handle);
+                });
+                Ok(())
+            },
+        );
+        assert_eq!(cold_settings.exit_code, 0, "stderr: {}", cold_settings.stderr);
+        let cs_json: serde_json::Value = serde_json::from_str(&cold_settings.stdout).unwrap();
+        assert_eq!(cs_json["success"], true);
+        assert_eq!(cs_json["launched"], true);
+        assert_eq!(cs_json["command"], "open_settings");
+
+        // 3. Running host: `flip wheel`, `flip batch`, `flip quit` resolve relative paths & send JSON
+        let wheel_out = execute_cli_command_with_ipc(
+            parse_cli_args(["flip", "wheel", "--mode", "convert", "./sub/../photo.heic"]).unwrap(),
+            &prefs,
+            Some(&work_dir),
+            &sock,
+            Duration::from_secs(1),
+            || panic!("must not launch when server is already running"),
+        );
+        assert_eq!(wheel_out.exit_code, 0);
+        let wheel_json: serde_json::Value = serde_json::from_str(&wheel_out.stdout).unwrap();
+        assert_eq!(wheel_json["launched"], false);
+
+        let batch_out = execute_cli_command_with_ipc(
+            parse_cli_args(["flip", "batch", "a.png", "b.jpg"]).unwrap(),
+            &prefs,
+            Some(&work_dir),
+            &sock,
+            Duration::from_secs(1),
+            || panic!("must not launch when server is already running"),
+        );
+        assert_eq!(batch_out.exit_code, 0);
+
+        let quit_out = execute_cli_command_with_ipc(
+            CliCommand::Quit,
+            &prefs,
+            Some(&work_dir),
+            &sock,
+            Duration::from_secs(1),
+            || panic!("must not launch on quit"),
+        );
+        assert_eq!(quit_out.exit_code, 0);
+
+        let recorded = received.lock().unwrap().clone();
+        assert_eq!(
+            recorded,
+            vec![
+                IpcCommand::OpenSettings,
+                IpcCommand::OpenWheel {
+                    mode: Some("convert".to_string()),
+                    files: vec![lexical_normalize(&work_dir).join("photo.heic").to_string_lossy().into_owned()],
+                    folder: None,
+                },
+                IpcCommand::OpenBatch {
+                    files: vec![
+                        lexical_normalize(&work_dir).join("a.png").to_string_lossy().into_owned(),
+                        lexical_normalize(&work_dir).join("b.jpg").to_string_lossy().into_owned(),
+                    ],
+                },
+                IpcCommand::Quit,
+            ]
+        );
+
+        if let Some(mut srv) = server_slot.lock().unwrap().take() {
+            srv.stop();
+        }
+        assert!(!sock.exists(), "server stop must remove socket file");
     }
 }
