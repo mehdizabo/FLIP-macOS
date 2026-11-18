@@ -88,19 +88,56 @@ impl DetectedTools {
 }
 
 pub fn detect_tools(prefs: Option<&AppPreferences>) -> DetectedTools {
-    let ffmpeg = find_tool(
-        prefs.and_then(|p| p.ffmpeg_path.as_deref()),
-        "ffmpeg",
-    );
-    let ffprobe = ffmpeg
-        .as_ref()
-        .and_then(|p| p.parent().map(|dir| dir.join("ffprobe")))
-        .filter(|p| p.is_file())
-        .or_else(|| find_tool(None, "ffprobe"));
-    let pandoc = find_tool(
-        prefs.and_then(|p| p.pandoc_path.as_deref()),
-        "pandoc",
-    );
+    detect_tools_with(prefs, &|key| std::env::var(key).ok())
+}
+
+fn env_flag_enabled(raw: Option<&str>) -> bool {
+    raw.map(|v| {
+        let trimmed = v.trim().to_ascii_lowercase();
+        matches!(trimmed.as_str(), "1" | "true" | "yes" | "on")
+    })
+    .unwrap_or(false)
+}
+
+fn override_disables_tool(override_path: Option<&str>) -> bool {
+    override_path
+        .map(|raw| {
+            let trimmed = raw.trim();
+            trimmed.eq_ignore_ascii_case("none") || trimmed.eq_ignore_ascii_case("disabled")
+        })
+        .unwrap_or(false)
+}
+
+pub fn detect_tools_with(
+    prefs: Option<&AppPreferences>,
+    get_env: &dyn Fn(&str) -> Option<String>,
+) -> DetectedTools {
+    let ffmpeg_override = prefs.and_then(|p| p.ffmpeg_path.as_deref());
+    let disable_ffmpeg = env_flag_enabled(get_env("FLIP_DISABLE_FFMPEG").as_deref())
+        || override_disables_tool(ffmpeg_override);
+    let ffmpeg = if disable_ffmpeg {
+        None
+    } else {
+        find_tool(ffmpeg_override, "ffmpeg")
+    };
+    let ffprobe = if disable_ffmpeg {
+        None
+    } else {
+        ffmpeg
+            .as_ref()
+            .and_then(|p| p.parent().map(|dir| dir.join("ffprobe")))
+            .filter(|p| p.is_file())
+            .or_else(|| find_tool(None, "ffprobe"))
+    };
+
+    let pandoc_override = prefs.and_then(|p| p.pandoc_path.as_deref());
+    let disable_pandoc = env_flag_enabled(get_env("FLIP_DISABLE_PANDOC").as_deref())
+        || override_disables_tool(pandoc_override);
+    let pandoc = if disable_pandoc {
+        None
+    } else {
+        find_tool(pandoc_override, "pandoc")
+    };
     let bridge = bridge::resolve_bridge_binary().ok();
 
     DetectedTools {
@@ -115,6 +152,9 @@ pub fn detect_tools(prefs: Option<&AppPreferences>) -> DetectedTools {
 }
 
 fn find_tool(override_path: Option<&str>, binary_name: &str) -> Option<PathBuf> {
+    if override_disables_tool(override_path) {
+        return None;
+    }
     if let Some(custom) = override_path {
         let trimmed = custom.trim();
         if !trimmed.is_empty() {
@@ -358,6 +398,58 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
             toml::from_str::<toml::Value>(&raw).map_err(|e| {
                 EngineError::ValidationFailed(path.display().to_string(), e.to_string())
             })?;
+        }
+        "FB2" => {
+            let raw = fs::read_to_string(path)?;
+            if raw.trim().is_empty() {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "FB2 output is empty".to_string(),
+                ));
+            }
+            let mut reader = quick_xml::Reader::from_str(&raw);
+            let mut buf = Vec::new();
+            let mut root_name: Option<String> = None;
+            loop {
+                match reader.read_event_into(&mut buf) {
+                    Ok(quick_xml::events::Event::Start(ref e))
+                    | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                        if root_name.is_none() {
+                            root_name = Some(
+                                String::from_utf8_lossy(e.local_name().as_ref()).to_string(),
+                            );
+                        }
+                    }
+                    Ok(quick_xml::events::Event::Eof) => break,
+                    Ok(_) => {}
+                    Err(e) => {
+                        return Err(EngineError::ValidationFailed(
+                            path.display().to_string(),
+                            e.to_string(),
+                        ))
+                    }
+                }
+                buf.clear();
+            }
+            if !root_name
+                .as_deref()
+                .map(|r| r.eq_ignore_ascii_case("FictionBook"))
+                .unwrap_or(false)
+            {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    format!("Expected <FictionBook> root element, found {root_name:?}"),
+                ));
+            }
+        }
+        "RST" => {
+            let raw = fs::read_to_string(path)?;
+            if raw.trim().is_empty() {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "RST output is empty".to_string(),
+                ));
+            }
         }
         "XML" => {
             let raw = fs::read_to_string(path)?;
@@ -811,5 +903,71 @@ mod tests {
             std::io::ErrorKind::NotFound,
             "missing"
         )));
+    }
+
+    #[test]
+    fn detect_tools_with_honors_env_disable_flags() {
+        let disabled = detect_tools_with(None, &|key| match key {
+            "FLIP_DISABLE_FFMPEG" => Some("1".to_string()),
+            "FLIP_DISABLE_PANDOC" => Some("true".to_string()),
+            _ => None,
+        });
+        assert!(disabled.ffmpeg.is_none());
+        assert!(disabled.ffprobe.is_none());
+        assert!(disabled.pandoc.is_none());
+
+        let only_ffmpeg_flag_zero = detect_tools_with(None, &|key| match key {
+            "FLIP_DISABLE_FFMPEG" => Some("0".to_string()),
+            _ => None,
+        });
+        // "0" does not forcibly disable an installed ffmpeg
+        assert_eq!(
+            only_ffmpeg_flag_zero.ffmpeg.is_some(),
+            find_tool(None, "ffmpeg").is_some()
+        );
+    }
+
+    #[test]
+    fn detect_tools_with_honors_none_and_disabled_path_overrides() {
+        let prefs = AppPreferences {
+            ffmpeg_path: Some("none".to_string()),
+            pandoc_path: Some(" DISABLED ".to_string()),
+            ..Default::default()
+        };
+        let tools = detect_tools_with(Some(&prefs), &|_| None);
+        assert!(tools.ffmpeg.is_none());
+        assert!(tools.ffprobe.is_none());
+        assert!(tools.pandoc.is_none());
+        assert!(find_tool(Some("none"), "ffmpeg").is_none());
+        assert!(find_tool(Some("disabled"), "pandoc").is_none());
+    }
+
+    #[test]
+    fn validate_output_checks_fb2_xml_and_rst_non_empty() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let valid_fb2 = dir.path().join("valid.fb2");
+        fs::write(
+            &valid_fb2,
+            r#"<?xml version="1.0" encoding="UTF-8"?><FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0"><body><section><p>Hi</p></section></body></FictionBook>"#,
+        )
+        .unwrap();
+        assert!(validate_output(&valid_fb2, "FB2").is_ok());
+
+        let wrong_root_fb2 = dir.path().join("wrong.fb2");
+        fs::write(&wrong_root_fb2, "<html/>").unwrap();
+        assert!(validate_output(&wrong_root_fb2, "FB2").is_err());
+
+        let malformed_fb2 = dir.path().join("bad.fb2");
+        fs::write(&malformed_fb2, "<FictionBook><body></FictionBook>").unwrap();
+        assert!(validate_output(&malformed_fb2, "FB2").is_err());
+
+        let valid_rst = dir.path().join("valid.rst");
+        fs::write(&valid_rst, "Title\n=====\n\nBody\n").unwrap();
+        assert!(validate_output(&valid_rst, "RST").is_ok());
+
+        let blank_rst = dir.path().join("blank.rst");
+        fs::write(&blank_rst, "   \n\t\n").unwrap();
+        assert!(validate_output(&blank_rst, "RST").is_err());
     }
 }

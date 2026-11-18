@@ -108,7 +108,14 @@ pub fn convert(
 
     if matches!(fmt.as_str(), "FB2" | "RST") {
         let out_path = staging_dir.join(format!("output.{}", fmt.to_ascii_lowercase()));
-        document::convert_via_pandoc(&html_path, "html", &fmt, &out_path, staging_dir, tools, cancel)?;
+        if tools.pandoc.is_some() {
+            match document::convert_via_pandoc(&html_path, "html", &fmt, &out_path, staging_dir, tools, cancel) {
+                Ok(()) => return Ok(vec![out_path]),
+                Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                Err(_) => {}
+            }
+        }
+        document::write_native_fb2_or_rst(title, &html, &fmt, &out_path)?;
         return Ok(vec![out_path]);
     }
 

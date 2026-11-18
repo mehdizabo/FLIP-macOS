@@ -263,8 +263,21 @@ export const AUDIO_NATIVE_EXTS = new Set(["wav", "aiff", "aif", "m4a", "aac", "a
 const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf"]);
 const VIDEO_EXTS = new Set(["mp4", "mkv", "webm", "avi", "mov", "wmv", "m4v"]);
 const ARCHIVE_EXTS = new Set(["zip"]);
-export const DOC_NATIVE_EXTS = new Set(["txt", "md", "markdown", "html", "htm", "docx", "odt", "rtf", "doc", "epub"]);
-export const DOC_PANDOC_ONLY_EXTS = new Set(["fb2", "rst"]);
+export const DOC_NATIVE_EXTS = new Set([
+  "txt",
+  "md",
+  "markdown",
+  "html",
+  "htm",
+  "docx",
+  "odt",
+  "rtf",
+  "doc",
+  "epub",
+  "fb2",
+  "rst",
+]);
+export const DOC_PANDOC_ONLY_EXTS = new Set<string>([]);
 
 function canonicalForExt(ext: string): string {
   switch (ext) {
@@ -291,7 +304,6 @@ function mockTargetsForExt(
   ext: string,
   caps: { pandoc?: boolean; ffmpeg?: boolean } = {},
 ): { targets: string[]; family: FormatFamily | null } {
-  const hasPandoc = Boolean(caps.pandoc);
   const hasFfmpeg = caps.ffmpeg ?? true;
   if (IMAGE_EXTS.has(ext)) {
     return {
@@ -344,8 +356,9 @@ function mockTargetsForExt(
       "RTF",
       "ODT",
       "EPUB",
+      "FB2",
+      "RST",
     ];
-    if (hasPandoc) targets.push("FB2", "RST");
     return { targets, family: "pdf" };
   }
   if (DOC_NATIVE_EXTS.has(ext)) {
@@ -362,17 +375,13 @@ function mockTargetsForExt(
       "WEBP",
       "HEIC",
       "EPUB",
+      "FB2",
+      "RST",
     ];
-    if (hasPandoc) targets.push("FB2", "RST");
     return { targets, family: "document" };
   }
   if (DOC_PANDOC_ONLY_EXTS.has(ext)) {
-    return {
-      targets: hasPandoc
-        ? ["PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP", "HEIC", "EPUB", "FB2", "RST"]
-        : [],
-      family: "document",
-    };
+    return { targets: [], family: "document" };
   }
   if (ext === "pages") return { targets: ["PDF", "DOCX", "RTF", "TXT", "EPUB"], family: "iwork" };
   if (ext === "numbers") return { targets: ["PDF", "XLSX", "CSV"], family: "iwork" };

@@ -228,7 +228,6 @@ fn documents_and_pdf_multipage_ocr_merge_and_container_bomb() {
     let dir = tempdir().unwrap();
     let prefs = AppPreferences::default();
     let cancel = Arc::new(AtomicBool::new(false));
-    let tools = detect_tools(Some(&prefs));
 
     // 182-line UTF-8 Italian text document
     let txt = dir.path().join("testo italiano.txt");
@@ -239,13 +238,12 @@ fn documents_and_pdf_multipage_ocr_merge_and_container_bomb() {
     fs::write(&txt, &txt_body).unwrap();
     let txt_hash = sha256_file(&txt);
 
-    let mut doc_targets: Vec<String> = ["PDF", "DOCX", "MD", "HTML", "RTF", "ODT", "EPUB", "PNG", "JPG", "WEBP"]
-        .into_iter()
-        .map(String::from)
-        .collect();
-    if tools.pandoc.is_some() {
-        doc_targets.extend(["FB2", "RST"].into_iter().map(String::from));
-    }
+    let doc_targets: Vec<String> = [
+        "PDF", "DOCX", "MD", "HTML", "RTF", "ODT", "EPUB", "FB2", "RST", "PNG", "JPG", "WEBP",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
 
     let doc_res = convert_files(std::slice::from_ref(&txt), &doc_targets, &prefs, &cancel, None).unwrap();
     for r in &doc_res {
@@ -2195,4 +2193,195 @@ fn native_zero_ffmpeg_audio_caf_and_flac_roundtrips() {
     )
     .unwrap_err();
     assert!(matches!(ogg_err, EngineError::Unsupported(_)));
+}
+
+#[test]
+fn native_zero_pandoc_fb2_and_rst_matrix_and_tool_disable_overrides() {
+    let dir = tempdir().unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // Force zero-Pandoc / zero-FFmpeg mode via preference "none" / "disabled" overrides
+    let prefs = AppPreferences {
+        pandoc_path: Some("none".to_string()),
+        ffmpeg_path: Some("disabled".to_string()),
+        ..Default::default()
+    };
+
+    let tools = detect_tools(Some(&prefs));
+    assert!(tools.pandoc.is_none(), "pandoc override 'none' must disable Pandoc");
+    assert!(tools.ffmpeg.is_none(), "ffmpeg override 'disabled' must disable FFmpeg");
+    assert!(tools.ffprobe.is_none(), "disabled FFmpeg must also disable ffprobe");
+
+    let md_src = dir.path().join("zero_pandoc_story.md");
+    let md_content = r#"# Zero Pandoc Guide
+
+Welcome to **native** *pure-Rust* docs with `inline_code()` and [Example](https://example.com).
+
+> Always keep plain text fidelity intact.
+
+- First point
+- Second point
+
+```rust
+fn verify() {
+    let a = 1;
+
+    let b = 2;
+}
+```
+"#;
+    fs::write(&md_src, md_content).unwrap();
+
+    // MD -> FB2 -> TXT (zero Pandoc)
+    let md_to_fb2 = convert_files(
+        std::slice::from_ref(&md_src),
+        &["FB2".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(md_to_fb2[0].error.is_none(), "MD->FB2 error: {:?}", md_to_fb2[0].error);
+    let fb2_path = PathBuf::from(&md_to_fb2[0].outputs[0]);
+    assert!(validate_output(&fb2_path, "FB2").is_ok());
+    let fb2_raw = fs::read_to_string(&fb2_path).unwrap();
+    assert!(fb2_raw.contains("<FictionBook"), "fb2 missing FictionBook root");
+    assert!(fb2_raw.contains("<p><code>fn verify() {</code></p>"));
+    assert!(fb2_raw.contains("<p><code>    let b = 2;</code></p>"));
+
+    let fb2_to_txt = convert_files(
+        std::slice::from_ref(&fb2_path),
+        &["TXT".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(fb2_to_txt[0].error.is_none(), "FB2->TXT error: {:?}", fb2_to_txt[0].error);
+    let fb2_txt = fs::read_to_string(&fb2_to_txt[0].outputs[0]).unwrap();
+    assert!(fb2_txt.contains("Zero Pandoc Guide"), "fb2_txt={fb2_txt}");
+    assert!(fb2_txt.contains("let b = 2;"), "fb2_txt={fb2_txt}");
+    assert!(
+        fb2_txt.contains("Always keep plain text fidelity intact."),
+        "fb2_txt={fb2_txt}"
+    );
+
+    // FB2 -> EPUB (zero Pandoc)
+    let fb2_to_epub = convert_files(
+        std::slice::from_ref(&fb2_path),
+        &["EPUB".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(fb2_to_epub[0].error.is_none(), "FB2->EPUB error: {:?}", fb2_to_epub[0].error);
+    let epub_path = PathBuf::from(&fb2_to_epub[0].outputs[0]);
+    assert!(validate_output(&epub_path, "EPUB").is_ok());
+
+    // MD -> RST -> HTML -> TXT (zero Pandoc)
+    let md_to_rst = convert_files(
+        std::slice::from_ref(&md_src),
+        &["RST".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(md_to_rst[0].error.is_none(), "MD->RST error: {:?}", md_to_rst[0].error);
+    let rst_path = PathBuf::from(&md_to_rst[0].outputs[0]);
+    assert!(validate_output(&rst_path, "RST").is_ok());
+    let rst_raw = fs::read_to_string(&rst_path).unwrap();
+    assert!(rst_raw.contains("Zero Pandoc Guide\n================="), "rst={rst_raw}");
+    assert!(rst_raw.contains("**native**"), "rst={rst_raw}");
+    assert!(rst_raw.contains("`Example <https://example.com>`_"), "rst={rst_raw}");
+
+    let rst_to_html = convert_files(
+        std::slice::from_ref(&rst_path),
+        &["HTML".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(rst_to_html[0].error.is_none(), "RST->HTML error: {:?}", rst_to_html[0].error);
+    let html_path = PathBuf::from(&rst_to_html[0].outputs[0]);
+    let html_raw = fs::read_to_string(&html_path).unwrap();
+    assert!(html_raw.contains("<h1>Zero Pandoc Guide</h1>"), "html={html_raw}");
+    assert!(html_raw.contains("<strong>native</strong>"), "html={html_raw}");
+
+    let html_to_txt = convert_files(
+        std::slice::from_ref(&html_path),
+        &["TXT".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(html_to_txt[0].error.is_none());
+    let rst_txt = fs::read_to_string(&html_to_txt[0].outputs[0]).unwrap();
+    assert!(rst_txt.contains("Zero Pandoc Guide"), "rst_txt={rst_txt}");
+    assert!(rst_txt.contains("let a = 1;"), "rst_txt={rst_txt}");
+
+    // RST -> PDF & PDF -> FB2 / RST without Pandoc
+    let rst_to_pdf = convert_files(
+        std::slice::from_ref(&rst_path),
+        &["PDF".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(rst_to_pdf[0].error.is_none(), "RST->PDF error: {:?}", rst_to_pdf[0].error);
+    let pdf_path = PathBuf::from(&rst_to_pdf[0].outputs[0]);
+    assert!(validate_output(&pdf_path, "PDF").is_ok());
+
+    let pdf_to_fb2_rst = convert_files(
+        std::slice::from_ref(&pdf_path),
+        &["FB2".into(), "RST".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    for r in &pdf_to_fb2_rst {
+        assert!(r.error.is_none(), "PDF->{} error: {:?}", r.format, r.error);
+    }
+
+    // CLI subprocess test with FLIP_DISABLE_PANDOC=1 & FLIP_DISABLE_FFMPEG=1
+    let cli_home = tempdir().unwrap();
+    let cli_bin = env!("CARGO_BIN_EXE_flip");
+    let cli_md = dir.path().join("cli_story.md");
+    fs::write(&cli_md, "# CLI Test\n\nBody paragraph.\n").unwrap();
+
+    let cli_out = std::process::Command::new(cli_bin)
+        .args(["convert", cli_md.to_str().unwrap(), "--to", "fb2,rst"])
+        .env("HOME", cli_home.path())
+        .env("FLIP_DISABLE_PANDOC", "1")
+        .env("FLIP_DISABLE_FFMPEG", "1")
+        .output()
+        .unwrap();
+    assert!(
+        cli_out.status.success(),
+        "CLI convert with disabled pandoc/ffmpeg failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&cli_out.stdout),
+        String::from_utf8_lossy(&cli_out.stderr)
+    );
+    assert!(dir.path().join("cli_story.fb2").is_file());
+    assert!(dir.path().join("cli_story.rst").is_file());
+
+    // FLIP_DISABLE_FFMPEG=1 blocks FFmpeg-only formats cleanly even if Homebrew ffmpeg exists
+    let tick_wav = repo_root().join("src-tauri/resources/flip-tick.wav");
+    let wav_copy = dir.path().join("tone_disable_check.wav");
+    fs::copy(&tick_wav, &wav_copy).unwrap();
+    let cli_ffmpeg_disabled = std::process::Command::new(cli_bin)
+        .args(["convert", wav_copy.to_str().unwrap(), "--to", "mp3"])
+        .env("HOME", cli_home.path())
+        .env("FLIP_DISABLE_FFMPEG", "1")
+        .output()
+        .unwrap();
+    assert!(
+        !cli_ffmpeg_disabled.status.success(),
+        "Expected MP3 conversion to fail when FLIP_DISABLE_FFMPEG=1"
+    );
 }
