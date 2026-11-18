@@ -1,11 +1,13 @@
 use crate::core::ipc_socket::{self, IpcCommand, IpcResponse, IpcSocketError};
+use crate::core::policy::{batch_actions, order_formats, outputs, EngineCapabilities, FormatFamily};
 use crate::core::preferences::{expand_tilde_path, AppPreferences};
 use crate::core::quick_actions::{
     parse_flip_url, resolve_app_bundle_path, resolve_cli_executable, FlipUrlAction,
 };
 use crate::core::startup::LOGIN_ITEM_ARG;
-use crate::engines::create_new::create_new_item;
-use crate::engines::{convert_files, ConversionResult};
+use crate::engines::create_new::{built_in_kinds, create_new_item};
+use crate::engines::document::xml_escape;
+use crate::engines::{convert_files, detect_tools, ConversionResult};
 use crate::host::commands::ConversionCompletePayload;
 use serde_json::json;
 use std::ffi::OsString;
@@ -40,6 +42,12 @@ pub enum CliCommand {
     Batch {
         files: Vec<PathBuf>,
     },
+    Preview {
+        out: PathBuf,
+        files: Vec<PathBuf>,
+        mode: Option<String>,
+        hover: Option<usize>,
+    },
     Quit,
 }
 
@@ -70,6 +78,7 @@ USAGE:\n  \
   flip wheel [--mode convert|new] [files...]   Open the radial wheel (launches FLIP if needed)\n  \
   flip settings                                Open FLIP Settings window\n  \
   flip batch [files...]                        Open Batch & Multi-Format Converter window\n  \
+  flip preview --out <path.svg> [--files f1,f2] [--mode convert|new] [--hover N]\n                                               Render standalone radial wheel SVG preview\n  \
   flip quit                                    Quit running FLIP menu bar instance\n  \
   flip --help                                  Show this help message\n  \
   flip --version                               Show version information\n\n\
@@ -78,6 +87,7 @@ EXAMPLES:\n  \
   flip new md --in ~/Desktop\n  \
   flip new folder --in ~/Documents --no-rename\n  \
   flip wheel --mode convert photo.heic\n  \
+  flip preview --out wheel.svg --files photo.heic --hover 0\n  \
   flip batch *.png\n  \
   flip settings\n  \
   flip quit\n",
@@ -123,6 +133,7 @@ where
         "wheel" => parse_wheel_args(&filtered[1..]),
         "settings" => parse_settings_args(&filtered[1..]),
         "batch" => parse_batch_args(&filtered[1..]),
+        "preview" => parse_preview_args(&filtered[1..]),
         "quit" => parse_quit_args(&filtered[1..]),
         arg if arg.starts_with("flip://") || arg.starts_with("FLIP://") => {
             match parse_flip_url(arg)? {
@@ -365,6 +376,117 @@ fn parse_quit_args(args: &[String]) -> Result<CliCommand, String> {
         return Err(format!("Unexpected argument for `quit`: `{arg}`"));
     }
     Ok(CliCommand::Quit)
+}
+
+fn push_preview_files_arg(raw: &str, out: &mut Vec<PathBuf>) {
+    for part in raw.split(',') {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() {
+            out.push(PathBuf::from(trimmed));
+        }
+    }
+}
+
+fn parse_preview_args(args: &[String]) -> Result<CliCommand, String> {
+    let mut out: Option<PathBuf> = None;
+    let mut files: Vec<PathBuf> = Vec::new();
+    let mut mode: Option<String> = None;
+    let mut hover: Option<usize> = None;
+    let mut positional_only = false;
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = &args[i];
+        if !positional_only && arg == "--" {
+            positional_only = true;
+            i += 1;
+            continue;
+        }
+        if !positional_only && (arg == "--help" || arg == "-h") {
+            return Ok(CliCommand::Help);
+        }
+        if !positional_only && (arg == "--out" || arg == "-o") {
+            let val = args
+                .get(i + 1)
+                .ok_or_else(|| format!("Missing SVG output path after `{arg}`."))?;
+            if val.trim().is_empty() {
+                return Err("Missing SVG output path after `--out`.".to_string());
+            }
+            out = Some(PathBuf::from(val));
+            i += 2;
+            continue;
+        }
+        if !positional_only && arg == "--files" {
+            let val = args
+                .get(i + 1)
+                .ok_or_else(|| "Missing file list after `--files`.".to_string())?;
+            push_preview_files_arg(val, &mut files);
+            i += 2;
+            continue;
+        }
+        if !positional_only && (arg == "--mode" || arg == "-m") {
+            let val = args
+                .get(i + 1)
+                .ok_or_else(|| format!("Missing value after `{arg}` (expected `convert` or `new`)."))?;
+            mode = Some(normalize_wheel_mode(val)?);
+            i += 2;
+            continue;
+        }
+        if !positional_only && arg == "--hover" {
+            let val = args
+                .get(i + 1)
+                .ok_or_else(|| "Missing index after `--hover`.".to_string())?;
+            let idx = val
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| format!("Invalid `--hover` index `{val}` (expected non-negative integer)."))?;
+            hover = Some(idx);
+            i += 2;
+            continue;
+        }
+        if !positional_only {
+            if let Some(val) = arg.strip_prefix("--out=") {
+                if val.trim().is_empty() {
+                    return Err("Missing SVG output path after `--out=`.".to_string());
+                }
+                out = Some(PathBuf::from(val));
+                i += 1;
+                continue;
+            }
+            if let Some(val) = arg.strip_prefix("--files=") {
+                push_preview_files_arg(val, &mut files);
+                i += 1;
+                continue;
+            }
+            if let Some(val) = arg.strip_prefix("--mode=") {
+                mode = Some(normalize_wheel_mode(val)?);
+                i += 1;
+                continue;
+            }
+            if let Some(val) = arg.strip_prefix("--hover=") {
+                let idx = val
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid `--hover=` index `{val}` (expected non-negative integer)."))?;
+                hover = Some(idx);
+                i += 1;
+                continue;
+            }
+            if arg.starts_with('-') && arg != "-" {
+                return Err(format!("Unknown option for `preview`: `{arg}`"));
+            }
+        }
+        files.push(PathBuf::from(arg));
+        i += 1;
+    }
+
+    let out_path = out.ok_or_else(|| "`flip preview` requires `--out <path.svg>`.".to_string())?;
+    Ok(CliCommand::Preview {
+        out: out_path,
+        files,
+        mode,
+        hover,
+    })
 }
 
 pub fn lexical_normalize(path: &Path) -> PathBuf {
@@ -850,6 +972,12 @@ where
                 launcher,
             )
         }
+        CliCommand::Preview {
+            out,
+            files,
+            mode,
+            hover,
+        } => execute_preview_command(out, files, mode, hover, prefs, cwd),
         CliCommand::Quit => execute_control_command_with(
             IpcCommand::Quit,
             socket_path,
@@ -862,6 +990,397 @@ where
             stdout: String::new(),
             stderr: String::new(),
         },
+    }
+}
+
+fn preview_format_short_label(fmt: &str) -> &str {
+    match fmt {
+        "REMOVE_BG" => "No BG",
+        "OPTIMIZE_PDF" => "Optimize",
+        "COMBINE_PDF" => "Combine",
+        "MERGE_PDF" => "Merge PDF",
+        "UNZIP" => "Extract",
+        other => other,
+    }
+}
+
+fn preview_new_kind_short_label(id: &str, name: &str) -> String {
+    match id {
+        "folder" => "Folder".to_string(),
+        "txt" => "TXT".to_string(),
+        "md" => "MD".to_string(),
+        "rtf" => "RTF".to_string(),
+        "docx" => "DOCX".to_string(),
+        "xlsx" => "XLSX".to_string(),
+        "html" => "HTML".to_string(),
+        "clipboard" => "Clipboard".to_string(),
+        "json" => "JSON".to_string(),
+        "csv" => "CSV".to_string(),
+        "sh" => "SH".to_string(),
+        "py" => "PY".to_string(),
+        "swift" => "Swift".to_string(),
+        "pptx" => "PPTX".to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn polar_to_cartesian(cx: f64, cy: f64, r: f64, angle_deg: f64) -> (f64, f64) {
+    let rad = (angle_deg - 90.0).to_radians();
+    (cx + r * rad.cos(), cy + r * rad.sin())
+}
+
+fn build_preview_sector_path(index: usize, count: usize) -> String {
+    let cx = 220.0_f64;
+    let cy = 220.0_f64;
+    let r_in = 78.0_f64;
+    let r_out = 170.0_f64;
+    let corner_inset = 7.0_f64;
+
+    if count <= 1 {
+        let p_top_out = polar_to_cartesian(cx, cy, r_out, 0.0);
+        let p_bot_out = polar_to_cartesian(cx, cy, r_out, 180.0);
+        let p_top_in = polar_to_cartesian(cx, cy, r_in, 0.0);
+        let p_bot_in = polar_to_cartesian(cx, cy, r_in, 180.0);
+        return format!(
+            "M {:.2} {:.2} A {r_out} {r_out} 0 1 1 {:.2} {:.2} A {r_out} {r_out} 0 1 1 {:.2} {:.2} \
+             M {:.2} {:.2} A {r_in} {r_in} 0 1 0 {:.2} {:.2} A {r_in} {r_in} 0 1 0 {:.2} {:.2} Z",
+            p_top_out.0,
+            p_top_out.1,
+            p_bot_out.0,
+            p_bot_out.1,
+            p_top_out.0,
+            p_top_out.1,
+            p_top_in.0,
+            p_top_in.1,
+            p_bot_in.0,
+            p_bot_in.1,
+            p_top_in.0,
+            p_top_in.1
+        );
+    }
+
+    let sweep = 360.0 / (count as f64);
+    let center = (index as f64) * sweep;
+    let raw_start = center - sweep / 2.0;
+    let raw_end = center + sweep / 2.0;
+    let gap_deg = if count <= 2 { 4.2 } else { 2.6 };
+    let mid_r = (r_in + r_out) / 2.0;
+    let in_gap = gap_deg * (mid_r / r_in);
+    let out_gap = gap_deg * (mid_r / r_out);
+
+    let in_start = raw_start + in_gap / 2.0;
+    let in_end = raw_end - in_gap / 2.0;
+    let out_start = raw_start + out_gap / 2.0;
+    let out_end = raw_end - out_gap / 2.0;
+
+    let c_deg_out = (corner_inset / r_out).to_degrees();
+    let c_deg_in = (corner_inset / r_in).to_degrees();
+
+    let o_a = polar_to_cartesian(cx, cy, r_out - corner_inset, out_start);
+    let o_b = polar_to_cartesian(cx, cy, r_out, out_start + c_deg_out);
+    let o_c = polar_to_cartesian(cx, cy, r_out, out_end - c_deg_out);
+    let o_d = polar_to_cartesian(cx, cy, r_out - corner_inset, out_end);
+
+    let i_d = polar_to_cartesian(cx, cy, r_in + corner_inset, in_end);
+    let i_c = polar_to_cartesian(cx, cy, r_in, in_end - c_deg_in);
+    let i_b = polar_to_cartesian(cx, cy, r_in, in_start + c_deg_in);
+    let i_a = polar_to_cartesian(cx, cy, r_in + corner_inset, in_start);
+
+    let outer_arc_span = (out_end - c_deg_out) - (out_start + c_deg_out);
+    let inner_arc_span = (in_end - c_deg_in) - (in_start + c_deg_in);
+    let large_out = if outer_arc_span > 180.0 { 1 } else { 0 };
+    let large_in = if inner_arc_span > 180.0 { 1 } else { 0 };
+
+    format!(
+        "M {:.2} {:.2} L {:.2} {:.2} A {r_out} {r_out} 0 {large_out} 1 {:.2} {:.2} \
+         L {:.2} {:.2} L {:.2} {:.2} A {r_in} {r_in} 0 {large_in} 0 {:.2} {:.2} L {:.2} {:.2} L {:.2} {:.2} Z",
+        o_a.0, o_a.1, o_b.0, o_b.1, o_c.0, o_c.1, o_d.0, o_d.1, i_d.0, i_d.1, i_c.0, i_c.1, i_b.0, i_b.1, i_a.0, i_a.1
+    )
+}
+
+#[derive(Debug, Clone)]
+struct PreviewSlot {
+    label: String,
+    subtitle: String,
+    is_nav: bool,
+    enabled: bool,
+}
+
+fn compute_preview_wheel(
+    files: &[PathBuf],
+    mode: &str,
+    prefs: &AppPreferences,
+    cwd: Option<&Path>,
+) -> (Vec<PreviewSlot>, String, String) {
+    if mode == "new" {
+        let mut slots: Vec<PreviewSlot> = built_in_kinds(false)
+            .into_iter()
+            .map(|k| PreviewSlot {
+                label: preview_new_kind_short_label(&k.id, &k.name),
+                subtitle: format!("New {}", k.name),
+                is_nav: false,
+                enabled: k.available,
+            })
+            .collect();
+        if slots.len() > 8 {
+            slots.truncate(7);
+            slots.push(PreviewSlot {
+                label: "More ▸".to_string(),
+                subtitle: "Next page".to_string(),
+                is_nav: true,
+                enabled: true,
+            });
+        }
+        return (
+            slots,
+            "New File".to_string(),
+            "Choose item to create".to_string(),
+        );
+    }
+
+    if files.is_empty() {
+        let placeholders = ["DOCX", "PDF", "MD", "HTML", "PNG", "JPG", "WEBP", "MP3"];
+        let slots = placeholders
+            .into_iter()
+            .map(|lbl| PreviewSlot {
+                label: lbl.to_string(),
+                subtitle: format!("Convert to {lbl}"),
+                is_nav: false,
+                enabled: true,
+            })
+            .collect();
+        return (
+            slots,
+            "FLIP Preview".to_string(),
+            "Drop local files".to_string(),
+        );
+    }
+
+    let resolved: Vec<PathBuf> = files.iter().map(|p| resolve_cli_path(p, cwd)).collect();
+    let tools = detect_tools(Some(prefs));
+    let caps = EngineCapabilities {
+        ffmpeg: tools.ffmpeg.is_some(),
+        pandoc: tools.pandoc.is_some(),
+        pages: tools.pages,
+        numbers: tools.numbers,
+        keynote: tools.keynote,
+    };
+
+    let compat = outputs(&resolved, &caps);
+    let actions = batch_actions(&resolved);
+    let primary_ext = crate::core::policy::ext_lower(&resolved[0]);
+    let family = match primary_ext.as_str() {
+        "pdf" => Some(FormatFamily::Pdf),
+        "png" | "jpg" | "jpeg" | "webp" | "heic" | "heif" | "tiff" | "tif" | "gif" | "bmp"
+        | "svg" | "avif" | "icns" | "ico" => Some(FormatFamily::Image),
+        "mp3" | "m4a" | "wav" | "flac" | "aiff" | "aif" | "alac" | "caf" | "ogg" | "opus"
+        | "aac" | "wma" => Some(FormatFamily::Audio),
+        "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "m4v" => Some(FormatFamily::Video),
+        "json" | "yaml" | "yml" | "toml" | "xml" | "csv" => Some(FormatFamily::Data),
+        "zip" => Some(FormatFamily::Archive),
+        "pages" | "numbers" | "key" => Some(FormatFamily::IWork),
+        _ => Some(FormatFamily::Document),
+    };
+    let ordered_compat = order_formats(&compat, family, Some(prefs));
+
+    let mut combined = ordered_compat;
+    for act in actions {
+        if !combined.contains(&act) {
+            combined.push(act);
+        }
+    }
+
+    let mut slots: Vec<PreviewSlot> = combined
+        .into_iter()
+        .map(|fmt| PreviewSlot {
+            label: preview_format_short_label(&fmt).to_string(),
+            subtitle: format!("→ {fmt}"),
+            is_nav: false,
+            enabled: true,
+        })
+        .collect();
+    if slots.len() > 8 {
+        slots.truncate(7);
+        slots.push(PreviewSlot {
+            label: "More ▸".to_string(),
+            subtitle: "Next formats".to_string(),
+            is_nav: true,
+            enabled: true,
+        });
+    }
+
+    let hub_title = if resolved.len() == 1 {
+        resolved[0]
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("File")
+            .to_string()
+    } else {
+        format!("{} files", resolved.len())
+    };
+    let hub_subtitle = format!("{} options", slots.len());
+    (slots, hub_title, hub_subtitle)
+}
+
+pub fn render_wheel_preview_svg(
+    files: &[PathBuf],
+    mode: &str,
+    hover: Option<usize>,
+    prefs: &AppPreferences,
+    cwd: Option<&Path>,
+) -> (String, Vec<String>) {
+    let (slots, hub_title, default_subtitle) = compute_preview_wheel(files, mode, prefs, cwd);
+    let count = slots.len();
+    let active_idx = hover.filter(|&idx| idx < count && slots[idx].enabled);
+    let hub_subtitle = active_idx
+        .map(|idx| slots[idx].subtitle.clone())
+        .unwrap_or(default_subtitle);
+
+    let mut sectors_svg = String::new();
+    let sweep = if count > 0 { 360.0 / (count as f64) } else { 360.0 };
+
+    for (idx, slot) in slots.iter().enumerate() {
+        let d = build_preview_sector_path(idx, count);
+        let center_angle = (idx as f64) * sweep;
+        let label_pos = polar_to_cartesian(220.0, 220.0, 124.0, center_angle);
+        let is_active = active_idx == Some(idx);
+        let fill = if is_active {
+            "url(#flip-sector-active-grad)"
+        } else if slot.is_nav {
+            "url(#flip-sector-nav-grad)"
+        } else {
+            "url(#flip-sector-rest-grad)"
+        };
+        let stroke = if is_active {
+            "rgba(125,211,252,0.95)"
+        } else {
+            "rgba(255,255,255,0.22)"
+        };
+        let stroke_w = if is_active { "2" } else { "1" };
+        let opacity = if slot.enabled { "1" } else { "0.42" };
+        let short = xml_escape(&slot.label);
+        let slot_num = idx + 1;
+
+        sectors_svg.push_str(&format!(
+            "    <g class=\"wheel-sector-group{active_cls}\" data-slot-index=\"{idx}\" data-active=\"{is_active}\" opacity=\"{opacity}\">\n\
+             \x20     <path class=\"wheel-sector-path\" d=\"{d}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{stroke_w}\" />\n\
+             \x20     <text x=\"{lx:.2}\" y=\"{ly:.2}\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"-apple-system, SF Pro Display, Helvetica, Arial, sans-serif\" font-size=\"13\" font-weight=\"600\" fill=\"#f8fafc\">{short}</text>\n\
+             \x20     <text x=\"{lx:.2}\" y=\"{ky:.2}\" text-anchor=\"middle\" dominant-baseline=\"central\" font-family=\"-apple-system, SF Pro Display, Helvetica, Arial, sans-serif\" font-size=\"9.5\" font-weight=\"500\" fill=\"rgba(226,232,240,0.72)\">{slot_num}</text>\n\
+             \x20   </g>\n",
+            active_cls = if is_active { " is-active" } else { "" },
+            lx = label_pos.0,
+            ly = label_pos.1 - 6.0,
+            ky = label_pos.1 + 11.0,
+        ));
+    }
+
+    let mode_badge = if mode == "new" { "NEW FILE" } else { "CONVERT" };
+    let truncated_title: String = hub_title.chars().take(20).collect();
+    let truncated_sub: String = hub_subtitle.chars().take(28).collect();
+
+    let svg = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+        <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 440 440\" width=\"440\" height=\"440\">\n\
+        \x20 <defs>\n\
+        \x20   <radialGradient id=\"flip-bg-grad\" cx=\"50%\" cy=\"45%\" r=\"60%\">\n\
+        \x20     <stop offset=\"0%\" stop-color=\"#1e293b\" />\n\
+        \x20     <stop offset=\"100%\" stop-color=\"#0b1120\" />\n\
+        \x20   </radialGradient>\n\
+        \x20   <linearGradient id=\"flip-sector-rest-grad\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">\n\
+        \x20     <stop offset=\"0%\" stop-color=\"rgba(255,255,255,0.18)\" />\n\
+        \x20     <stop offset=\"50%\" stop-color=\"rgba(148,163,184,0.10)\" />\n\
+        \x20     <stop offset=\"100%\" stop-color=\"rgba(15,23,42,0.34)\" />\n\
+        \x20   </linearGradient>\n\
+        \x20   <linearGradient id=\"flip-sector-nav-grad\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">\n\
+        \x20     <stop offset=\"0%\" stop-color=\"rgba(56,189,248,0.24)\" />\n\
+        \x20     <stop offset=\"100%\" stop-color=\"rgba(99,102,241,0.22)\" />\n\
+        \x20   </linearGradient>\n\
+        \x20   <linearGradient id=\"flip-sector-active-grad\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\">\n\
+        \x20     <stop offset=\"0%\" stop-color=\"rgba(56,189,248,0.72)\" />\n\
+        \x20     <stop offset=\"55%\" stop-color=\"rgba(14,165,233,0.56)\" />\n\
+        \x20     <stop offset=\"100%\" stop-color=\"rgba(99,102,241,0.68)\" />\n\
+        \x20   </linearGradient>\n\
+        \x20   <radialGradient id=\"flip-hub-grad\" cx=\"38%\" cy=\"30%\" r=\"70%\">\n\
+        \x20     <stop offset=\"0%\" stop-color=\"rgba(30,41,59,0.92)\" />\n\
+        \x20     <stop offset=\"100%\" stop-color=\"rgba(15,23,42,0.98)\" />\n\
+        \x20   </radialGradient>\n\
+        \x20 </defs>\n\
+        \x20 <rect width=\"440\" height=\"440\" rx=\"28\" fill=\"url(#flip-bg-grad)\" />\n\
+        \x20 <circle cx=\"220\" cy=\"220\" r=\"178\" fill=\"none\" stroke=\"rgba(255,255,255,0.14)\" stroke-width=\"1.2\" />\n\
+        \x20 <circle cx=\"220\" cy=\"220\" r=\"174\" fill=\"none\" stroke=\"rgba(56,189,248,0.22)\" stroke-width=\"1\" />\n\
+        \x20 <g id=\"wheel-sectors-layer\">\n\
+        {sectors_svg}\
+        \x20 </g>\n\
+        \x20 <circle cx=\"220\" cy=\"220\" r=\"68\" fill=\"url(#flip-hub-grad)\" stroke=\"rgba(255,255,255,0.24)\" stroke-width=\"1.2\" />\n\
+        \x20 <text x=\"220\" y=\"196\" text-anchor=\"middle\" font-family=\"-apple-system, SF Pro Display, Helvetica, Arial, sans-serif\" font-size=\"9.5\" font-weight=\"700\" letter-spacing=\"0.8\" fill=\"#38bdf8\">{}</text>\n\
+        \x20 <text x=\"220\" y=\"219\" text-anchor=\"middle\" font-family=\"-apple-system, SF Pro Display, Helvetica, Arial, sans-serif\" font-size=\"13.5\" font-weight=\"700\" fill=\"#f8fafc\">{}</text>\n\
+        \x20 <text x=\"220\" y=\"239\" text-anchor=\"middle\" font-family=\"-apple-system, SF Pro Display, Helvetica, Arial, sans-serif\" font-size=\"11\" font-weight=\"500\" fill=\"rgba(203,213,225,0.88)\">{}</text>\n\
+        </svg>\n",
+        xml_escape(mode_badge),
+        xml_escape(&truncated_title),
+        xml_escape(&truncated_sub),
+    );
+    let sector_labels = slots.into_iter().map(|s| s.label).collect();
+    (svg, sector_labels)
+}
+
+fn execute_preview_command(
+    out: PathBuf,
+    files: Vec<PathBuf>,
+    mode: Option<String>,
+    hover: Option<usize>,
+    prefs: &AppPreferences,
+    cwd: Option<&Path>,
+) -> CliOutcome {
+    let eff_mode = mode.unwrap_or_else(|| "convert".to_string());
+    let out_path = resolve_cli_path(&out, cwd);
+    if let Some(parent) = out_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            let msg = format!("Failed to create parent directory for preview SVG: {e}");
+            let err_json = serde_json::to_string_pretty(&json!({
+                "success": false,
+                "command": "preview",
+                "error": msg,
+            }))
+            .unwrap_or_else(|_| "{\"success\":false}".to_string());
+            return CliOutcome {
+                exit_code: 1,
+                stdout: format!("{err_json}\n"),
+                stderr: format!("{msg}\n"),
+            };
+        }
+    }
+
+    let (svg, sectors) = render_wheel_preview_svg(&files, &eff_mode, hover, prefs, cwd);
+    if let Err(e) = std::fs::write(&out_path, &svg) {
+        let msg = format!("Failed to write preview SVG `{}`: {e}", out_path.display());
+        let err_json = serde_json::to_string_pretty(&json!({
+            "success": false,
+            "command": "preview",
+            "error": msg,
+        }))
+        .unwrap_or_else(|_| "{\"success\":false}".to_string());
+        return CliOutcome {
+            exit_code: 1,
+            stdout: format!("{err_json}\n"),
+            stderr: format!("{msg}\n"),
+        };
+    }
+
+    let out_json = serde_json::to_string_pretty(&json!({
+        "success": true,
+        "command": "preview",
+        "out": out_path.to_string_lossy(),
+        "mode": eff_mode,
+        "sectorCount": sectors.len(),
+        "sectors": sectors,
+        "hover": hover,
+    }))
+    .unwrap_or_else(|_| "{\"success\":true}".to_string());
+    CliOutcome {
+        exit_code: 0,
+        stdout: format!("{out_json}\n"),
+        stderr: String::new(),
     }
 }
 
@@ -1311,5 +1830,97 @@ mod tests {
             srv.stop();
         }
         assert!(!sock.exists(), "server stop must remove socket file");
+    }
+
+    #[test]
+    fn cli_preview_parses_flags_and_generates_well_formed_wheel_svg() {
+        let parsed = parse_cli_args([
+            "flip",
+            "preview",
+            "--out",
+            "out/wheel.svg",
+            "--files",
+            "photo.heic,extra.png",
+            "--mode",
+            "convert",
+            "--hover",
+            "1",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed,
+            CliCommand::Preview {
+                out: PathBuf::from("out/wheel.svg"),
+                files: vec![PathBuf::from("photo.heic"), PathBuf::from("extra.png")],
+                mode: Some("convert".to_string()),
+                hover: Some(1),
+            }
+        );
+        assert!(parse_cli_args(["flip", "preview"]).is_err());
+        assert!(parse_cli_args(["flip", "preview", "--out", "a.svg", "--hover", "bad"]).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let svg_out = dir.path().join("wheel-convert.svg");
+        let prefs = AppPreferences::default();
+        let outcome = execute_cli_command_with_ipc(
+            parse_cli_args([
+                "flip",
+                "preview",
+                "--out",
+                svg_out.to_str().unwrap(),
+                "--files",
+                "photo.heic",
+                "--hover",
+                "0",
+            ])
+            .unwrap(),
+            &prefs,
+            Some(dir.path()),
+            &dir.path().join("unused.sock"),
+            Duration::from_millis(50),
+            || panic!("preview must not spawn GUI"),
+        );
+        assert_eq!(outcome.exit_code, 0, "stderr={}", outcome.stderr);
+        let svg = std::fs::read_to_string(&svg_out).unwrap();
+        assert!(svg.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+        assert!(svg.contains("data-slot-index=\"0\" data-active=\"true\""));
+        assert!(svg.contains("PNG"));
+        assert!(svg.contains("photo.heic"));
+
+        // Verify XML well-formedness using quick-xml
+        let mut reader = quick_xml::Reader::from_str(&svg);
+        let mut buf = Vec::new();
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(quick_xml::events::Event::Eof) => break,
+                Ok(_) => {}
+                Err(e) => panic!("Invalid preview SVG XML: {e}\n{svg}"),
+            }
+            buf.clear();
+        }
+
+        // Also test --mode new preview
+        let new_svg_out = dir.path().join("wheel-new.svg");
+        let new_outcome = execute_cli_command_with_ipc(
+            parse_cli_args([
+                "flip",
+                "preview",
+                "--out",
+                new_svg_out.to_str().unwrap(),
+                "--mode=new",
+                "--hover=2",
+            ])
+            .unwrap(),
+            &prefs,
+            Some(dir.path()),
+            &dir.path().join("unused.sock"),
+            Duration::from_millis(50),
+            || panic!("preview must not spawn GUI"),
+        );
+        assert_eq!(new_outcome.exit_code, 0);
+        let new_svg = std::fs::read_to_string(&new_svg_out).unwrap();
+        assert!(new_svg.contains("NEW FILE"));
+        assert!(new_svg.contains("Folder"));
+        assert!(new_svg.contains("data-slot-index=\"2\" data-active=\"true\""));
     }
 }

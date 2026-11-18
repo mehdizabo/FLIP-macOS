@@ -1,0 +1,1961 @@
+import { describe, expect, test } from "bun:test";
+import { t } from "./i18n";
+import { defaultPreferences } from "./ipc";
+import type {
+  AppPreferences,
+  ConversionCompletePayload,
+  EngineStatus,
+  InspectFilesResult,
+  NewFileKindInfo,
+  NewFileKindsResponse,
+  PermissionsStatus,
+  QuickActionsStatus,
+  UpdateCheckResult,
+  WheelStatePayload,
+} from "./types";
+import { mountBatchView } from "./views/BatchView";
+import { mountOnboardingView, ONBOARDING_COMPLETED_KEY } from "./views/OnboardingView";
+import { mountSettingsView } from "./views/SettingsView";
+import { mountWheelView } from "./views/WheelView";
+
+// =========================================================================
+// Lightweight In-Memory DOM + SVG Shim (cleanly restores all globals)
+// =========================================================================
+
+type ListenerEntry = {
+  fn: (ev: any) => void;
+  capture: boolean;
+};
+
+class ShimEvent {
+  type: string;
+  bubbles: boolean;
+  cancelable: boolean;
+  defaultPrevented = false;
+  propagationStopped = false;
+  immediatePropagationStopped = false;
+  target: any = null;
+  currentTarget: any = null;
+
+  constructor(type: string, init: { bubbles?: boolean; cancelable?: boolean } = {}) {
+    this.type = type;
+    this.bubbles = Boolean(init.bubbles);
+    this.cancelable = Boolean(init.cancelable);
+  }
+
+  preventDefault(): void {
+    if (this.cancelable) this.defaultPrevented = true;
+  }
+
+  stopPropagation(): void {
+    this.propagationStopped = true;
+  }
+
+  stopImmediatePropagation(): void {
+    this.propagationStopped = true;
+    this.immediatePropagationStopped = true;
+  }
+}
+
+class ShimMouseEvent extends ShimEvent {
+  clientX: number;
+  clientY: number;
+  detail: number;
+  button: number;
+  shiftKey: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+
+  constructor(
+    type: string,
+    init: {
+      bubbles?: boolean;
+      cancelable?: boolean;
+      clientX?: number;
+      clientY?: number;
+      detail?: number;
+      button?: number;
+      shiftKey?: boolean;
+      altKey?: boolean;
+      ctrlKey?: boolean;
+      metaKey?: boolean;
+    } = {},
+  ) {
+    super(type, init);
+    this.clientX = init.clientX ?? 0;
+    this.clientY = init.clientY ?? 0;
+    this.detail = init.detail ?? 1;
+    this.button = init.button ?? 0;
+    this.shiftKey = Boolean(init.shiftKey);
+    this.altKey = Boolean(init.altKey);
+    this.ctrlKey = Boolean(init.ctrlKey);
+    this.metaKey = Boolean(init.metaKey);
+  }
+}
+
+class ShimPointerEvent extends ShimMouseEvent {
+  pointerId: number;
+  constructor(
+    type: string,
+    init: ConstructorParameters<typeof ShimMouseEvent>[1] & { pointerId?: number } = {},
+  ) {
+    super(type, init);
+    this.pointerId = init.pointerId ?? 1;
+  }
+}
+
+class ShimKeyboardEvent extends ShimEvent {
+  key: string;
+  code: string;
+  shiftKey: boolean;
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  repeat: boolean;
+
+  constructor(
+    type: string,
+    init: {
+      bubbles?: boolean;
+      cancelable?: boolean;
+      key?: string;
+      code?: string;
+      shiftKey?: boolean;
+      altKey?: boolean;
+      ctrlKey?: boolean;
+      metaKey?: boolean;
+      repeat?: boolean;
+    } = {},
+  ) {
+    super(type, { bubbles: init.bubbles ?? true, cancelable: init.cancelable ?? true });
+    this.key = init.key ?? "";
+    this.code = init.code ?? "";
+    this.shiftKey = Boolean(init.shiftKey);
+    this.altKey = Boolean(init.altKey);
+    this.ctrlKey = Boolean(init.ctrlKey);
+    this.metaKey = Boolean(init.metaKey);
+    this.repeat = Boolean(init.repeat);
+  }
+}
+
+class ShimFocusEvent extends ShimEvent {
+  relatedTarget: any;
+  constructor(type: string, init: { bubbles?: boolean; relatedTarget?: any } = {}) {
+    super(type, init);
+    this.relatedTarget = init.relatedTarget ?? null;
+  }
+}
+
+class ShimDragEvent extends ShimMouseEvent {
+  dataTransfer: any;
+  constructor(
+    type: string,
+    init: ConstructorParameters<typeof ShimMouseEvent>[1] & { dataTransfer?: any } = {},
+  ) {
+    super(type, init);
+    this.dataTransfer = init.dataTransfer ?? { files: [] };
+  }
+}
+
+class ShimEventTarget {
+  protected _listeners = new Map<string, ListenerEntry[]>();
+
+  addEventListener(type: string, fn: ((ev: any) => void) | null, options?: boolean | { capture?: boolean }): void {
+    if (!fn) return;
+    const capture = typeof options === "boolean" ? options : Boolean(options?.capture);
+    const list = this._listeners.get(type) ?? [];
+    if (!list.some((e) => e.fn === fn && e.capture === capture)) {
+      list.push({ fn, capture });
+      this._listeners.set(type, list);
+    }
+  }
+
+  removeEventListener(type: string, fn: ((ev: any) => void) | null, options?: boolean | { capture?: boolean }): void {
+    if (!fn) return;
+    const capture = typeof options === "boolean" ? options : Boolean(options?.capture);
+    const list = this._listeners.get(type);
+    if (!list) return;
+    this._listeners.set(
+      type,
+      list.filter((e) => !(e.fn === fn && e.capture === capture)),
+    );
+  }
+
+  _firePhase(ev: any, capturePhase: boolean): void {
+    const entries = [...(this._listeners.get(ev.type) ?? [])];
+    for (const entry of entries) {
+      if (entry.capture !== capturePhase) continue;
+      ev.currentTarget = this;
+      entry.fn.call(this, ev);
+      if (ev.immediatePropagationStopped) break;
+    }
+  }
+
+  dispatchEvent(ev: any): boolean {
+    ev.target = this;
+    this._firePhase(ev, true);
+    if (!ev.propagationStopped) {
+      this._firePhase(ev, false);
+    }
+    return !ev.defaultPrevented;
+  }
+}
+
+class ShimNode extends ShimEventTarget {
+  nodeType: number;
+  parentNode: ShimNode | null = null;
+  childNodes: ShimNode[] = [];
+  ownerDocument: ShimDocument;
+
+  constructor(nodeType: number, ownerDocument: ShimDocument) {
+    super();
+    this.nodeType = nodeType;
+    this.ownerDocument = ownerDocument;
+  }
+
+  appendChild<T extends ShimNode>(child: T): T {
+    if (child.parentNode) {
+      child.parentNode.removeChild(child);
+    }
+    child.parentNode = this;
+    this.childNodes.push(child);
+    return child;
+  }
+
+  removeChild<T extends ShimNode>(child: T): T {
+    const idx = this.childNodes.indexOf(child);
+    if (idx >= 0) {
+      this.childNodes.splice(idx, 1);
+      child.parentNode = null;
+    }
+    return child;
+  }
+
+  contains(other: ShimNode | null): boolean {
+    let cur: ShimNode | null = other;
+    while (cur) {
+      if (cur === this) return true;
+      cur = cur.parentNode;
+    }
+    return false;
+  }
+
+  get textContent(): string {
+    return this.childNodes.map((c) => c.textContent).join("");
+  }
+
+  set textContent(val: string) {
+    for (const c of this.childNodes) c.parentNode = null;
+    this.childNodes = [];
+    if (val) {
+      this.appendChild(new ShimText(String(val), this.ownerDocument));
+    }
+  }
+
+  override dispatchEvent(ev: any): boolean {
+    ev.target = this;
+    const path: ShimEventTarget[] = [];
+    let cur: ShimNode | null = this;
+    while (cur) {
+      path.push(cur);
+      cur = cur.parentNode;
+    }
+    const win = this.ownerDocument.defaultView;
+    const isConnectedToDoc = path[path.length - 1] === this.ownerDocument;
+    const fullChain: ShimEventTarget[] = isConnectedToDoc && win ? [...path, win] : path;
+
+    // Capture phase: outermost down to target (excluding target itself for capture? DOM includes target in capture/bubble order)
+    for (let idx = fullChain.length - 1; idx >= 0; idx--) {
+      fullChain[idx]._firePhase(ev, true);
+      if (ev.propagationStopped) return !ev.defaultPrevented;
+    }
+    // Target + bubble phase
+    fullChain[0]._firePhase(ev, false);
+    if (ev.bubbles && !ev.propagationStopped) {
+      for (let idx = 1; idx < fullChain.length; idx++) {
+        fullChain[idx]._firePhase(ev, false);
+        if (ev.propagationStopped) break;
+      }
+    }
+    return !ev.defaultPrevented;
+  }
+}
+
+class ShimText extends ShimNode {
+  data: string;
+  constructor(data: string, ownerDocument: ShimDocument) {
+    super(3, ownerDocument);
+    this.data = data;
+  }
+  override get textContent(): string {
+    return this.data;
+  }
+  override set textContent(val: string) {
+    this.data = String(val ?? "");
+  }
+}
+
+const VOID_HTML_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+  "path",
+  "circle",
+  "line",
+  "rect",
+  "polygon",
+  "polyline",
+  "stop",
+]);
+
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, " ");
+}
+
+function kebabToCamel(s: string): string {
+  return s.replace(/-([a-z0-9])/g, (_, ch: string) => ch.toUpperCase());
+}
+
+function camelToKebab(s: string): string {
+  return s.replace(/([A-Z])/g, "-$1").toLowerCase();
+}
+
+function splitTopLevelSelectors(input: string, sep: string): string[] {
+  const parts: string[] = [];
+  let depthBracket = 0;
+  let depthParen = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === "[") {
+      depthBracket++;
+    } else if (ch === "]") {
+      depthBracket = Math.max(0, depthBracket - 1);
+    } else if (ch === "(") {
+      depthParen++;
+    } else if (ch === ")") {
+      depthParen = Math.max(0, depthParen - 1);
+    } else if (depthBracket === 0 && depthParen === 0 && ch === sep) {
+      parts.push(input.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(input.slice(start));
+  return parts;
+}
+
+function matchesSimpleSelector(el: ShimElement, simple: string): boolean {
+  let pos = 0;
+  const s = simple.trim();
+  if (!s) return false;
+
+  // Optional tag name or * at start
+  const tagMatch = /^(\*|[a-zA-Z_][a-zA-Z0-9_-]*)/.exec(s);
+  if (tagMatch) {
+    const want = tagMatch[1].toLowerCase();
+    if (want !== "*" && el.tagName.toLowerCase() !== want) {
+      return false;
+    }
+    pos = tagMatch[0].length;
+  }
+
+  while (pos < s.length) {
+    const ch = s[pos];
+    if (ch === "#") {
+      pos++;
+      const m = /^([a-zA-Z0-9_-]+)/.exec(s.slice(pos));
+      if (!m) return false;
+      if (el.id !== m[1]) return false;
+      pos += m[1].length;
+    } else if (ch === ".") {
+      pos++;
+      const m = /^([a-zA-Z0-9_-]+)/.exec(s.slice(pos));
+      if (!m) return false;
+      if (!el.classList.contains(m[1])) return false;
+      pos += m[1].length;
+    } else if (ch === "[") {
+      const close = s.indexOf("]", pos);
+      if (close < 0) return false;
+      const body = s.slice(pos + 1, close).trim();
+      pos = close + 1;
+      const eq = body.indexOf("=");
+      if (eq < 0) {
+        if (!el.hasAttribute(body.toLowerCase())) return false;
+      } else {
+        const attrName = body.slice(0, eq).trim().toLowerCase();
+        let expected = body.slice(eq + 1).trim();
+        if (
+          (expected.startsWith('"') && expected.endsWith('"')) ||
+          (expected.startsWith("'") && expected.endsWith("'"))
+        ) {
+          expected = expected.slice(1, -1);
+        }
+        const actual = el.getAttribute(attrName);
+        if (actual !== expected) return false;
+      }
+    } else if (ch === ":") {
+      if (s.slice(pos).startsWith(":not(")) {
+        let depth = 1;
+        let p = pos + 5;
+        while (p < s.length && depth > 0) {
+          if (s[p] === "(") depth++;
+          else if (s[p] === ")") depth--;
+          p++;
+        }
+        const inner = s.slice(pos + 5, p - 1);
+        if (matchesSimpleSelector(el, inner)) return false;
+        pos = p;
+      } else {
+        const m = /^:([a-zA-Z-]+)/.exec(s.slice(pos));
+        if (!m) return false;
+        const pseudo = m[1].toLowerCase();
+        pos += m[0].length;
+        if (pseudo === "disabled") {
+          if (!el.hasAttribute("disabled") && !(el as any).disabled) return false;
+        } else if (pseudo === "enabled") {
+          if (el.hasAttribute("disabled") || Boolean((el as any).disabled)) return false;
+        } else if (pseudo === "checked") {
+          if (!(el as any).checked) return false;
+        }
+      }
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+function tokenizeComplexSelector(sel: string): Array<{ comb: "desc" | "child" | null; simple: string }> {
+  const tokens: Array<{ comb: "desc" | "child" | null; simple: string }> = [];
+  let i = 0;
+  const s = sel.trim();
+  let pendingComb: "desc" | "child" | null = null;
+  while (i < s.length) {
+    if (/\s/.test(s[i])) {
+      while (i < s.length && /\s/.test(s[i])) i++;
+      if (pendingComb === null && tokens.length > 0) pendingComb = "desc";
+      continue;
+    }
+    if (s[i] === ">") {
+      pendingComb = "child";
+      i++;
+      while (i < s.length && /\s/.test(s[i])) i++;
+      continue;
+    }
+    let depthBracket = 0;
+    let depthParen = 0;
+    let quote: string | null = null;
+    const start = i;
+    while (i < s.length) {
+      const ch = s[i];
+      if (quote) {
+        if (ch === quote) quote = null;
+        i++;
+        continue;
+      }
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === "[") depthBracket++;
+      else if (ch === "]") depthBracket = Math.max(0, depthBracket - 1);
+      else if (ch === "(") depthParen++;
+      else if (ch === ")") depthParen = Math.max(0, depthParen - 1);
+      else if (depthBracket === 0 && depthParen === 0 && (/\s/.test(ch) || ch === ">")) {
+        break;
+      }
+      i++;
+    }
+    tokens.push({ comb: pendingComb, simple: s.slice(start, i) });
+    pendingComb = null;
+  }
+  return tokens;
+}
+
+function matchesSelector(el: ShimElement, selectorList: string): boolean {
+  const parts = splitTopLevelSelectors(selectorList, ",");
+  for (const part of parts) {
+    const chain = tokenizeComplexSelector(part);
+    if (chain.length === 0) continue;
+    if (!matchesSimpleSelector(el, chain[chain.length - 1].simple)) continue;
+
+    let ok = true;
+    let cur: ShimElement = el;
+    for (let k = chain.length - 2; k >= 0; k--) {
+      const comb = chain[k + 1].comb;
+      const targetSimple = chain[k].simple;
+      if (comb === "child") {
+        const p = cur.parentNode;
+        if (!(p instanceof ShimElement) || !matchesSimpleSelector(p, targetSimple)) {
+          ok = false;
+          break;
+        }
+        cur = p;
+      } else {
+        let p = cur.parentNode;
+        let found: ShimElement | null = null;
+        while (p) {
+          if (p instanceof ShimElement && matchesSimpleSelector(p, targetSimple)) {
+            found = p;
+            break;
+          }
+          p = p.parentNode;
+        }
+        if (!found) {
+          ok = false;
+          break;
+        }
+        cur = found;
+      }
+    }
+    if (ok) return true;
+  }
+  return false;
+}
+
+class ShimClassList {
+  private el: ShimElement;
+  constructor(el: ShimElement) {
+    this.el = el;
+  }
+  private getSet(): Set<string> {
+    const raw = this.el.getAttribute("class") ?? "";
+    return new Set(raw.split(/\s+/).filter(Boolean));
+  }
+  private commit(set: Set<string>): void {
+    this.el.setAttribute("class", Array.from(set).join(" "));
+  }
+  add(...tokens: string[]): void {
+    const set = this.getSet();
+    for (const tok of tokens) {
+      if (tok) set.add(tok);
+    }
+    this.commit(set);
+  }
+  remove(...tokens: string[]): void {
+    const set = this.getSet();
+    for (const tok of tokens) set.delete(tok);
+    this.commit(set);
+  }
+  contains(tok: string): boolean {
+    return this.getSet().has(tok);
+  }
+  toggle(tok: string, force?: boolean): boolean {
+    const set = this.getSet();
+    const shouldAdd = force === undefined ? !set.has(tok) : force;
+    if (shouldAdd) set.add(tok);
+    else set.delete(tok);
+    this.commit(set);
+    return shouldAdd;
+  }
+}
+
+class ShimElement extends ShimNode {
+  tagName: string;
+  namespaceURI: string;
+  protected _attrs = new Map<string, string>();
+  classList: ShimClassList;
+  style: Record<string, string>;
+  dataset: Record<string, string>;
+  tabIndex = -1;
+
+  constructor(tagName: string, namespaceURI: string, ownerDocument: ShimDocument) {
+    super(1, ownerDocument);
+    this.namespaceURI = namespaceURI;
+    this.tagName = namespaceURI.includes("svg") ? tagName : tagName.toUpperCase();
+    this.classList = new ShimClassList(this);
+
+    const styleStore: Record<string, string> = {};
+    this.style = new Proxy(styleStore, {
+      get: (target, prop: string) => target[prop] ?? "",
+      set: (target, prop: string, value) => {
+        target[prop] = String(value ?? "");
+        return true;
+      },
+    });
+
+    this.dataset = new Proxy({} as Record<string, string>, {
+      get: (_target, prop: string) => {
+        return this.getAttribute(`data-${camelToKebab(String(prop))}`) ?? undefined;
+      },
+      set: (_target, prop: string, val) => {
+        this.setAttribute(`data-${camelToKebab(String(prop))}`, String(val ?? ""));
+        return true;
+      },
+      deleteProperty: (_target, prop: string) => {
+        this.removeAttribute(`data-${camelToKebab(String(prop))}`);
+        return true;
+      },
+    }) as Record<string, string>;
+  }
+
+  get id(): string {
+    return this._attrs.get("id") ?? "";
+  }
+  set id(v: string) {
+    this.setAttribute("id", v);
+  }
+
+  get className(): string {
+    return this._attrs.get("class") ?? "";
+  }
+  set className(v: string) {
+    this.setAttribute("class", v);
+  }
+
+  get title(): string {
+    return this._attrs.get("title") ?? "";
+  }
+  set title(v: string) {
+    this.setAttribute("title", v);
+  }
+
+  get offsetWidth(): number {
+    return 440;
+  }
+
+  getAttribute(name: string): string | null {
+    return this._attrs.get(name.toLowerCase()) ?? null;
+  }
+
+  setAttribute(name: string, val: string): void {
+    const key = name.toLowerCase();
+    const sVal = String(val);
+    this._attrs.set(key, sVal);
+    if (key === "style") {
+      for (const decl of sVal.split(";")) {
+        const colon = decl.indexOf(":");
+        if (colon > 0) {
+          const prop = kebabToCamel(decl.slice(0, colon).trim());
+          const pval = decl.slice(colon + 1).trim();
+          this.style[prop] = pval;
+        }
+      }
+    }
+  }
+
+  hasAttribute(name: string): boolean {
+    return this._attrs.has(name.toLowerCase());
+  }
+
+  removeAttribute(name: string): void {
+    this._attrs.delete(name.toLowerCase());
+  }
+
+  getBoundingClientRect(): {
+    left: number;
+    top: number;
+    right: number;
+    bottom: number;
+    width: number;
+    height: number;
+    x: number;
+    y: number;
+  } {
+    return { left: 0, top: 0, right: 440, bottom: 440, width: 440, height: 440, x: 0, y: 0 };
+  }
+
+  matches(sel: string): boolean {
+    return matchesSelector(this, sel);
+  }
+
+  closest(sel: string): ShimElement | null {
+    let cur: ShimNode | null = this;
+    while (cur) {
+      if (cur instanceof ShimElement && cur.matches(sel)) return cur;
+      cur = cur.parentNode;
+    }
+    return null;
+  }
+
+  querySelectorAll<T extends ShimElement = ShimElement>(sel: string): T[] {
+    const found: T[] = [];
+    const walk = (node: ShimNode) => {
+      for (const child of node.childNodes) {
+        if (child instanceof ShimElement) {
+          if (child.matches(sel)) found.push(child as T);
+          walk(child);
+        }
+      }
+    };
+    walk(this);
+    return found;
+  }
+
+  querySelector<T extends ShimElement = ShimElement>(sel: string): T | null {
+    return this.querySelectorAll<T>(sel)[0] ?? null;
+  }
+
+  focus(): void {
+    const prev = this.ownerDocument.activeElement;
+    if (prev === this) return;
+    if (prev instanceof ShimElement) {
+      prev.dispatchEvent(new ShimFocusEvent("focusout", { bubbles: true, relatedTarget: this }));
+    }
+    this.ownerDocument.activeElement = this;
+    this.dispatchEvent(new ShimFocusEvent("focus", { bubbles: false, relatedTarget: prev }));
+    this.dispatchEvent(new ShimFocusEvent("focusin", { bubbles: true, relatedTarget: prev }));
+  }
+
+  blur(): void {
+    if (this.ownerDocument.activeElement === this) {
+      this.ownerDocument.activeElement = this.ownerDocument.body;
+      this.dispatchEvent(new ShimFocusEvent("blur", { bubbles: false }));
+    }
+  }
+
+  click(): void {
+    if ((this as any).disabled || this.hasAttribute("disabled")) return;
+    this.dispatchEvent(new ShimMouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+  }
+
+  get innerHTML(): string {
+    return "";
+  }
+
+  set innerHTML(html: string) {
+    for (const c of this.childNodes) c.parentNode = null;
+    this.childNodes = [];
+    parseHtmlInto(this, String(html ?? ""), this.namespaceURI, this.ownerDocument);
+  }
+}
+
+class ShimHTMLElement extends ShimElement {
+  get disabled(): boolean {
+    return this.hasAttribute("disabled");
+  }
+  set disabled(v: boolean) {
+    if (v) this.setAttribute("disabled", "");
+    else this.removeAttribute("disabled");
+  }
+}
+
+class ShimHTMLButtonElement extends ShimHTMLElement {}
+
+class ShimHTMLInputElement extends ShimHTMLElement {
+  private _valueOverride: string | null = null;
+  private _checkedOverride: boolean | null = null;
+  files: File[] = [];
+
+  get type(): string {
+    return (this.getAttribute("type") ?? "text").toLowerCase();
+  }
+  set type(v: string) {
+    this.setAttribute("type", v);
+  }
+
+  get value(): string {
+    return this._valueOverride ?? this.getAttribute("value") ?? "";
+  }
+  set value(v: string) {
+    this._valueOverride = String(v ?? "");
+    this.setAttribute("value", this._valueOverride);
+  }
+
+  get checked(): boolean {
+    if (this._checkedOverride !== null) return this._checkedOverride;
+    return this.hasAttribute("checked");
+  }
+  set checked(v: boolean) {
+    this._checkedOverride = Boolean(v);
+    if (this._checkedOverride) this.setAttribute("checked", "");
+    else this.removeAttribute("checked");
+  }
+
+  override click(): void {
+    if (this.disabled) return;
+    if (this.type === "checkbox") {
+      this.checked = !this.checked;
+      this.dispatchEvent(new ShimMouseEvent("click", { bubbles: true, cancelable: true }));
+      this.dispatchEvent(new ShimEvent("change", { bubbles: true }));
+      return;
+    }
+    super.click();
+  }
+}
+
+class ShimHTMLSelectElement extends ShimHTMLElement {
+  private _valueOverride: string | null = null;
+  get value(): string {
+    if (this._valueOverride !== null) return this._valueOverride;
+    const opts = this.querySelectorAll("option");
+    const selected = opts.find((o) => o.hasAttribute("selected")) ?? opts[0];
+    return selected?.getAttribute("value") ?? selected?.textContent ?? "";
+  }
+  set value(v: string) {
+    this._valueOverride = String(v ?? "");
+  }
+}
+
+class ShimHTMLTextAreaElement extends ShimHTMLElement {
+  private _valueOverride: string | null = null;
+  get value(): string {
+    return this._valueOverride ?? this.textContent;
+  }
+  set value(v: string) {
+    this._valueOverride = String(v ?? "");
+    this.textContent = this._valueOverride;
+  }
+  select(): void {}
+}
+
+class ShimSVGElement extends ShimElement {}
+class ShimSVGGElement extends ShimSVGElement {}
+class ShimSVGSVGElement extends ShimSVGElement {}
+class ShimSVGPathElement extends ShimSVGElement {}
+class ShimSVGLineElement extends ShimSVGElement {}
+class ShimSVGCircleElement extends ShimSVGElement {}
+
+class ShimDocument extends ShimNode {
+  documentElement: ShimHTMLElement;
+  body: ShimHTMLElement;
+  activeElement: ShimElement | null = null;
+  defaultView: any = null;
+
+  constructor() {
+    super(9, undefined as unknown as ShimDocument);
+    this.ownerDocument = this;
+    this.documentElement = new ShimHTMLElement("html", "http://www.w3.org/1999/xhtml", this);
+    this.body = new ShimHTMLElement("body", "http://www.w3.org/1999/xhtml", this);
+    this.documentElement.parentNode = this;
+    this.documentElement.appendChild(this.body);
+    this.childNodes = [this.documentElement];
+    this.activeElement = this.body;
+  }
+
+  createElement(tag: string): ShimElement {
+    const lower = tag.toLowerCase();
+    const ns = "http://www.w3.org/1999/xhtml";
+    if (lower === "button") return new ShimHTMLButtonElement(lower, ns, this);
+    if (lower === "input") return new ShimHTMLInputElement(lower, ns, this);
+    if (lower === "select") return new ShimHTMLSelectElement(lower, ns, this);
+    if (lower === "textarea") return new ShimHTMLTextAreaElement(lower, ns, this);
+    return new ShimHTMLElement(lower, ns, this);
+  }
+
+  createElementNS(ns: string, tag: string): ShimElement {
+    const lower = tag.toLowerCase();
+    if (ns === "http://www.w3.org/2000/svg") {
+      if (lower === "svg") return new ShimSVGSVGElement(lower, ns, this);
+      if (lower === "g") return new ShimSVGGElement(lower, ns, this);
+      if (lower === "path") return new ShimSVGPathElement(lower, ns, this);
+      if (lower === "line") return new ShimSVGLineElement(lower, ns, this);
+      if (lower === "circle") return new ShimSVGCircleElement(lower, ns, this);
+      return new ShimSVGElement(lower, ns, this);
+    }
+    return this.createElement(tag);
+  }
+
+  querySelector<T extends ShimElement = ShimElement>(sel: string): T | null {
+    return this.documentElement.querySelector<T>(sel);
+  }
+
+  querySelectorAll<T extends ShimElement = ShimElement>(sel: string): T[] {
+    return this.documentElement.querySelectorAll<T>(sel);
+  }
+
+  execCommand(commandId: string): boolean {
+    return commandId.toLowerCase() === "copy";
+  }
+}
+
+function parseAttributes(raw: string): Array<[string, string]> {
+  const attrs: Array<[string, string]> = [];
+  let i = 0;
+  const len = raw.length;
+  while (i < len) {
+    while (i < len && /\s/.test(raw[i])) i++;
+    if (i >= len || raw[i] === "/") break;
+    const nameStart = i;
+    while (i < len && !/[\s=/>]/.test(raw[i])) i++;
+    const name = raw.slice(nameStart, i).toLowerCase();
+    if (!name) break;
+    while (i < len && /\s/.test(raw[i])) i++;
+    if (i < len && raw[i] === "=") {
+      i++;
+      while (i < len && /\s/.test(raw[i])) i++;
+      if (i < len && (raw[i] === '"' || raw[i] === "'")) {
+        const q = raw[i++];
+        const valStart = i;
+        while (i < len && raw[i] !== q) i++;
+        attrs.push([name, decodeEntities(raw.slice(valStart, i))]);
+        if (i < len && raw[i] === q) i++;
+      } else {
+        const valStart = i;
+        while (i < len && !/[\s>]/.test(raw[i])) i++;
+        attrs.push([name, decodeEntities(raw.slice(valStart, i))]);
+      }
+    } else {
+      attrs.push([name, ""]);
+    }
+  }
+  return attrs;
+}
+
+function parseHtmlInto(
+  root: ShimElement,
+  html: string,
+  rootNs: string,
+  doc: ShimDocument,
+): void {
+  const stack: Array<{ el: ShimElement; ns: string }> = [{ el: root, ns: rootNs }];
+  let i = 0;
+  const len = html.length;
+  while (i < len) {
+    const lt = html.indexOf("<", i);
+    if (lt < 0) {
+      const txt = decodeEntities(html.slice(i));
+      if (txt) stack[stack.length - 1].el.appendChild(new ShimText(txt, doc));
+      break;
+    }
+    if (lt > i) {
+      const txt = decodeEntities(html.slice(i, lt));
+      if (txt) stack[stack.length - 1].el.appendChild(new ShimText(txt, doc));
+    }
+    if (html.startsWith("<!--", lt)) {
+      const end = html.indexOf("-->", lt + 4);
+      i = end < 0 ? len : end + 3;
+      continue;
+    }
+    // Find closing '>' respecting quotes
+    let gt = lt + 1;
+    let quote: string | null = null;
+    while (gt < len) {
+      const c = html[gt];
+      if (quote) {
+        if (c === quote) quote = null;
+      } else if (c === '"' || c === "'") {
+        quote = c;
+      } else if (c === ">") {
+        break;
+      }
+      gt++;
+    }
+    if (gt >= len) break;
+    const rawTag = html.slice(lt + 1, gt).trim();
+    i = gt + 1;
+
+    if (!rawTag || rawTag.startsWith("!") || rawTag.startsWith("?")) continue;
+    if (rawTag.startsWith("/")) {
+      const closeName = rawTag.slice(1).trim().toLowerCase();
+      for (let k = stack.length - 1; k >= 1; k--) {
+        if (stack[k].el.tagName.toLowerCase() === closeName) {
+          stack.length = k;
+          break;
+        }
+      }
+      continue;
+    }
+
+    const selfClosing = rawTag.endsWith("/");
+    const cleanTag = selfClosing ? rawTag.slice(0, -1).trim() : rawTag;
+    const spIdx = cleanTag.search(/\s/);
+    const tagName = (spIdx < 0 ? cleanTag : cleanTag.slice(0, spIdx)).toLowerCase();
+    const attrStr = spIdx < 0 ? "" : cleanTag.slice(spIdx + 1);
+
+    const parentEntry = stack[stack.length - 1];
+    let childNs = parentEntry.ns;
+    if (tagName === "svg") {
+      childNs = "http://www.w3.org/2000/svg";
+    } else if (parentEntry.el.tagName.toLowerCase() === "foreignobject") {
+      childNs = "http://www.w3.org/1999/xhtml";
+    }
+
+    const el =
+      childNs === "http://www.w3.org/2000/svg"
+        ? doc.createElementNS(childNs, tagName)
+        : doc.createElement(tagName);
+    for (const [k, v] of parseAttributes(attrStr)) {
+      el.setAttribute(k, v);
+    }
+    parentEntry.el.appendChild(el);
+
+    if (!selfClosing && !VOID_HTML_TAGS.has(tagName)) {
+      stack.push({ el, ns: childNs });
+    }
+  }
+}
+
+class ShimStorage {
+  private map = new Map<string, string>();
+  get length(): number {
+    return this.map.size;
+  }
+  getItem(k: string): string | null {
+    return this.map.get(String(k)) ?? null;
+  }
+  setItem(k: string, v: string): void {
+    this.map.set(String(k), String(v));
+  }
+  removeItem(k: string): void {
+    this.map.delete(String(k));
+  }
+  clear(): void {
+    this.map.clear();
+  }
+}
+
+const GLOBAL_KEYS = [
+  "window",
+  "document",
+  "Node",
+  "Element",
+  "HTMLElement",
+  "HTMLButtonElement",
+  "HTMLInputElement",
+  "HTMLSelectElement",
+  "HTMLTextAreaElement",
+  "SVGElement",
+  "SVGGElement",
+  "SVGSVGElement",
+  "SVGPathElement",
+  "SVGLineElement",
+  "SVGCircleElement",
+  "Event",
+  "MouseEvent",
+  "PointerEvent",
+  "KeyboardEvent",
+  "FocusEvent",
+  "DragEvent",
+  "localStorage",
+  "isTauri",
+  "requestAnimationFrame",
+  "cancelAnimationFrame",
+] as const;
+
+let savedGlobalDescriptors: Record<string, PropertyDescriptor | undefined> = {};
+
+function installDomShim(): { document: ShimDocument; window: any; root: HTMLElement } {
+  savedGlobalDescriptors = {};
+  for (const key of GLOBAL_KEYS) {
+    savedGlobalDescriptors[key] = Object.getOwnPropertyDescriptor(globalThis, key);
+  }
+
+  const doc = new ShimDocument();
+  const root = doc.createElement("div");
+  root.id = "app";
+  doc.body.appendChild(root as unknown as ShimNode);
+
+  const winTarget = new ShimEventTarget();
+  const win: any = {
+    document: doc,
+    devicePixelRatio: 2,
+    location: { hash: "" },
+    setTimeout: globalThis.setTimeout.bind(globalThis),
+    clearTimeout: globalThis.clearTimeout.bind(globalThis),
+    setInterval: globalThis.setInterval.bind(globalThis),
+    clearInterval: globalThis.clearInterval.bind(globalThis),
+    requestAnimationFrame: (cb: (t: number) => void) =>
+      globalThis.setTimeout(() => cb(Date.now()), 0),
+    cancelAnimationFrame: (id: number) => globalThis.clearTimeout(id),
+    addEventListener: winTarget.addEventListener.bind(winTarget),
+    removeEventListener: winTarget.removeEventListener.bind(winTarget),
+    dispatchEvent: winTarget.dispatchEvent.bind(winTarget),
+    _firePhase: winTarget._firePhase.bind(winTarget),
+  };
+  doc.defaultView = win;
+
+  const assignments: Record<string, unknown> = {
+    window: win,
+    document: doc,
+    Node: ShimNode,
+    Element: ShimElement,
+    HTMLElement: ShimHTMLElement,
+    HTMLButtonElement: ShimHTMLButtonElement,
+    HTMLInputElement: ShimHTMLInputElement,
+    HTMLSelectElement: ShimHTMLSelectElement,
+    HTMLTextAreaElement: ShimHTMLTextAreaElement,
+    SVGElement: ShimSVGElement,
+    SVGGElement: ShimSVGGElement,
+    SVGSVGElement: ShimSVGSVGElement,
+    SVGPathElement: ShimSVGPathElement,
+    SVGLineElement: ShimSVGLineElement,
+    SVGCircleElement: ShimSVGCircleElement,
+    Event: ShimEvent,
+    MouseEvent: ShimMouseEvent,
+    PointerEvent: ShimPointerEvent,
+    KeyboardEvent: ShimKeyboardEvent,
+    FocusEvent: ShimFocusEvent,
+    DragEvent: ShimDragEvent,
+    localStorage: new ShimStorage(),
+    requestAnimationFrame: win.requestAnimationFrame,
+    cancelAnimationFrame: win.cancelAnimationFrame,
+  };
+
+  for (const [k, v] of Object.entries(assignments)) {
+    Object.defineProperty(globalThis, k, {
+      value: v,
+      writable: true,
+      configurable: true,
+    });
+  }
+
+  return {
+    document: doc,
+    window: win,
+    root: root as unknown as HTMLElement,
+  };
+}
+
+function restoreDomShim(): void {
+  for (const key of GLOBAL_KEYS) {
+    const desc = savedGlobalDescriptors[key];
+    if (desc) {
+      Object.defineProperty(globalThis, key, desc);
+    } else {
+      delete (globalThis as Record<string, unknown>)[key];
+    }
+  }
+  savedGlobalDescriptors = {};
+}
+
+// =========================================================================
+// Tauri Runtime IPC & Event Test Harness
+// =========================================================================
+
+function sampleNewFileKinds(): NewFileKindInfo[] {
+  return [
+    { id: "folder", name: "Folder", extension: null, category: "system", page: 1, available: true, disabledReason: null },
+    { id: "txt", name: "Plain Text", extension: "txt", category: "document", page: 1, available: true, disabledReason: null },
+    { id: "md", name: "Markdown", extension: "md", category: "document", page: 1, available: true, disabledReason: null },
+    { id: "rtf", name: "Rich Text", extension: "rtf", category: "document", page: 1, available: true, disabledReason: null },
+    { id: "docx", name: "Word Document", extension: "docx", category: "office", page: 1, available: true, disabledReason: null },
+    { id: "json", name: "JSON File", extension: "json", category: "data", page: 1, available: true, disabledReason: null },
+    { id: "csv", name: "CSV Table", extension: "csv", category: "data", page: 1, available: true, disabledReason: null },
+    { id: "html", name: "HTML Page", extension: "html", category: "document", page: 1, available: true, disabledReason: null },
+    { id: "clipboard", name: "From Clipboard", extension: null, category: "system", page: 2, available: true, disabledReason: null },
+  ];
+}
+
+interface TauriHarness {
+  calls: Array<{ cmd: string; args: Record<string, any> }>;
+  prefs: AppPreferences;
+  wheelState: WheelStatePayload;
+  emitEvent: (event: string, payload: unknown) => void;
+  setCommandOverride: (
+    cmd: string,
+    fn: (args: Record<string, any>) => unknown | Promise<unknown>,
+  ) => void;
+}
+
+function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): TauriHarness {
+  let nextCallbackId = 1;
+  let nextListenerId = 1;
+  const callbacks = new Map<number, (payload: unknown) => void>();
+  const eventListeners = new Map<string, Map<number, number>>();
+  const overrides = new Map<string, (args: Record<string, any>) => unknown | Promise<unknown>>();
+  const calls: Array<{ cmd: string; args: Record<string, any> }> = [];
+
+  let prefs: AppPreferences = {
+    ...defaultPreferences(),
+    ...initialPrefs,
+  };
+
+  let wheelState: WheelStatePayload = {
+    mode: "convert",
+    isDrag: false,
+    files: ["/tmp/spec.pdf"],
+    compatibleFormats: [
+      "PNG",
+      "JPG",
+      "WEBP",
+      "HEIC",
+      "TIFF",
+      "OPTIMIZE_PDF",
+      "TXT",
+      "DOCX",
+      "MD",
+      "HTML",
+      "RTF",
+      "ODT",
+      "EPUB",
+      "FB2",
+      "RST",
+      "ZIP",
+    ],
+    batchActions: [],
+    availabilityMessage: "",
+    family: "pdf",
+    targetFolder: "/tmp",
+    originX: 220,
+    originY: 220,
+  };
+
+  let permissions: PermissionsStatus = {
+    accessibility: false,
+    automationFinder: "not_determined",
+    inputMonitoring: false,
+  };
+
+  const defaultEngines: EngineStatus = {
+    ffmpeg: "/opt/homebrew/bin/ffmpeg",
+    ffprobe: "/opt/homebrew/bin/ffprobe",
+    pandoc: null,
+    bridge: "/Applications/FLIP.app/Contents/Resources/flip-macos-bridge",
+    pages: false,
+    numbers: false,
+    keynote: false,
+    nativeFrameworks: {
+      imageIO: true,
+      pdfKit: true,
+      visionOcr: true,
+      avFoundation: true,
+    },
+  };
+
+  const defaultQuickActions: QuickActionsStatus = {
+    servicesDir: "/Users/demo/Library/Services",
+    convertInstalled: true,
+    newFileInstalled: true,
+    convertPath: "/Users/demo/Library/Services/Convert with FLIP.workflow",
+    newFilePath: "/Users/demo/Library/Services/New File with FLIP.workflow",
+    cliExecutable: "/Applications/FLIP.app/Contents/MacOS/flip",
+    cliSymlinkPath: "/Users/demo/.local/bin/flip",
+  };
+
+  const kindsRes: NewFileKindsResponse = {
+    kinds: sampleNewFileKinds(),
+    templates: [],
+    clipboard: { available: false, kind: "none", extension: "txt" },
+  };
+
+  const emitEvent = (event: string, payload: unknown) => {
+    const map = eventListeners.get(event);
+    if (!map) return;
+    for (const [id, cbId] of map.entries()) {
+      callbacks.get(cbId)?.({ event, id, payload });
+    }
+  };
+
+  Object.defineProperty(globalThis, "isTauri", {
+    value: true,
+    writable: true,
+    configurable: true,
+  });
+
+  win.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+    unregisterListener(event: string, eventId: number) {
+      eventListeners.get(event)?.delete(eventId);
+    },
+  };
+
+  win.__TAURI_INTERNALS__ = {
+    transformCallback(cb: (payload: unknown) => void) {
+      const id = nextCallbackId++;
+      callbacks.set(id, cb);
+      return id;
+    },
+    async invoke(cmd: string, args: Record<string, any> = {}) {
+      if (cmd === "plugin:event|listen") {
+        const id = nextListenerId++;
+        const event = String(args.event ?? "");
+        const handlerId = Number(args.handler);
+        let map = eventListeners.get(event);
+        if (!map) {
+          map = new Map();
+          eventListeners.set(event, map);
+        }
+        map.set(id, handlerId);
+        return id;
+      }
+      if (cmd === "plugin:event|unlisten") {
+        const event = String(args.event ?? "");
+        const eventId = Number(args.eventId);
+        eventListeners.get(event)?.delete(eventId);
+        return null;
+      }
+      if (cmd === "plugin:event|emit") {
+        emitEvent(String(args.event ?? ""), args.payload);
+        return null;
+      }
+
+      calls.push({ cmd, args });
+      const override = overrides.get(cmd);
+      if (override) {
+        return override(args);
+      }
+
+      switch (cmd) {
+        case "get_preferences":
+          return prefs;
+        case "save_preferences":
+          prefs = { ...defaultPreferences(), ...args.prefs };
+          emitEvent("prefs:changed", prefs);
+          return prefs;
+        case "get_wheel_state":
+          return wheelState;
+        case "get_new_file_kinds":
+          return kindsRes;
+        case "get_engine_status":
+          return defaultEngines;
+        case "get_permissions_status":
+          return permissions;
+        case "get_quick_actions_status":
+          return defaultQuickActions;
+        case "get_recent_conversions":
+          return prefs.recentConversions;
+        case "get_thumbnail":
+          return { ok: false, pngBase64: null, width: null, height: null, error: null };
+        case "inspect_files": {
+          const paths = (args.paths as string[]) ?? [];
+          const hasImg = paths.some((p) => /\.(png|jpe?g|webp|heic)$/i.test(p));
+          const hasPdf = paths.every((p) => /\.pdf$/i.test(p));
+          const res: InspectFilesResult = hasImg
+            ? {
+                files: paths,
+                compatibleFormats: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG"],
+                batchActions: paths.length >= 2 ? ["COMBINE_PDF", "ZIP"] : ["ZIP"],
+                availabilityMessage: "",
+                family: "image",
+              }
+            : hasPdf
+              ? {
+                  files: paths,
+                  compatibleFormats: [
+                    "PNG",
+                    "JPG",
+                    "WEBP",
+                    "HEIC",
+                    "TIFF",
+                    "OPTIMIZE_PDF",
+                    "TXT",
+                    "DOCX",
+                    "MD",
+                    "HTML",
+                    "RTF",
+                    "ODT",
+                    "EPUB",
+                    "FB2",
+                    "RST",
+                  ],
+                  batchActions: paths.length >= 2 ? ["MERGE_PDF", "ZIP"] : ["ZIP"],
+                  availabilityMessage: "",
+                  family: "pdf",
+                }
+              : {
+                  files: paths,
+                  compatibleFormats: ["PDF", "DOCX", "MD", "HTML", "TXT", "EPUB", "FB2", "RST"],
+                  batchActions: paths.length >= 2 ? ["ZIP"] : [],
+                  availabilityMessage: "",
+                  family: "document",
+                };
+          return res;
+        }
+        case "switch_wheel_mode":
+          wheelState = { ...wheelState, mode: args.mode };
+          return wheelState;
+        case "dismiss_wheel":
+        case "open_window":
+        case "open_batch_with_files":
+        case "play_wheel_feedback":
+        case "cancel_conversion":
+        case "reveal_in_finder":
+        case "reveal_logs":
+          return null;
+        case "request_permission":
+          if (args.kind === "accessibility_prompt") {
+            permissions = { ...permissions, accessibility: true };
+          } else if (args.kind === "open_automation") {
+            permissions = { ...permissions, automationFinder: "granted" };
+          }
+          return permissions;
+        case "execute_conversion": {
+          const paths = (args.paths as string[]) ?? [];
+          const formats = (args.formats as string[]) ?? [];
+          const results = paths.flatMap((src) =>
+            formats.map((fmt) => ({
+              source: src,
+              format: fmt,
+              outputs: [`${src}.${fmt.toLowerCase()}`],
+              error: null,
+            })),
+          );
+          const payload: ConversionCompletePayload = {
+            success: true,
+            results,
+            error: null,
+          };
+          return payload;
+        }
+        case "execute_create_new":
+          return {
+            path: `/tmp/untitled.${args.kind || "txt"}`,
+            kindId: args.kind,
+            revealed: true,
+            renameTriggered: false,
+            fallbackUsed: false,
+          };
+        case "get_diagnostics_report":
+          return "# FLIP Diagnostics Report\nSimulated Error Trace";
+        case "copy_diagnostics_to_clipboard":
+          return {
+            ok: true,
+            method: "pbcopy",
+            error: null,
+            bytes: 128,
+            report: "FLIP Diagnostics Report",
+          };
+        case "install_finder_quick_actions":
+          return defaultQuickActions;
+        case "check_for_updates": {
+          const update: UpdateCheckResult = {
+            currentVersion: "0.1.0",
+            latestTag: "v0.1.0",
+            releaseName: "v0.1.0",
+            htmlUrl: "https://github.com/example/flip",
+            publishedAt: null,
+            body: "",
+            updateAvailable: false,
+            checkedAtUtc: "2026-11-18T00:00:00Z",
+          };
+          return update;
+        }
+        default:
+          return null;
+      }
+    },
+  };
+
+  return {
+    calls,
+    get prefs() {
+      return prefs;
+    },
+    get wheelState() {
+      return wheelState;
+    },
+    emitEvent,
+    setCommandOverride(cmd, fn) {
+      overrides.set(cmd, fn);
+    },
+  };
+}
+
+async function flushMicrotasks(turns = 3): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    await Promise.resolve();
+    await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
+  }
+}
+
+// =========================================================================
+// E2E Test Suites for All 4 Views
+// =========================================================================
+
+async function withDomEnv(
+  run: (ctx: { doc: ShimDocument; win: any; root: HTMLElement; cleanups: Array<() => void> }) => Promise<void>,
+): Promise<void> {
+  const { document: doc, window: win, root } = installDomShim();
+  const cleanups: Array<() => void> = [];
+  try {
+    await run({ doc, win, root, cleanups });
+  } finally {
+    try {
+      for (const fn of cleanups.splice(0).reverse()) {
+        try {
+          fn();
+        } catch {
+          // ensure restoreDomShim always runs
+        }
+      }
+    } finally {
+      restoreDomShim();
+    }
+  }
+}
+
+describe("DOM E2E Suite for All 4 FLIP Views", () => {
+  // -----------------------------------------------------------------------
+  // 1. WheelView E2E
+  // -----------------------------------------------------------------------
+  test("WheelView: renders Convert & New File sectors, supports click + keyboard nav + More/Back focus restoration + VoiceOver announcer", async () => {
+    await withDomEnv(async ({ doc, win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    // 16 PDF formats paginate into 3 pages (7 + 6 + 3 items); slot 7 on page 0 is "More ▸"
+    const sectorsP1 = Array.from(root.querySelectorAll(".wheel-sector-group"));
+    expect(sectorsP1.length).toBe(8);
+    expect(root.querySelector("#wheel-page-dots")?.textContent).toContain("1/3");
+    const announcer = root.querySelector("#wheel-live-announcer")!;
+    expect(announcer.textContent).toContain("16");
+
+    // Keyboard navigation: ArrowRight selects slot 0 and updates VoiceOver announcer, ArrowLeft wraps backward
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight" }));
+    await flushMicrotasks();
+    expect(root.querySelectorAll(".wheel-sector-group")[0].classList.contains("is-active")).toBe(true);
+    expect(announcer.textContent.length).toBeGreaterThan(0);
+
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft" }));
+    await flushMicrotasks();
+    expect(root.querySelectorAll(".wheel-sector-group")[7].classList.contains("is-active")).toBe(true);
+
+    // Click More ▸ (without sector focus) -> flips to 2/3 and announces Page 2 of 3
+    const moreGroup = sectorsP1[7] as unknown as ShimElement;
+    expect(moreGroup.textContent).toContain(t("en", "wheel.moreSlot"));
+    moreGroup.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await flushMicrotasks();
+    expect(root.querySelector("#wheel-page-dots")?.textContent).toContain("2/3");
+    expect(announcer.textContent).toContain("Page 2 of 3");
+
+    // Click Back ◂ -> returns to 1/3 and announces Page 1 of 3
+    const backNoFocus = Array.from(root.querySelectorAll(".wheel-sector-group")).find((el) =>
+      el.textContent.includes(t("en", "wheel.backSlot")),
+    ) as unknown as ShimElement;
+    expect(Boolean(backNoFocus)).toBe(true);
+    backNoFocus.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await flushMicrotasks();
+    expect(root.querySelector("#wheel-page-dots")?.textContent).toContain("1/3");
+    expect(announcer.textContent).toContain("Page 1 of 3");
+
+    // Focus More ▸ sector inside sectorsLayer, click it -> restores focus to an actionable sector on page 2/3
+    const moreFocused = Array.from(root.querySelectorAll(".wheel-sector-group")).find((el) =>
+      el.textContent.includes(t("en", "wheel.moreSlot")),
+    ) as unknown as ShimElement;
+    moreFocused.focus();
+    moreFocused.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await flushMicrotasks();
+
+    expect(root.querySelector("#wheel-page-dots")?.textContent).toContain("2/3");
+    const activeAfterMore = doc.activeElement;
+    expect(activeAfterMore).not.toBeNull();
+    expect(
+      root.querySelector("#wheel-sectors-layer")!.contains(activeAfterMore as unknown as Node),
+    ).toBe(true);
+    expect(announcer.textContent.length).toBeGreaterThan(0);
+
+    // Click Back ◂ while focused -> returns to page 1/3 and retains focus inside sectorsLayer
+    const backGroup = Array.from(root.querySelectorAll(".wheel-sector-group")).find((el) =>
+      el.textContent.includes(t("en", "wheel.backSlot")),
+    ) as unknown as ShimElement;
+    expect(Boolean(backGroup)).toBe(true);
+    backGroup.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await flushMicrotasks();
+    expect(root.querySelector("#wheel-page-dots")?.textContent).toContain("1/3");
+    expect(
+      root.querySelector("#wheel-sectors-layer")!.contains(doc.activeElement as unknown as Node),
+    ).toBe(true);
+
+    // Tab switches between Convert and New File mode; New File renders built-in creation kinds
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    await flushMicrotasks();
+    expect(harness.calls.some((c) => c.cmd === "switch_wheel_mode" && c.args.mode === "new")).toBe(true);
+    const newSectors = Array.from(root.querySelectorAll(".wheel-sector-group"));
+    expect(newSectors.length).toBeGreaterThan(0);
+    expect(newSectors[0].textContent).toContain("Folder");
+
+    // Tab back to Convert, trigger key "1" to run conversion on slot 0
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    await flushMicrotasks();
+    expect(harness.calls.some((c) => c.cmd === "switch_wheel_mode" && c.args.mode === "convert")).toBe(true);
+
+    let resolveConv!: (v: ConversionCompletePayload) => void;
+    harness.setCommandOverride(
+      "execute_conversion",
+      () => new Promise<ConversionCompletePayload>((resolve) => { resolveConv = resolve; }),
+    );
+
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "1" }));
+    await flushMicrotasks();
+    expect(root.querySelector<HTMLElement>("#wheel-progress-layer")?.style.display).toBe("block");
+
+    // Progress event updates VoiceOver milestone announcer
+    harness.emitEvent("conversion:progress", { percent: 55, label: "55%" });
+    await flushMicrotasks();
+    expect(announcer.textContent).toContain("50%");
+
+    // Complete successfully -> renders checkmark SVG + completion subtitle
+    resolveConv({
+      success: true,
+      results: [{ source: "/tmp/spec.pdf", format: "PNG", outputs: ["/tmp/spec.png"], error: null }],
+      error: null,
+    });
+    await flushMicrotasks();
+    expect(root.querySelector(".wheel-check-svg")).not.toBeNull();
+    expect(root.querySelector(".wheel-hub-subtitle.is-success")?.textContent).toContain(
+      t("en", "wheel.completed"),
+    );
+
+    // Escape dismisses wheel (triggers closing animation then dismiss_wheel)
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    await flushMicrotasks();
+    expect(root.querySelector("#wheel-shell")?.classList.contains("is-closing")).toBe(true);
+    await new Promise<void>((r) => globalThis.setTimeout(r, 130));
+    await flushMicrotasks();
+    expect(harness.calls.some((c) => c.cmd === "dismiss_wheel" && c.args.reason === "escape-key")).toBe(
+      true,
+    );
+    });
+  });
+
+  test("WheelView: conversion failure renders Error Hub with Copy Diagnostics and Batch Details actions", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    harness.setCommandOverride("execute_conversion", async () => ({
+      success: false,
+      results: [
+        {
+          source: "/tmp/spec.pdf",
+          format: "DOCX",
+          outputs: [],
+          error: "Simulated bridge conversion error",
+        },
+      ],
+      error: "Simulated bridge conversion error",
+    }));
+
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    // Activate slot 0 via SVG click
+    const firstSector = root.querySelector(".wheel-sector-group[data-slot-index=\"0\"]") as unknown as ShimElement;
+    firstSector.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+    await flushMicrotasks();
+
+    expect(root.querySelector("#wheel-hub-pct")).toBeNull();
+    expect(root.querySelector(".wheel-hub-subtitle.is-error")?.textContent).toContain(
+      "Simulated bridge conversion error",
+    );
+
+    // Copy Diagnostics button fetches diagnostics report and copies cleanly
+    const copyDiagBtn = root.querySelector<HTMLButtonElement>("#hub-copy-diag")!;
+    expect(copyDiagBtn).not.toBeNull();
+    copyDiagBtn.click();
+    await flushMicrotasks();
+    expect(harness.calls.some((c) => c.cmd === "get_diagnostics_report")).toBe(true);
+    expect(root.querySelector("#hub-copy-diag")?.textContent).toContain(t("en", "common.copied"));
+
+    // Batch Details button opens batch window with files + results and dismisses wheel
+    const batchDetailsBtn = root.querySelector<HTMLButtonElement>("#hub-batch-details")!;
+    expect(batchDetailsBtn).not.toBeNull();
+    batchDetailsBtn.click();
+    await flushMicrotasks();
+    expect(harness.calls.some((c) => c.cmd === "open_window" && c.args.label === "batch")).toBe(true);
+    expect(root.querySelector("#wheel-shell")?.classList.contains("is-closing")).toBe(true);
+    await new Promise<void>((r) => globalThis.setTimeout(r, 130));
+    await flushMicrotasks();
+    expect(
+      harness.calls.some((c) => c.cmd === "dismiss_wheel" && c.args.reason === "open-batch-details"),
+    ).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 2. SettingsView E2E
+  // -----------------------------------------------------------------------
+  test("SettingsView: switches all 6 tabs, toggles EN/IT live, records shortcuts & Escape cancel, reorders formats with focus retention, and serializes feedback after saveQueue", async () => {
+    await withDomEnv(async ({ doc, win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountSettingsView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    // Verify all 6 tabs switch cleanly
+    const allTabs = ["general", "shortcuts", "formats", "newfile", "engines", "about"] as const;
+    for (const tab of allTabs) {
+      const btn = root.querySelector<HTMLButtonElement>(`.nav-item[data-tab="${tab}"]`)!;
+      expect(btn).not.toBeNull();
+      btn.click();
+      await flushMicrotasks();
+      expect(btn.classList.contains("is-active")).toBe(true);
+      expect(root.querySelector("#settings-main")?.textContent.length).toBeGreaterThan(20);
+    }
+
+    // Back to General tab -> live EN <-> IT language switch
+    root.querySelector<HTMLButtonElement>('.nav-item[data-tab="general"]')!.click();
+    await flushMicrotasks();
+    expect(root.querySelector('[data-nav-label="general"]')?.textContent).toBe(t("en", "nav.general"));
+
+    const langSelect = root.querySelector<HTMLSelectElement>("#pref-language")!;
+    langSelect.value = "it";
+    langSelect.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushMicrotasks();
+    expect(harness.prefs.language).toBe("it");
+    expect(root.querySelector('[data-nav-label="general"]')?.textContent).toBe(t("it", "nav.general"));
+
+    // Switch back to English for predictable assertions
+    const langSelectIt = root.querySelector<HTMLSelectElement>("#pref-language")!;
+    langSelectIt.value = "en";
+    langSelectIt.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushMicrotasks();
+    expect(harness.prefs.language).toBe("en");
+
+    // Verify #btn-test-wheel-feedback strictly waits for in-flight save_preferences (saveQueue)
+    let releaseSave!: (saved: AppPreferences) => void;
+    const opOrder: string[] = [];
+    harness.setCommandOverride("save_preferences", () => {
+      opOrder.push("save:start");
+      return new Promise<AppPreferences>((resolve) => {
+        releaseSave = (saved) => {
+          opOrder.push("save:end");
+          resolve(saved);
+        };
+      });
+    });
+    harness.setCommandOverride("play_wheel_feedback", () => {
+      opOrder.push("feedback:play");
+      return null;
+    });
+
+    const soundChk = root.querySelector<HTMLInputElement>("#pref-soundEnabled")!;
+    soundChk.click();
+    await flushMicrotasks();
+    expect(opOrder).toEqual(["save:start"]);
+
+    const testFeedbackBtn = root.querySelector<HTMLButtonElement>("#btn-test-wheel-feedback")!;
+    testFeedbackBtn.click();
+    await flushMicrotasks();
+    // playWheelFeedback MUST NOT have fired while save_preferences is still pending
+    expect(opOrder).toEqual(["save:start"]);
+
+    releaseSave({ ...harness.prefs, soundEnabled: !harness.prefs.soundEnabled });
+    await flushMicrotasks();
+    expect(opOrder).toEqual(["save:start", "save:end", "feedback:play"]);
+
+    // Restore normal save_preferences behavior for next steps
+    harness.setCommandOverride("save_preferences", (args) => ({
+      ...defaultPreferences(),
+      ...args.prefs,
+    }));
+
+    // Shortcuts tab: record Option+Shift+S then test Escape cancel on drag recorder
+    root.querySelector<HTMLButtonElement>('.nav-item[data-tab="shortcuts"]')!.click();
+    await flushMicrotasks();
+
+    root.querySelector<HTMLButtonElement>("#btn-record-idle")!.click();
+    await flushMicrotasks();
+    win.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "s",
+        code: "KeyS",
+        altKey: true,
+        shiftKey: true,
+      }),
+    );
+    await flushMicrotasks();
+    expect(
+      harness.calls.some(
+        (c) => c.cmd === "save_preferences" && c.args.prefs?.idleShortcut === "Option+Shift+S",
+      ),
+    ).toBe(true);
+    expect(root.querySelector("#settings-main")?.textContent).toContain("Option+Shift+S");
+
+    // Start recording drag trigger, then press Escape -> cancels without saving
+    const saveCountBeforeEsc = harness.calls.filter((c) => c.cmd === "save_preferences").length;
+    root.querySelector<HTMLButtonElement>("#btn-record-drag")!.click();
+    await flushMicrotasks();
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape" }));
+    await flushMicrotasks();
+    const saveCountAfterEsc = harness.calls.filter((c) => c.cmd === "save_preferences").length;
+    expect(saveCountAfterEsc).toBe(saveCountBeforeEsc);
+    expect(root.querySelector("#settings-main")?.textContent).toContain(
+      t("en", "settings.shortcuts.recCancelled"),
+    );
+
+    // Formats tab: reorder preferred formats (▶, ◀, Reset) and check focus retention
+    root.querySelector<HTMLButtonElement>('.nav-item[data-tab="formats"]')!.click();
+    await flushMicrotasks();
+
+    const firstOrderBefore = [...harness.prefs.preferredFormats.image];
+    const moveRightBtn = root.querySelector<HTMLButtonElement>('[data-move-fmt="0"][data-dir="1"]')!;
+    moveRightBtn.click();
+    await flushMicrotasks();
+
+    const latestOrderAfterMove =
+      harness.calls
+        .filter((c) => c.cmd === "save_preferences")
+        .pop()?.args.prefs.preferredFormats.image ?? [];
+    expect(latestOrderAfterMove[0]).toBe(firstOrderBefore[1]);
+    expect(latestOrderAfterMove[1]).toBe(firstOrderBefore[0]);
+    expect(doc.activeElement?.getAttribute("data-move-fmt")).toBe("1");
+    expect(doc.activeElement?.getAttribute("data-dir")).toBe("1");
+
+    // Move back left (◀) from index 1 -> index 0
+    const moveLeftBtn = root.querySelector<HTMLButtonElement>('[data-move-fmt="1"][data-dir="-1"]')!;
+    moveLeftBtn.click();
+    await flushMicrotasks();
+    const orderAfterMoveBack =
+      harness.calls
+        .filter((c) => c.cmd === "save_preferences")
+        .pop()?.args.prefs.preferredFormats.image ?? [];
+    expect(orderAfterMoveBack[0]).toBe(firstOrderBefore[0]);
+
+    // Reset button restores defaults and retains focus on #btn-reset-family-order
+    const resetBtn = root.querySelector<HTMLButtonElement>("#btn-reset-family-order")!;
+    resetBtn.click();
+    await flushMicrotasks();
+    expect(doc.activeElement?.id).toBe("btn-reset-family-order");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 3. BatchView E2E
+  // -----------------------------------------------------------------------
+  test("BatchView: loads files, Select All / Clear, chooses formats + batch actions (ZIP, REMOVE_BG, OPTIMIZE_PDF, COMBINE_PDF), converts & renders result rows", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountBatchView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    // Load two image files via #batch-path-input + #batch-add-path
+    const pathInput = root.querySelector<HTMLInputElement>("#batch-path-input")!;
+    const addBtn = root.querySelector<HTMLButtonElement>("#batch-add-path")!;
+
+    // Note mount initially loaded /tmp/spec.pdf via getWheelState fallback -> clear it first
+    root.querySelector<HTMLButtonElement>("#batch-clear-files")!.click();
+    await flushMicrotasks();
+
+    pathInput.value = "/tmp/hero.png";
+    addBtn.click();
+    await flushMicrotasks();
+    pathInput.value = "/tmp/card.jpg";
+    addBtn.click();
+    await flushMicrotasks();
+
+    // Verify Select All checks all compatible formats, and Clear unchecks everything and disables Run
+    root.querySelector<HTMLButtonElement>("#batch-select-all")!.click();
+    await flushMicrotasks();
+    const allCompatChks = Array.from(
+      root.querySelectorAll<HTMLInputElement>("#batch-format-grid [data-format-chk]"),
+    );
+    expect(allCompatChks.length).toBeGreaterThan(0);
+    expect(allCompatChks.every((c) => c.checked)).toBe(true);
+
+    root.querySelector<HTMLButtonElement>("#batch-select-none")!.click();
+    await flushMicrotasks();
+    expect(root.querySelector<HTMLButtonElement>("#batch-run-btn")!.disabled).toBe(true);
+
+    // Check REMOVE_BG, COMBINE_PDF, and ZIP checkboxes and run conversion
+    for (const fmt of ["REMOVE_BG", "COMBINE_PDF", "ZIP"]) {
+      const chk = root.querySelector<HTMLInputElement>(`[data-format-chk="${fmt}"]`);
+      expect(chk).not.toBeNull();
+      chk!.click();
+    }
+    await flushMicrotasks();
+
+    const runBtn = root.querySelector<HTMLButtonElement>("#batch-run-btn")!;
+    expect(runBtn.disabled).toBe(false);
+    runBtn.click();
+    await flushMicrotasks();
+
+    const execCall = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+    expect(Boolean(execCall)).toBe(true);
+    expect(execCall!.args.formats).toContain("REMOVE_BG");
+    expect(execCall!.args.formats).toContain("COMBINE_PDF");
+    expect(execCall!.args.formats).toContain("ZIP");
+    expect(root.querySelector<HTMLElement>("#batch-results-card")?.style.display).toBe("block");
+    expect(root.querySelectorAll(".batch-result-row").length).toBeGreaterThan(0);
+
+    // Also clear and test PDF file -> OPTIMIZE_PDF + ZIP batch conversion
+    root.querySelector<HTMLButtonElement>("#batch-clear-files")!.click();
+    await flushMicrotasks();
+    const pdfInput = root.querySelector<HTMLInputElement>("#batch-path-input")!;
+    pdfInput.value = "/tmp/manual.pdf";
+    root.querySelector<HTMLButtonElement>("#batch-add-path")!.click();
+    await flushMicrotasks();
+
+    root.querySelector<HTMLButtonElement>("#batch-select-none")!.click();
+    await flushMicrotasks();
+    const optChk = root.querySelector<HTMLInputElement>('[data-format-chk="OPTIMIZE_PDF"]')!;
+    const zipChk = root.querySelector<HTMLInputElement>('[data-format-chk="ZIP"]')!;
+    optChk.click();
+    zipChk.click();
+    await flushMicrotasks();
+
+    root.querySelector<HTMLButtonElement>("#batch-run-btn")!.click();
+    await flushMicrotasks();
+    const pdfExecCall = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+    expect(pdfExecCall!.args.formats).toContain("OPTIMIZE_PDF");
+    expect(pdfExecCall!.args.formats).toContain("ZIP");
+    expect(root.querySelectorAll(".batch-result-row").length).toBe(2);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 4. OnboardingView E2E
+  // -----------------------------------------------------------------------
+  test("OnboardingView: steps 1 -> 2 -> 3, fires permission requests, and sets completion key on finish", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountOnboardingView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    // Step 0 (step 1 of 3)
+    expect(root.querySelectorAll(".step-pip").length).toBe(3);
+    expect(root.querySelectorAll(".step-pip")[0].classList.contains("is-active")).toBe(true);
+    expect(root.querySelector("#ob-back")).toBeNull();
+
+    // Next -> Step 1 (Shortcut/Idle wheel intro) -> Back -> Next -> Next -> Step 2 (Permissions + Finish)
+    root.querySelector<HTMLButtonElement>("#ob-next")!.click();
+    await flushMicrotasks();
+    expect(root.querySelectorAll(".step-pip")[1].classList.contains("is-active")).toBe(true);
+
+    root.querySelector<HTMLButtonElement>("#ob-back")!.click();
+    await flushMicrotasks();
+    expect(root.querySelectorAll(".step-pip")[0].classList.contains("is-active")).toBe(true);
+    expect(root.querySelector("#ob-back")).toBeNull();
+
+    root.querySelector<HTMLButtonElement>("#ob-next")!.click();
+    await flushMicrotasks();
+    root.querySelector<HTMLButtonElement>("#ob-next")!.click();
+    await flushMicrotasks();
+    expect(root.querySelectorAll(".step-pip")[2].classList.contains("is-active")).toBe(true);
+
+    // Step 2: Trigger permission buttons (#ob-grant-ax, #ob-open-ax, #ob-open-auto)
+    const grantAx = root.querySelector<HTMLButtonElement>("#ob-grant-ax");
+    const openAx = root.querySelector<HTMLButtonElement>("#ob-open-ax");
+    const openAuto = root.querySelector<HTMLButtonElement>("#ob-open-auto");
+    expect(grantAx).not.toBeNull();
+    expect(openAx).not.toBeNull();
+    expect(openAuto).not.toBeNull();
+
+    grantAx!.click();
+    await flushMicrotasks();
+    openAx!.click();
+    await flushMicrotasks();
+    openAuto!.click();
+    await flushMicrotasks();
+
+    const permKinds = harness.calls
+      .filter((c) => c.cmd === "request_permission")
+      .map((c) => c.args.kind);
+    expect(permKinds).toEqual(["accessibility_prompt", "open_accessibility", "open_automation"]);
+
+    // Finish -> sets localStorage key and opens settings window
+    const finishBtn = root.querySelector<HTMLButtonElement>("#ob-finish")!;
+    expect(finishBtn).not.toBeNull();
+    finishBtn.click();
+    await flushMicrotasks();
+
+    expect(localStorage.getItem(ONBOARDING_COMPLETED_KEY)).toBe("true");
+    expect(harness.calls.some((c) => c.cmd === "open_window" && c.args.label === "settings")).toBe(true);
+    });
+  });
+});

@@ -874,3 +874,53 @@ fn unix_socket_ipc_roundtrips_permissions_and_stale_recovery() {
         );
     }
 }
+
+#[test]
+fn cli_preview_binary_generates_valid_svg_and_sectors() {
+    let dir = tempfile::tempdir().unwrap();
+    let svg_path = dir.path().join("nested").join("wheel-preview.svg");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_flip"))
+        .args([
+            "preview",
+            "--out",
+            svg_path.to_str().unwrap(),
+            "--files",
+            "cover.png,back.jpg",
+            "--mode",
+            "convert",
+            "--hover",
+            "1",
+        ])
+        .env("HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "flip preview exited non-zero: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let stdout_json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(stdout_json["success"], serde_json::json!(true));
+    assert_eq!(stdout_json["command"], serde_json::json!("preview"));
+    assert_eq!(stdout_json["mode"], serde_json::json!("convert"));
+
+    let svg = std::fs::read_to_string(&svg_path).unwrap();
+    assert!(svg.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+    assert!(svg.contains("id=\"wheel-sectors-layer\""));
+    assert!(svg.contains("data-slot-index=\"1\" data-active=\"true\""));
+    assert!(svg.contains("2 files"));
+    assert!(svg.contains("WEBP") && svg.contains("PDF"));
+
+    let mut reader = quick_xml::Reader::from_str(&svg);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(quick_xml::events::Event::Eof) => break,
+            Ok(_) => {}
+            Err(e) => panic!("CLI preview SVG is invalid XML: {e}\n{svg}"),
+        }
+        buf.clear();
+    }
+}
