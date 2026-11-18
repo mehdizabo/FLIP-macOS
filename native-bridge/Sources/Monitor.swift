@@ -31,6 +31,14 @@ final class FeedbackPlayer {
                 AudioServicesPlaySystemSound(1104)
             }
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+        case "sound":
+            if let s = tickSound {
+                s.stop()
+                s.currentTime = 0
+                s.play()
+            } else {
+                AudioServicesPlaySystemSound(1104)
+            }
         case "alignment":
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         case "level":

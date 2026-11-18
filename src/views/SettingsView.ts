@@ -549,13 +549,13 @@ export function mountSettingsView(root: HTMLElement): () => void {
           </div>
           <button type="button" class="btn btn-sm" id="btn-reset-family-order" aria-label="${escapeHtml(t(l, "settings.formats.resetOrderAria"))}">${escapeHtml(t(l, "settings.formats.resetOrder"))}</button>
         </div>
-        <div class="preset-row" style="margin-bottom:10px" role="tablist" aria-label="Format family">
+        <div class="preset-row" style="margin-bottom:10px" role="tablist" aria-label="${escapeHtml(t(l, "settings.formats.familyTablistAria"))}">
           ${FAMILY_LABELS.map(
             (f) =>
               `<button type="button" role="tab" aria-selected="${selectedFamily === f.key ? "true" : "false"}" class="btn btn-sm ${selectedFamily === f.key ? "btn-primary" : ""}" data-family-tab="${f.key}">${escapeHtml(t(l, f.labelKey))}</button>`,
           ).join("")}
         </div>
-        <div class="format-chips" role="list" aria-label="${escapeHtml(selectedFamily)}">
+        <div class="format-chips" role="list" aria-label="${escapeHtml(t(l, FAMILY_LABELS.find((f) => f.key === selectedFamily)?.labelKey ?? "settings.formats.familyImage"))}">
           ${familyFormats
             .map(
               (fmt, idx) => `
@@ -669,6 +669,16 @@ export function mountSettingsView(root: HTMLElement): () => void {
     const axOk = permissions?.accessibility ?? false;
     const autoState = permissions?.automationFinder ?? "unknown";
     const autoOk = autoState === "granted";
+    const autoLabel =
+      autoState === "granted"
+        ? t(l, "settings.engines.granted")
+        : autoState === "not_determined"
+          ? t(l, "settings.engines.notDetermined")
+          : autoState === "denied"
+            ? t(l, "settings.engines.denied")
+            : autoState === "unknown"
+              ? t(l, "settings.engines.unknown")
+              : autoState;
     const qaConvert = quickActions?.convertInstalled ?? false;
     const qaNew = quickActions?.newFileInstalled ?? false;
     const qaAllInstalled = qaConvert && qaNew;
@@ -714,7 +724,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
           </div>
           <div style="display:flex;align-items:center;gap:8px">
             <span class="status-pill ${autoOk ? "is-ok" : "is-warn"}">
-              <span class="status-dot"></span>${escapeHtml(autoState)}
+              <span class="status-dot"></span>${escapeHtml(autoLabel)}
             </span>
             <button type="button" class="btn btn-sm" id="btn-open-automation">${escapeHtml(t(l, "settings.engines.openSystemSettings"))}</button>
           </div>

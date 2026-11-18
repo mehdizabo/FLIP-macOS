@@ -34,6 +34,16 @@ export function mountOnboardingView(root: HTMLElement): () => void {
     const idleCombo = prefs?.idleShortcut ?? "Option+Shift+Space";
     const axGranted = perms.accessibility;
     const autoGranted = perms.automationFinder === "granted";
+    const autoLabel =
+      perms.automationFinder === "granted"
+        ? t(l, "settings.engines.granted")
+        : perms.automationFinder === "not_determined"
+          ? t(l, "settings.engines.notDetermined")
+          : perms.automationFinder === "denied"
+            ? t(l, "settings.engines.denied")
+            : perms.automationFinder === "unknown"
+              ? t(l, "settings.engines.unknown")
+              : perms.automationFinder;
 
     let contentHtml = "";
     if (step === 0) {
@@ -84,7 +94,7 @@ export function mountOnboardingView(root: HTMLElement): () => void {
                 <div class="setting-desc">${escapeHtml(t(l, "ob.autoDesc"))}</div>
               </div>
               <div style="display:flex;gap:8px;align-items:center">
-                <span class="status-pill ${autoGranted ? "is-ok" : "is-warn"}">${escapeHtml(perms.automationFinder)}</span>
+                <span class="status-pill ${autoGranted ? "is-ok" : "is-warn"}">${escapeHtml(autoLabel)}</span>
                 <button type="button" class="btn btn-sm" id="ob-open-auto">${escapeHtml(t(l, "ob.systemSettings"))}</button>
               </div>
             </div>

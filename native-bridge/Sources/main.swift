@@ -197,10 +197,12 @@ func runCLI() {
 
     case "feedback":
         guard args.count >= 2 else { failExit("feedback <kind> [wav-path]") }
+        let kind = args[1]
         let wav = args.count >= 3 ? args[2] : nil
         let player = FeedbackPlayer(wavPath: wav)
-        player.play(kind: args[1])
-        if wav != nil {
+        player.play(kind: kind)
+        let lowerKind = kind.lowercased()
+        if wav != nil || lowerKind == "tick" || lowerKind == "sound" {
             RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         }
         writeJSON(["ok": true])
