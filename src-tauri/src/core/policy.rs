@@ -81,7 +81,7 @@ impl EngineCapabilities {
 
 pub const IMAGE_EXTS: &[&str] = &[
     "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns",
-    "ico",
+    "ico", "svg",
 ];
 pub const DATA_EXTS: &[&str] = &["json", "yaml", "yml", "toml", "xml", "csv"];
 pub const AUDIO_NATIVE_EXTS: &[&str] = &[
@@ -152,7 +152,8 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
     match ext {
         e if IMAGE_EXTS.contains(&e) => {
             vec![
-                "PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP", "REMOVE_BG",
+                "PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP", "ICO", "ICNS", "TXT",
+                "REMOVE_BG",
             ]
         }
         e if DATA_EXTS.contains(&e) => {
@@ -303,6 +304,7 @@ pub fn batch_actions<P: AsRef<Path>>(paths: &[P]) -> Vec<String> {
     let mut actions = Vec::new();
     if exts.iter().all(|e| IMAGE_EXTS.contains(&e.as_str())) {
         actions.push("COMBINE_PDF".to_string());
+        actions.push("ANIMATE_GIF".to_string());
     } else if exts.iter().all(|e| e == "pdf") {
         actions.push("MERGE_PDF".to_string());
     }
@@ -365,6 +367,8 @@ pub fn order_formats(
             "TIFF",
             "GIF",
             "BMP",
+            "ICO",
+            "ICNS",
             "MP4",
             "MOV",
             "M4A",
@@ -670,16 +674,45 @@ mod tests {
         // Pure intersection: image + mp4 shares GIF on macOS
         assert_eq!(outputs(&["image.png", "video.mp4"], &caps), vec!["GIF".to_string()]);
 
-        // Supported image batch keeps intersection & exposes COMBINE_PDF + ZIP
+        // Supported image batch keeps intersection & exposes COMBINE_PDF + ANIMATE_GIF + ZIP
         let batch = outputs(&["image.png", "image.webp"], &caps);
         assert!(batch.contains(&"JPG".to_string()));
+        assert!(batch.contains(&"ICO".to_string()));
+        assert!(batch.contains(&"ICNS".to_string()));
+        assert!(batch.contains(&"TXT".to_string()));
         assert!(batch.contains(&"REMOVE_BG".to_string()));
         assert!(!batch.contains(&"PNG".to_string()));
         assert!(!batch.contains(&"WEBP".to_string()));
         assert!(!batch.contains(&"ZIP".to_string()));
         assert_eq!(
             batch_actions(&["a.png", "b.jpg"]),
-            vec!["COMBINE_PDF".to_string(), "ZIP".to_string()]
+            vec![
+                "COMBINE_PDF".to_string(),
+                "ANIMATE_GIF".to_string(),
+                "ZIP".to_string()
+            ]
+        );
+
+        // SVG input & ICO self-exclusion rules
+        assert_eq!(family_for_ext("svg"), Some(FormatFamily::Image));
+        let svg_out = outputs(&["logo.svg"], &caps);
+        assert!(!svg_out.contains(&"SVG".to_string()));
+        for target in [
+            "PNG", "JPG", "WEBP", "HEIC", "PDF", "BMP", "TIFF", "GIF", "ICO", "ICNS", "TXT",
+            "REMOVE_BG", "ZIP",
+        ] {
+            assert!(svg_out.contains(&target.to_string()), "SVG missing target {target}");
+        }
+        let ico_out = outputs(&["favicon.ico"], &caps);
+        assert!(!ico_out.contains(&"ICO".to_string()));
+        assert!(ico_out.contains(&"PNG".to_string()));
+        assert_eq!(
+            batch_actions(&["a.svg", "b.png"]),
+            vec![
+                "COMBINE_PDF".to_string(),
+                "ANIMATE_GIF".to_string(),
+                "ZIP".to_string()
+            ]
         );
 
         assert_eq!(availability_message(&["image.png"], &caps), "");

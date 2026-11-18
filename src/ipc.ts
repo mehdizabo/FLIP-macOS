@@ -105,7 +105,7 @@ export function defaultPreferences(): AppPreferences {
     ffmpegPath: null,
     pandocPath: null,
     preferredFormats: {
-      image: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP"],
+      image: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP", "ICO", "ICNS", "TXT"],
       pdf: [
         "PNG",
         "JPG",
@@ -257,7 +257,7 @@ let mockQuickActions: QuickActionsStatus = {
 
 let mockCancelRequested = false;
 
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns", "ico"]);
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns", "ico", "svg"]);
 const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "csv"]);
 export const AUDIO_NATIVE_EXTS = new Set(["wav", "aiff", "aif", "m4a", "aac", "alac", "caf", "flac", "mp3"]);
 const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf"]);
@@ -307,7 +307,7 @@ function mockTargetsForExt(
   const hasFfmpeg = caps.ffmpeg ?? true;
   if (IMAGE_EXTS.has(ext)) {
     return {
-      targets: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP"],
+      targets: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP", "ICO", "ICNS", "TXT"],
       family: "image",
     };
   }
@@ -428,7 +428,7 @@ export function inspectFilesLocally(
 
   const batchActions: string[] = [];
   if (paths.length >= 2) {
-    if (exts.every((e) => IMAGE_EXTS.has(e))) batchActions.push("COMBINE_PDF");
+    if (exts.every((e) => IMAGE_EXTS.has(e))) batchActions.push("COMBINE_PDF", "ANIMATE_GIF");
     else if (exts.every((e) => e === "pdf")) batchActions.push("MERGE_PDF");
     batchActions.push("ZIP");
   }
@@ -603,7 +603,10 @@ export async function executeConversion(
         return cancelled;
       }
       const label =
-        formats[0] === "COMBINE_PDF" || formats[0] === "MERGE_PDF" || formats[0] === "ZIP"
+        formats[0] === "COMBINE_PDF" ||
+        formats[0] === "ANIMATE_GIF" ||
+        formats[0] === "MERGE_PDF" ||
+        formats[0] === "ZIP"
           ? `${paths.length} files → ${formats[0]}`
           : `${basename(paths[0] ?? "file")} → ${formats[0] ?? ""}`;
       emitMockEvent<ConversionProgressPayload>("conversion:progress", {
@@ -616,11 +619,11 @@ export async function executeConversion(
     const results: ConversionResult[] = [];
     const prefs = loadMockPrefs();
     for (const fmt of formats) {
-      if (fmt === "COMBINE_PDF" || fmt === "MERGE_PDF" || fmt === "ZIP") {
+      if (fmt === "COMBINE_PDF" || fmt === "ANIMATE_GIF" || fmt === "MERGE_PDF" || fmt === "ZIP") {
         const first = paths[0] ?? "/Users/demo/Desktop/file";
         const stem = basename(first).replace(/\.[^.]+$/, "") || "archive";
-        const ext = fmt === "ZIP" ? "zip" : "pdf";
-        const targetFormat = fmt === "ZIP" ? "ZIP" : "PDF";
+        const ext = fmt === "ZIP" ? "zip" : fmt === "ANIMATE_GIF" ? "gif" : "pdf";
+        const targetFormat = fmt === "ZIP" ? "ZIP" : fmt === "ANIMATE_GIF" ? "GIF" : "PDF";
         const out = `${dirname(first)}/${stem}.${ext}`;
         results.push({ source: first, format: fmt, outputs: [out], error: null });
         prefs.recentConversions.unshift({

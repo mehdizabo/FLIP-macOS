@@ -75,6 +75,7 @@ export const EN_STRINGS = {
   "wheel.actionZip": "Zip Archive",
   "wheel.actionUnzip": "Unzip Folder",
   "wheel.actionCombinePdf": "Combine into PDF",
+  "wheel.actionAnimateGif": "Animate into GIF",
   "wheel.actionMergePdf": "Merge PDFs",
 
   // VoiceOver Live Announcements
@@ -477,6 +478,7 @@ export const IT_STRINGS: Record<TranslationKey, string> = {
   "wheel.actionZip": "Archivio ZIP",
   "wheel.actionUnzip": "Estrai Cartella",
   "wheel.actionCombinePdf": "Unisci in PDF",
+  "wheel.actionAnimateGif": "Anima in GIF",
   "wheel.actionMergePdf": "Unisci PDF",
 
   // VoiceOver Live Announcements

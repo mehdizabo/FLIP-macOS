@@ -8,7 +8,8 @@ use flip_lib::engines::create_new::{
 use flip_lib::engines::{
     bridge, convert_files, detect_tools, media, resolve_target_dir, validate_output, EngineError,
 };
-use image::{GenericImageView, ImageBuffer, ImageFormat, Rgba};
+use image::codecs::gif::GifDecoder;
+use image::{AnimationDecoder, GenericImageView, ImageBuffer, ImageFormat, Rgba};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -2650,4 +2651,181 @@ EOF
         }
         Err(other) => panic!("Unexpected error on cancel: {other:?}"),
     }
+}
+
+#[test]
+fn svg_input_rasterization_ico_output_and_animate_gif_batch() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // 1) SVG input rasterization across all image targets (PNG, JPG, WEBP, HEIC, PDF, BMP, TIFF, GIF, ICO, ICNS, TXT)
+    let svg_path = dir.path().join("badge.svg");
+    fs::write(
+        &svg_path,
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200" viewBox="0 0 400 200">
+  <rect x="16" y="16" width="368" height="168" rx="18" fill="#1d4ed8"/>
+  <text x="200" y="114" font-family="Helvetica, Arial, sans-serif" font-size="44" font-weight="bold" fill="#ffffff" text-anchor="middle">FLIP SVG</text>
+</svg>"##,
+    )
+    .unwrap();
+
+    let svg_targets: Vec<String> = [
+        "PNG", "JPG", "WEBP", "HEIC", "PDF", "BMP", "TIFF", "GIF", "ICO", "ICNS", "TXT",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+
+    let svg_res = convert_files(
+        std::slice::from_ref(&svg_path),
+        &svg_targets,
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    for item in &svg_res {
+        assert!(
+            item.error.is_none(),
+            "SVG -> {} failed: {:?}",
+            item.format,
+            item.error
+        );
+        assert_eq!(item.outputs.len(), 1);
+        let out_p = PathBuf::from(&item.outputs[0]);
+        assert!(
+            validate_output(&out_p, &item.format).is_ok(),
+            "validate_output failed for SVG -> {}",
+            item.format
+        );
+    }
+
+    let svg_png = PathBuf::from(&svg_res.iter().find(|r| r.format == "PNG").unwrap().outputs[0]);
+    let svg_png_img = image::open(&svg_png).unwrap();
+    assert_eq!(svg_png_img.dimensions(), (1024, 512));
+    // Transparent corner outside rx=18 rect
+    assert_eq!(svg_png_img.get_pixel(0, 0)[3], 0);
+
+    let svg_txt = PathBuf::from(&svg_res.iter().find(|r| r.format == "TXT").unwrap().outputs[0]);
+    let ocr_text = fs::read_to_string(&svg_txt).unwrap();
+    assert!(
+        ocr_text.to_ascii_uppercase().contains("FLIP")
+            || ocr_text.to_ascii_uppercase().contains("SVG"),
+        "SVG OCR missed text: {ocr_text}"
+    );
+
+    // Corrupt SVG must fail cleanly without leaving an output file
+    let bad_svg = dir.path().join("corrupt.svg");
+    fs::write(&bad_svg, "not an svg at all").unwrap();
+    let bad_svg_res = convert_files(
+        std::slice::from_ref(&bad_svg),
+        &["PNG".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(bad_svg_res[0].error.is_some());
+    assert!(!dir.path().join("corrupt.png").exists());
+
+    // 2) ICO output sizing, aspect-fit square RGBA padding, header magic, and .ico -> .png roundtrip
+    let wide_png = dir.path().join("wide.png");
+    let wide_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_pixel(512, 256, Rgba([240, 60, 40, 255]));
+    wide_buf.save_with_format(&wide_png, ImageFormat::Png).unwrap();
+
+    let small_png = dir.path().join("small.png");
+    let small_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_pixel(80, 60, Rgba([20, 180, 90, 255]));
+    small_buf.save_with_format(&small_png, ImageFormat::Png).unwrap();
+
+    let ico_wide_res = convert_files(
+        std::slice::from_ref(&wide_png),
+        &["ICO".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(ico_wide_res[0].error.is_none(), "{:?}", ico_wide_res[0].error);
+    let wide_ico = PathBuf::from(&ico_wide_res[0].outputs[0]);
+    let wide_hdr = fs::read(&wide_ico).unwrap();
+    assert_eq!(&wide_hdr[..4], &[0x00, 0x00, 0x01, 0x00]);
+    let wide_ico_img = image::open(&wide_ico).unwrap();
+    assert_eq!(wide_ico_img.dimensions(), (256, 256));
+    assert_eq!(wide_ico_img.get_pixel(0, 0)[3], 0, "top padding must be transparent");
+    assert_eq!(wide_ico_img.get_pixel(128, 128)[3], 255, "center pixel must be opaque");
+
+    // Roundtrip .ico -> .png
+    let ico_to_png = convert_files(
+        std::slice::from_ref(&wide_ico),
+        &["PNG".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(ico_to_png[0].error.is_none(), "{:?}", ico_to_png[0].error);
+    assert_eq!(
+        image::open(&ico_to_png[0].outputs[0]).unwrap().dimensions(),
+        (256, 256)
+    );
+
+    let ico_small_res = convert_files(
+        std::slice::from_ref(&small_png),
+        &["ICO".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(ico_small_res[0].error.is_none());
+    let small_ico_img = image::open(&ico_small_res[0].outputs[0]).unwrap();
+    assert_eq!(small_ico_img.dimensions(), (80, 80));
+    assert_eq!(small_ico_img.get_pixel(0, 0)[3], 0);
+    assert_eq!(small_ico_img.get_pixel(40, 40)[3], 255);
+
+    // 3) Multi-image ANIMATE_GIF batch action (mixed PNG + SVG + oversized 800x400)
+    let large_png = dir.path().join("frame_large.png");
+    let large_buf: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_pixel(800, 400, Rgba([10, 140, 220, 255]));
+    large_buf.save_with_format(&large_png, ImageFormat::Png).unwrap();
+
+    let anim_sources = vec![large_png.clone(), svg_path.clone(), small_png.clone()];
+    let anim_res = convert_files(&anim_sources, &["ANIMATE_GIF".into()], &prefs, &cancel, None).unwrap();
+    assert!(anim_res[0].error.is_none(), "{:?}", anim_res[0].error);
+    let anim_gif = PathBuf::from(&anim_res[0].outputs[0]);
+    assert_eq!(anim_gif.file_name().unwrap().to_str().unwrap(), "frame_large.gif");
+
+    let decoder = GifDecoder::new(std::io::BufReader::new(File::open(&anim_gif).unwrap())).unwrap();
+    let frames = decoder.into_frames().collect_frames().unwrap();
+    assert_eq!(frames.len(), 3);
+    for frame in &frames {
+        let (fw, fh) = frame.buffer().dimensions();
+        assert!(fw <= 640 && fh <= 640, "GIF frame exceeded 640px: {fw}x{fh}");
+        assert_eq!(frame.delay().numer_denom_ms(), (400, 1));
+    }
+
+    // Second run must create non-overwriting `frame_large 2.gif`
+    let anim_res2 = convert_files(&anim_sources, &["ANIMATE_GIF".into()], &prefs, &cancel, None).unwrap();
+    assert!(anim_res2[0].error.is_none());
+    let anim_gif2 = PathBuf::from(&anim_res2[0].outputs[0]);
+    assert_eq!(anim_gif2.file_name().unwrap().to_str().unwrap(), "frame_large 2.gif");
+
+    // Single image rejects ANIMATE_GIF cleanly
+    let single_anim = convert_files(
+        std::slice::from_ref(&small_png),
+        &["ANIMATE_GIF".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(single_anim[0].error.is_some());
+
+    // Pre-cancelled ANIMATE_GIF returns EngineError::Cancelled
+    let precancel = Arc::new(AtomicBool::new(true));
+    let cancel_res = convert_files(&anim_sources, &["ANIMATE_GIF".into()], &prefs, &precancel, None);
+    assert!(matches!(cancel_res, Err(EngineError::Cancelled)));
 }

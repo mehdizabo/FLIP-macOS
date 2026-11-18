@@ -1320,13 +1320,13 @@ function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): 
           return { ok: false, pngBase64: null, width: null, height: null, error: null };
         case "inspect_files": {
           const paths = (args.paths as string[]) ?? [];
-          const hasImg = paths.some((p) => /\.(png|jpe?g|webp|heic)$/i.test(p));
+          const hasImg = paths.some((p) => /\.(png|jpe?g|webp|heic|svg|ico)$/i.test(p));
           const hasPdf = paths.every((p) => /\.pdf$/i.test(p));
           const res: InspectFilesResult = hasImg
             ? {
                 files: paths,
-                compatibleFormats: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG"],
-                batchActions: paths.length >= 2 ? ["COMBINE_PDF", "ZIP"] : ["ZIP"],
+                compatibleFormats: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "ICO", "REMOVE_BG"],
+                batchActions: paths.length >= 2 ? ["COMBINE_PDF", "ANIMATE_GIF", "ZIP"] : ["ZIP"],
                 availabilityMessage: "",
                 family: "image",
               }
@@ -1600,6 +1600,37 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
       t("en", "wheel.completed"),
     );
 
+    // Multi-image WheelState exposes GIF+ (ANIMATE_GIF) alongside PDF+ and ICO, and updates live on EN -> IT switch
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/a.svg", "/tmp/b.png"],
+      isDrag: false,
+      compatibleFormats: ["PNG", "JPG", "WEBP", "ICO", "PDF"],
+      batchActions: ["COMBINE_PDF", "ANIMATE_GIF", "ZIP"],
+      availabilityMessage: "",
+      family: "image",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    const imgSectorsEn = Array.from(root.querySelectorAll(".wheel-sector-group"));
+    expect(imgSectorsEn.some((el) => el.textContent.includes("GIF+"))).toBe(true);
+    expect(
+      imgSectorsEn.some((el) =>
+        (el.getAttribute("aria-label") ?? "").includes(t("en", "wheel.actionAnimateGif")),
+      ),
+    ).toBe(true);
+
+    harness.emitEvent("prefs:changed", { ...harness.prefs, language: "it" });
+    await flushMicrotasks();
+    const imgSectorsIt = Array.from(root.querySelectorAll(".wheel-sector-group"));
+    expect(
+      imgSectorsIt.some((el) =>
+        (el.getAttribute("aria-label") ?? "").includes(t("it", "wheel.actionAnimateGif")),
+      ),
+    ).toBe(true);
+
     // Escape dismisses wheel (triggers closing animation then dismiss_wheel)
     win.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
     await flushMicrotasks();
@@ -1851,8 +1882,9 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     await flushMicrotasks();
     expect(root.querySelector<HTMLButtonElement>("#batch-run-btn")!.disabled).toBe(true);
 
-    // Check REMOVE_BG, COMBINE_PDF, and ZIP checkboxes and run conversion
-    for (const fmt of ["REMOVE_BG", "COMBINE_PDF", "ZIP"]) {
+    // Check REMOVE_BG, COMBINE_PDF, ANIMATE_GIF, ICO, and ZIP checkboxes and run conversion
+    expect(root.querySelector("#batch-actions-grid")?.textContent).toContain("Animate into GIF");
+    for (const fmt of ["ICO", "REMOVE_BG", "COMBINE_PDF", "ANIMATE_GIF", "ZIP"]) {
       const chk = root.querySelector<HTMLInputElement>(`[data-format-chk="${fmt}"]`);
       expect(chk).not.toBeNull();
       chk!.click();
@@ -1866,8 +1898,10 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
 
     const execCall = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
     expect(Boolean(execCall)).toBe(true);
+    expect(execCall!.args.formats).toContain("ICO");
     expect(execCall!.args.formats).toContain("REMOVE_BG");
     expect(execCall!.args.formats).toContain("COMBINE_PDF");
+    expect(execCall!.args.formats).toContain("ANIMATE_GIF");
     expect(execCall!.args.formats).toContain("ZIP");
     expect(root.querySelector<HTMLElement>("#batch-results-card")?.style.display).toBe("block");
     expect(root.querySelectorAll(".batch-result-row").length).toBeGreaterThan(0);

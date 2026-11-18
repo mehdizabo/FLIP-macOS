@@ -98,8 +98,12 @@ describe("Frontend IPC surface & contract alignment", () => {
 
       const ws = await openWheelMode("convert", ["/tmp/a.png", "/tmp/b.png"]);
       expect(ws.mode).toBe("convert");
-      expect(ws.batchActions).toEqual(["COMBINE_PDF", "ZIP"]);
+      expect(ws.batchActions).toEqual(["COMBINE_PDF", "ANIMATE_GIF", "ZIP"]);
       expect(wheelStates).toContain("convert");
+
+      const animConv = await executeConversion(["/tmp/a.png", "/tmp/b.png"], ["ANIMATE_GIF"]);
+      expect(animConv.success).toBe(true);
+      expect(animConv.results[0]?.outputs[0]).toBe("/tmp/a.gif");
 
       const switched = await switchWheelMode("new");
       expect(switched.mode).toBe("new");
@@ -356,5 +360,38 @@ describe("Frontend IPC surface & contract alignment", () => {
     const opusWithFf = inspectFilesLocally(["/tmp/podcast.opus"], { ffmpeg: true });
     expect(opusWithFf.compatibleFormats).toContain("CAF");
     expect(opusWithFf.compatibleFormats).toContain("MP3");
+  });
+
+  test("SVG input, ICO output, and ANIMATE_GIF image policy alignment", () => {
+    const svgRes = inspectFilesLocally(["/tmp/logo.svg"]);
+    expect(svgRes.family).toBe("image");
+    expect(svgRes.compatibleFormats).not.toContain("SVG");
+    for (const target of [
+      "PNG",
+      "JPG",
+      "WEBP",
+      "HEIC",
+      "PDF",
+      "BMP",
+      "TIFF",
+      "GIF",
+      "ICO",
+      "ICNS",
+      "TXT",
+      "REMOVE_BG",
+      "ZIP",
+    ]) {
+      expect(svgRes.compatibleFormats).toContain(target);
+    }
+
+    const icoRes = inspectFilesLocally(["/tmp/favicon.ico"]);
+    expect(icoRes.family).toBe("image");
+    expect(icoRes.compatibleFormats).not.toContain("ICO");
+    expect(icoRes.compatibleFormats).toContain("PNG");
+
+    const multiSvgPng = inspectFilesLocally(["/tmp/a.svg", "/tmp/b.png"]);
+    expect(multiSvgPng.batchActions).toEqual(["COMBINE_PDF", "ANIMATE_GIF", "ZIP"]);
+
+    expect(defaultPreferences().preferredFormats.image).toContain("ICO");
   });
 });

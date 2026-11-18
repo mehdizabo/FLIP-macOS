@@ -998,6 +998,7 @@ fn preview_format_short_label(fmt: &str) -> &str {
         "REMOVE_BG" => "No BG",
         "OPTIMIZE_PDF" => "Optimize",
         "COMBINE_PDF" => "Combine",
+        "ANIMATE_GIF" => "GIF+",
         "MERGE_PDF" => "Merge PDF",
         "UNZIP" => "Extract",
         other => other,

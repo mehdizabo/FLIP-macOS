@@ -47,6 +47,10 @@ export const UI_ICONS = {
     `<g ${STROKE_ATTRS}><rect x="7" y="4" width="12" height="15" rx="2"/><path d="M5 8v11a2 2 0 0 0 2 2h9"/><path d="M13 9v5"/><path d="M10.5 11.5h5"/></g>`,
     20,
   ),
+  animateGif: svg(
+    `<g ${STROKE_ATTRS}><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M7 5v14"/><path d="M17 5v14"/><path d="M10.5 9.5l4 2.5-4 2.5z"/></g>`,
+    20,
+  ),
   document: svg(
     `<g ${STROKE_ATTRS}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h6"/></g>`,
     20,
@@ -183,6 +187,13 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
         accent: "#ff6b4a",
         iconSvg: UI_ICONS.combinePdf,
       };
+    case "ANIMATE_GIF":
+      return {
+        shortLabel: "GIF+",
+        title: t(lang, "wheel.actionAnimateGif"),
+        accent: "#c084fc",
+        iconSvg: UI_ICONS.animateGif,
+      };
     case "MERGE_PDF":
       return {
         shortLabel: "MERGE",
@@ -198,6 +209,8 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
     case "TIFF":
     case "GIF":
     case "BMP":
+    case "ICO":
+    case "ICNS":
       return {
         shortLabel: key,
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),

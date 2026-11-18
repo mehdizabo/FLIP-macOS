@@ -265,10 +265,16 @@ describe("router and IPC policy/escaping helpers", () => {
   test("inspectFilesLocally enforces batch intersection, ZIP/UNZIP, REMOVE_BG, and OPTIMIZE_PDF", () => {
     const imgs = inspectFilesLocally(["/tmp/a.png", "/tmp/b.webp"]);
     expect(imgs.compatibleFormats).toContain("JPG");
+    expect(imgs.compatibleFormats).toContain("ICO");
     expect(imgs.compatibleFormats).toContain("REMOVE_BG");
     expect(imgs.compatibleFormats).not.toContain("PNG");
     expect(imgs.compatibleFormats).not.toContain("WEBP");
-    expect(imgs.batchActions).toEqual(["COMBINE_PDF", "ZIP"]);
+    expect(imgs.batchActions).toEqual(["COMBINE_PDF", "ANIMATE_GIF", "ZIP"]);
+
+    const svgImgs = inspectFilesLocally(["/tmp/a.svg", "/tmp/b.png"]);
+    expect(svgImgs.family).toBe("image");
+    expect(svgImgs.compatibleFormats).toContain("ICO");
+    expect(svgImgs.batchActions).toEqual(["COMBINE_PDF", "ANIMATE_GIF", "ZIP"]);
 
     const pdfs = inspectFilesLocally(["/tmp/a.pdf", "/tmp/b.pdf"]);
     expect(pdfs.compatibleFormats).toContain("OPTIMIZE_PDF");

@@ -252,6 +252,8 @@ export function mountBatchView(root: HTMLElement): () => void {
       switch (fmt) {
         case "COMBINE_PDF":
           return t(l, "wheel.actionCombinePdf");
+        case "ANIMATE_GIF":
+          return t(l, "wheel.actionAnimateGif");
         case "MERGE_PDF":
           return t(l, "wheel.actionMergePdf");
         case "ZIP":

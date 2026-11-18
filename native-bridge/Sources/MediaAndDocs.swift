@@ -170,19 +170,98 @@ enum MediaAndDocs {
         return accurateText
     }
 
-    static func ocrImageFile(path: String, outTxtPath: String?) throws -> [String: Any] {
+    private static func rasterizeSVGToCGImage(path: String) throws -> CGImage {
         let url = URL(fileURLWithPath: path)
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            throw BridgeError.operationFailed("Could not open image for OCR: \(path)")
+        if let nsImg = NSImage(contentsOfFile: path), !nsImg.representations.isEmpty {
+            let srcSize = nsImg.size
+            let rawW = srcSize.width > 0 ? srcSize.width : 1024.0
+            let rawH = srcSize.height > 0 ? srcSize.height : 1024.0
+            let maxSide = max(rawW, rawH)
+            let scale: CGFloat = maxSide < 1024.0 ? (1024.0 / maxSide) : 1.0
+            var outW = max(1, Int((rawW * scale).rounded()))
+            var outH = max(1, Int((rawH * scale).rounded()))
+            let (pixels, overflow) = Int64(outW).multipliedReportingOverflow(by: Int64(outH))
+            if overflow || pixels > maxImagePixels {
+                let downScale = sqrt(Double(maxImagePixels) / (Double(outW) * Double(outH))) * 0.99
+                outW = max(1, Int(floor(Double(outW) * downScale)))
+                outH = max(1, Int(floor(Double(outH) * downScale)))
+            }
+            if let cs = CGColorSpace(name: CGColorSpace.sRGB),
+               let ctx = CGContext(
+                data: nil,
+                width: outW,
+                height: outH,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: cs,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+               ) {
+                let nsCtx = NSGraphicsContext(cgContext: ctx, flipped: false)
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = nsCtx
+                nsImg.draw(
+                    in: NSRect(x: 0, y: 0, width: outW, height: outH),
+                    from: .zero,
+                    operation: .copy,
+                    fraction: 1.0
+                )
+                NSGraphicsContext.restoreGraphicsState()
+                if let cgImg = ctx.makeImage() {
+                    return cgImg
+                }
+            }
         }
-        let (rawOrientation, _) = try inspectImagePropertiesPreDecode(src, path: path)
-        guard let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-            throw BridgeError.operationFailed("Could not decode image for OCR: \(path)")
+
+        if url.pathExtension.lowercased() == "svg" {
+            let semaphore = DispatchSemaphore(value: 0)
+            var qlImage: CGImage?
+            let request = QLThumbnailGenerator.Request(
+                fileAt: url,
+                size: CGSize(width: 1024, height: 1024),
+                scale: 1.0,
+                representationTypes: .thumbnail
+            )
+            QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { rep, _ in
+                qlImage = rep?.cgImage
+                semaphore.signal()
+            }
+            _ = semaphore.wait(timeout: .now() + 3.0)
+            if let cgImg = qlImage {
+                let (pixels, overflow) = Int64(cgImg.width).multipliedReportingOverflow(by: Int64(cgImg.height))
+                if cgImg.width > 0 && cgImg.height > 0 && !overflow && pixels <= maxImagePixels {
+                    return cgImg
+                }
+            }
         }
-        let (pixels, overflow) = Int64(cgImg.width).multipliedReportingOverflow(by: Int64(cgImg.height))
-        if cgImg.width <= 0 || cgImg.height <= 0 || overflow || pixels > maxImagePixels {
-            throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size")
+
+        throw BridgeError.operationFailed("Could not decode image: \(path)")
+    }
+
+    private static func decodeCGImageAndProps(path: String) throws -> (image: CGImage, orientation: UInt32, props: [CFString: Any]?) {
+        let url = URL(fileURLWithPath: path)
+        if let src = CGImageSourceCreateWithURL(url as CFURL, nil) {
+            let (orientation, props) = try inspectImagePropertiesPreDecode(src, path: path)
+            if let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) {
+                let (pixels, overflow) = Int64(cgImg.width).multipliedReportingOverflow(by: Int64(cgImg.height))
+                if cgImg.width <= 0 || cgImg.height <= 0 || overflow || pixels > maxImagePixels {
+                    throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size")
+                }
+                return (cgImg, orientation, props)
+            }
         }
+        if url.pathExtension.lowercased() == "svg" {
+            let cgImg = try rasterizeSVGToCGImage(path: path)
+            return (cgImg, 1, nil)
+        }
+        throw BridgeError.operationFailed("Could not open or decode image: \(path)")
+    }
+
+    static func ocrImageFile(path: String, outTxtPath: String?) throws -> [String: Any] {
+        let (decodedImg, rawOrientation, _) = try decodeCGImageAndProps(path: path)
+        let isSvg = URL(fileURLWithPath: path).pathExtension.lowercased() == "svg"
+        let cgImg = isSvg
+            ? (normalizeOrientedImage(decodedImg, orientation: 1, flattenAlpha: true) ?? decodedImg)
+            : decodedImg
 
         let cgOrientation = CGImagePropertyOrientation(rawValue: rawOrientation) ?? .up
         let text = try recognizeText(cgImage: cgImg, orientation: cgOrientation)
@@ -338,15 +417,29 @@ enum MediaAndDocs {
         }
 
         // Pass 1: Pre-decode dimension & format validation across all inputs before decoding pixels
-        var preparedSources: [(src: CGImageSource, path: String, orientation: UInt32)] = []
+        enum PreparedPDFImage {
+            case cgSource(src: CGImageSource, path: String, orientation: UInt32)
+            case svgPath(path: String)
+        }
+        var preparedSources: [PreparedPDFImage] = []
         preparedSources.reserveCapacity(imagePaths.count)
         for path in imagePaths {
             let url = URL(fileURLWithPath: path)
-            guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-                throw BridgeError.operationFailed("Could not open image for PDF: \(path)")
+            if url.pathExtension.lowercased() == "svg" {
+                guard FileManager.default.isReadableFile(atPath: path),
+                      let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                      ((attrs[.size] as? NSNumber)?.int64Value ?? 0) > 0,
+                      NSImage(contentsOfFile: path) != nil else {
+                    throw BridgeError.operationFailed("Could not open SVG image for PDF: \(path)")
+                }
+                preparedSources.append(.svgPath(path: path))
+            } else {
+                guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+                    throw BridgeError.operationFailed("Could not open image for PDF: \(path)")
+                }
+                let (orientation, _) = try inspectImagePropertiesPreDecode(src, path: path)
+                preparedSources.append(.cgSource(src: src, path: path, orientation: orientation))
             }
-            let (orientation, _) = try inspectImagePropertiesPreDecode(src, path: path)
-            preparedSources.append((src: src, path: path, orientation: orientation))
         }
 
         // A4 595 x 842 pt with 30 pt margins aspect-fit (matching FLIP-windows ImagePdf)
@@ -366,18 +459,23 @@ enum MediaAndDocs {
         // Pass 2: Decode, orient, draw, and release one image at a time inside autoreleasepool
         for item in preparedSources {
             try autoreleasepool {
-                guard let rawImg = CGImageSourceCreateImageAtIndex(item.src, 0, nil) else {
-                    throw BridgeError.operationFailed("Could not decode image for PDF: \(item.path)")
-                }
-                let (pixels, overflow) = Int64(rawImg.width).multipliedReportingOverflow(by: Int64(rawImg.height))
-                if rawImg.width <= 0 || rawImg.height <= 0 || overflow || pixels > maxImagePixels {
-                    throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size: \(item.path)")
-                }
                 let cgImg: CGImage
-                if item.orientation != 1 {
-                    cgImg = normalizeOrientedImage(rawImg, orientation: item.orientation, flattenAlpha: false) ?? rawImg
-                } else {
-                    cgImg = rawImg
+                switch item {
+                case .cgSource(let src, let path, let orientation):
+                    guard let rawImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+                        throw BridgeError.operationFailed("Could not decode image for PDF: \(path)")
+                    }
+                    let (pixels, overflow) = Int64(rawImg.width).multipliedReportingOverflow(by: Int64(rawImg.height))
+                    if rawImg.width <= 0 || rawImg.height <= 0 || overflow || pixels > maxImagePixels {
+                        throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size: \(path)")
+                    }
+                    if orientation != 1 {
+                        cgImg = normalizeOrientedImage(rawImg, orientation: orientation, flattenAlpha: false) ?? rawImg
+                    } else {
+                        cgImg = rawImg
+                    }
+                case .svgPath(let path):
+                    cgImg = try rasterizeSVGToCGImage(path: path)
                 }
 
                 pdfCtx.beginPDFPage(nil)
@@ -1170,18 +1268,7 @@ enum MediaAndDocs {
         preserveExif: Bool = true,
         stripGps: Bool = false
     ) throws -> [String: Any] {
-        let inURL = URL(fileURLWithPath: inputPath)
-        guard let src = CGImageSourceCreateWithURL(inURL as CFURL, nil) else {
-            throw BridgeError.operationFailed("Could not open image: \(inputPath)")
-        }
-        let (orientation, srcProps) = try inspectImagePropertiesPreDecode(src, path: inputPath)
-        guard let rawImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-            throw BridgeError.operationFailed("Could not decode image: \(inputPath)")
-        }
-        let (pixels, overflow) = Int64(rawImage.width).multipliedReportingOverflow(by: Int64(rawImage.height))
-        if rawImage.width <= 0 || rawImage.height <= 0 || overflow || pixels > maxImagePixels {
-            throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit")
-        }
+        let (rawImage, orientation, srcProps) = try decodeCGImageAndProps(path: inputPath)
 
         let fmtUpper = format.uppercased()
         let utType: UTType
@@ -1208,7 +1295,7 @@ enum MediaAndDocs {
 
         if fmtUpper == "ICNS" {
             let maxDim = max(finalImage.width, finalImage.height)
-            let validSizes = [16, 32, 64, 128, 256, 512, 1024]
+            let validSizes = [16, 32, 64, 128, 256, 512]
             let targetSide = validSizes.first(where: { $0 >= maxDim }) ?? 512
             if finalImage.width != targetSide || finalImage.height != targetSide {
                 if let cs = CGColorSpace(name: CGColorSpace.sRGB),
@@ -1285,18 +1372,7 @@ enum MediaAndDocs {
             throw BridgeError.operationFailed("Refusing to overwrite existing output PNG: \(outputPath)")
         }
 
-        let inURL = URL(fileURLWithPath: inputPath)
-        guard let src = CGImageSourceCreateWithURL(inURL as CFURL, nil) else {
-            throw BridgeError.operationFailed("Could not open image: \(inputPath)")
-        }
-        let (orientation, _) = try inspectImagePropertiesPreDecode(src, path: inputPath)
-        guard let rawImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-            throw BridgeError.operationFailed("Could not decode image: \(inputPath)")
-        }
-        let (pixels, overflow) = Int64(rawImage.width).multipliedReportingOverflow(by: Int64(rawImage.height))
-        if rawImage.width <= 0 || rawImage.height <= 0 || overflow || pixels > maxImagePixels {
-            throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size")
-        }
+        let (rawImage, orientation, _) = try decodeCGImageAndProps(path: inputPath)
 
         let uprightImage: CGImage
         if orientation != 1 || rawImage.colorSpace?.model != .rgb {

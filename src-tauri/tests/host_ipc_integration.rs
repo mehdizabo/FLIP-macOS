@@ -458,8 +458,9 @@ fn host_inspect_paths_and_screen_clamp_integration() {
         &prefs,
     );
     assert_eq!(res.files.len(), 2);
-    assert_eq!(res.batch_actions, vec!["COMBINE_PDF", "ZIP"]);
+    assert_eq!(res.batch_actions, vec!["COMBINE_PDF", "ANIMATE_GIF", "ZIP"]);
     assert!(res.compatible_formats.contains(&"WEBP".to_string()));
+    assert!(res.compatible_formats.contains(&"ICO".to_string()));
     assert!(!res.compatible_formats.contains(&"PNG".to_string()));
     assert!(!res.compatible_formats.contains(&"JPG".to_string()));
     assert_eq!(res.family, Some(FormatFamily::Image));

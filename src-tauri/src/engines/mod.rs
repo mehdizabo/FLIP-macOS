@@ -254,6 +254,22 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
                 ));
             }
         }
+        "ICO" => {
+            let mut f = File::open(path)?;
+            let mut hdr = [0u8; 4];
+            if f.read(&mut hdr)? < 4 || hdr != [0x00, 0x00, 0x01, 0x00] {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Invalid ICO header".to_string(),
+                ));
+            }
+            if let Err(e) = ::image::open(path) {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    format!("ICO decode failed: {e}"),
+                ));
+            }
+        }
         "ICNS" => {
             let mut f = File::open(path)?;
             let mut hdr = [0u8; 4];
@@ -668,10 +684,10 @@ pub fn convert_files(
     let caps = tools.capabilities();
     let mut results = Vec::new();
 
-    // Handle batch-wide formats first (COMBINE_PDF / MERGE_PDF / ZIP)
+    // Handle batch-wide formats first (COMBINE_PDF / ANIMATE_GIF / MERGE_PDF / ZIP)
     let mut per_file_formats = Vec::new();
     for fmt in &distinct_formats {
-        if fmt == "COMBINE_PDF" || fmt == "MERGE_PDF" || fmt == "ZIP" {
+        if fmt == "COMBINE_PDF" || fmt == "ANIMATE_GIF" || fmt == "MERGE_PDF" || fmt == "ZIP" {
             if cancel.load(Ordering::Relaxed) {
                 return Err(EngineError::Cancelled);
             }
@@ -804,20 +820,36 @@ fn run_batch_merge(
     }
     let target_dir = resolve_target_dir(anchor, prefs)?;
     let staging = JobStaging::create(&target_dir)?;
-    let staged_pdf = staging.staged_path("combined.pdf");
 
-    if action == "COMBINE_PDF" {
-        image::combine_into_pdf(sources, &staged_pdf, staging.dir(), cancel)?;
-    } else {
-        bridge::convert_pdf_merge(&staged_pdf, sources, Some(cancel))?;
-    }
+    let (staged_out, target_format) = match action {
+        "COMBINE_PDF" => {
+            let staged_pdf = staging.staged_path("combined.pdf");
+            image::combine_into_pdf(sources, &staged_pdf, staging.dir(), cancel)?;
+            (staged_pdf, "PDF")
+        }
+        "ANIMATE_GIF" => {
+            let staged_gif = staging.staged_path("animated.gif");
+            image::animate_into_gif(sources, &staged_gif, staging.dir(), cancel)?;
+            (staged_gif, "GIF")
+        }
+        "MERGE_PDF" => {
+            let staged_pdf = staging.staged_path("merged.pdf");
+            bridge::convert_pdf_merge(&staged_pdf, sources, Some(cancel))?;
+            (staged_pdf, "PDF")
+        }
+        _ => {
+            return Err(EngineError::Unsupported(format!(
+                "Unsupported batch action `{action}`."
+            )));
+        }
+    };
 
     if cancel.load(Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
 
-    validate_output(&staged_pdf, "PDF")?;
-    let committed = staging.commit_all(&[staged_pdf], anchor, "PDF", false)?;
+    validate_output(&staged_out, target_format)?;
+    let committed = staging.commit_all(&[staged_out], anchor, target_format, false)?;
     staging.cleanup()?;
     Ok(committed)
 }
@@ -1036,5 +1068,20 @@ mod tests {
         let blank_rst = dir.path().join("blank.rst");
         fs::write(&blank_rst, "   \n\t\n").unwrap();
         assert!(validate_output(&blank_rst, "RST").is_err());
+
+        // ICO validation checks 00 00 01 00 magic header and decodability
+        let valid_ico = dir.path().join("valid.ico");
+        let img = ::image::DynamicImage::ImageRgba8(::image::ImageBuffer::from_pixel(
+            16,
+            16,
+            ::image::Rgba([255, 0, 0, 255]),
+        ));
+        img.save_with_format(&valid_ico, ::image::ImageFormat::Ico)
+            .unwrap();
+        assert!(validate_output(&valid_ico, "ICO").is_ok());
+
+        let bad_ico = dir.path().join("bad.ico");
+        fs::write(&bad_ico, b"PNG\x00not-an-ico").unwrap();
+        assert!(validate_output(&bad_ico, "ICO").is_err());
     }
 }

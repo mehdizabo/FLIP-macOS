@@ -112,5 +112,8 @@ describe("EN/IT i18n dictionary and formatter", () => {
         "1 file selected\nIncompatible formats: TXT, PNG\nNo common output format",
       ),
     ).toBe("1 file selected\nIncompatible formats: TXT, PNG\nNo common output format");
+
+    expect(t("en", "wheel.actionAnimateGif")).toBe("Animate into GIF");
+    expect(t("it", "wheel.actionAnimateGif")).toBe("Anima in GIF");
   });
 });
