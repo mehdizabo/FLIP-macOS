@@ -16,6 +16,7 @@ export type FormatFamily =
 
 export type FeedbackKind =
   | "tick"
+  | "sound"
   | "alignment"
   | "level"
   | "generic"

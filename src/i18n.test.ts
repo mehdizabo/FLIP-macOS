@@ -2,6 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
   EN_STRINGS,
   IT_STRINGS,
+  localizeAvailabilityMessage,
+  localizeClipboardKind,
+  localizeDisabledReason,
+  localizeKindCategory,
+  localizeNewKindName,
   normalizeLanguage,
   t,
   type TranslationKey,
@@ -72,5 +77,40 @@ describe("EN/IT i18n dictionary and formatter", () => {
     expect(t("it", "settings.general.testFeedbackBtn")).toBe(
       "Testa Suono e Aptica Ruota",
     );
+  });
+
+  test("localizes built-in new-file kinds, disabled reasons, clipboard types, and availability messages", () => {
+    expect(localizeNewKindName("it", "folder", "Folder")).toBe("Cartella");
+    expect(localizeNewKindName("it", "txt", "Plain Text")).toBe("Testo Semplice");
+    expect(localizeNewKindName("en", "txt", "Plain Text")).toBe("Plain Text");
+    expect(localizeKindCategory("it", "system")).toBe("sistema");
+    expect(localizeKindCategory("it", "clipboard")).toBe("appunti");
+
+    expect(
+      localizeDisabledReason("it", "Clipboard does not contain image, PDF, RTF, or text"),
+    ).toBe("Gli appunti non contengono immagine, PDF, RTF o testo");
+    expect(localizeDisabledReason("it", "Keynote.app not installed")).toBe(
+      "Keynote.app non installata",
+    );
+    expect(localizeClipboardKind("it", "image")).toBe("immagine");
+    expect(localizeClipboardKind("it", "text")).toBe("testo");
+
+    expect(localizeAvailabilityMessage("it", "Drop local files here")).toBe(
+      "Trascina qui file locali",
+    );
+    expect(
+      localizeAvailabilityMessage(
+        "it",
+        "2 files selected\nUnsupported: DMG, no extension\nNo common output format",
+      ),
+    ).toBe(
+      "2 file selezionati\nNon supportati: DMG, senza estensione\nNessun formato di output comune",
+    );
+    expect(
+      localizeAvailabilityMessage(
+        "en",
+        "1 file selected\nIncompatible formats: TXT, PNG\nNo common output format",
+      ),
+    ).toBe("1 file selected\nIncompatible formats: TXT, PNG\nNo common output format");
   });
 });

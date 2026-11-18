@@ -2152,6 +2152,13 @@ fn native_zero_ffmpeg_audio_caf_and_flac_roundtrips() {
     media::convert(&out_alac, "FLAC", &alac_to_flac, &native_tools, &cancel, &|_| {}).unwrap();
     validate_output(&alac_to_flac, "FLAC").unwrap();
 
+    let alac_to_m4a = dir.path().join("alac2m.m4a");
+    media::convert(&out_alac, "M4A", &alac_to_m4a, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&alac_to_m4a, "M4A").unwrap();
+    let m4a_from_alac_to_wav = dir.path().join("alac_m4a_back.wav");
+    media::convert(&alac_to_m4a, "WAV", &m4a_from_alac_to_wav, &native_tools, &cancel, &|_| {}).unwrap();
+    validate_output(&m4a_from_alac_to_wav, "WAV").unwrap();
+
     // 3. Short audio fixture (< 4608 frames, e.g. flip-tick.wav = 1764 frames) still produces valid FLAC & CAF
     let tick_wav = repo_root().join("src-tauri/resources/flip-tick.wav");
     let tick_flac = dir.path().join("tick.flac");

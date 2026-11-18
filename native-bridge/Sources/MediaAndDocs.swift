@@ -1659,6 +1659,9 @@ enum MediaAndDocs {
         if fmtUpper == "FLAC" || fmtUpper == "CAF" {
             return try convertAudioViaExtAudioFile(inURL: inURL, format: fmtUpper, outURL: outURL)
         }
+        if fmtUpper == "M4A" && inURL.pathExtension.lowercased() == "alac" {
+            return try convertM4AViaAfconvert(inURL: inURL, outURL: outURL)
+        }
 
         let preset: String
         let fileType: AVFileType
@@ -1700,5 +1703,27 @@ enum MediaAndDocs {
             throw BridgeError.operationFailed(err.localizedDescription)
         }
         return ["ok": true, "output": outputPath]
+    }
+
+    private static func convertM4AViaAfconvert(inURL: URL, outURL: URL) throws -> [String: Any] {
+        let afconvertPath = "/usr/bin/afconvert"
+        guard FileManager.default.isExecutableFile(atPath: afconvertPath) else {
+            throw BridgeError.operationFailed("afconvert not found for ALAC -> M4A conversion")
+        }
+        try? FileManager.default.removeItem(at: outURL)
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: afconvertPath)
+        proc.arguments = ["-f", "m4af", "-d", "aac", inURL.path, outURL.path]
+        let errPipe = Pipe()
+        proc.standardError = errPipe
+        proc.standardOutput = Pipe()
+        try proc.run()
+        proc.waitUntilExit()
+        guard proc.terminationStatus == 0 else {
+            try? FileManager.default.removeItem(at: outURL)
+            let errText = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            throw BridgeError.operationFailed(errText.isEmpty ? "afconvert exited with status \(proc.terminationStatus)" : errText)
+        }
+        return ["ok": true, "output": outURL.path, "engine": "afconvert"]
     }
 }

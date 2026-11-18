@@ -1,4 +1,4 @@
-import { normalizeLanguage, t } from "../i18n";
+import { localizeAvailabilityMessage, normalizeLanguage, t } from "../i18n";
 import { getFormatMeta, UI_ICONS } from "../icons";
 import {
   basename,
@@ -272,7 +272,7 @@ export function mountBatchView(root: HTMLElement): () => void {
       formatGridEl.innerHTML = `<div class="setting-desc">${escapeHtml(t(l, "batch.formatsWillAppear"))}</div>`;
       actionsWrapEl.style.display = "none";
     } else if (allOptions.length === 0) {
-      const msg = inspection.availabilityMessage.replace(/\n/g, " · ");
+      const msg = localizeAvailabilityMessage(l, inspection.availabilityMessage).replace(/\n/g, " · ");
       compatSubtitleEl.textContent = msg;
       formatGridEl.innerHTML = `<div class="status-pill is-warn">${escapeHtml(msg)}</div>`;
       actionsWrapEl.style.display = "none";

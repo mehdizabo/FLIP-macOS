@@ -311,6 +311,7 @@ export function getNewKindMeta(
   id: string,
   name: string,
   extension: string | null,
+  lang: string | null | undefined = "en",
 ): { shortLabel: string; accent: string; iconSvg: string } {
   if (id.startsWith("template:")) {
     const ext = extension ? `.${extension.toUpperCase()}` : name.slice(0, 6).toUpperCase();
@@ -323,7 +324,11 @@ export function getNewKindMeta(
 
   switch (id) {
     case "folder":
-      return { shortLabel: "Folder", accent: "#38bdf8", iconSvg: UI_ICONS.folder };
+      return {
+        shortLabel: t(lang, "newkind.folderShort"),
+        accent: "#38bdf8",
+        iconSvg: UI_ICONS.folder,
+      };
     case "txt":
       return { shortLabel: "TXT", accent: "#93c5fd", iconSvg: UI_ICONS.document };
     case "md":

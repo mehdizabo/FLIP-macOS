@@ -1,4 +1,10 @@
-import { normalizeLanguage, t } from "../i18n";
+import {
+  localizeAvailabilityMessage,
+  localizeDisabledReason,
+  localizeNewKindName,
+  normalizeLanguage,
+  t,
+} from "../i18n";
 import { getFormatMeta, getNewKindMeta, UI_ICONS } from "../icons";
 import {
   cancelConversion,
@@ -286,18 +292,19 @@ export function mountWheelView(root: HTMLElement): () => void {
       });
 
       const items: WheelActionItem[] = sortedBuiltIns.map((k) => {
-        const meta = getNewKindMeta(k.id, k.name, k.extension);
+        const localizedName = localizeNewKindName(l, k.id, k.name);
+        const meta = getNewKindMeta(k.id, localizedName, k.extension, l);
         return {
           id: k.id,
           label: meta.shortLabel,
           subtitle:
             k.id === "clipboard"
               ? t(l, "wheel.fromClipboard")
-              : t(l, "wheel.newKindSubtitle", { name: k.name }),
+              : t(l, "wheel.newKindSubtitle", { name: localizedName }),
           accent: meta.accent,
           iconSvg: meta.iconSvg,
           enabled: k.available,
-          disabledReason: k.disabledReason ?? undefined,
+          disabledReason: localizeDisabledReason(l, k.disabledReason),
         };
       });
 
@@ -678,12 +685,17 @@ export function mountWheelView(root: HTMLElement): () => void {
     let subtitleTitle = "";
     let subClass = "is-muted";
     if (state.compatibleFormats.length === 0 && state.batchActions.length === 0) {
-      const rawMsg = state.availabilityMessage || t(l, "wheel.noCommonFormat");
+      const rawMsg =
+        localizeAvailabilityMessage(l, state.availabilityMessage) ||
+        t(l, "wheel.noCommonFormat");
       subtitleTitle = rawMsg;
       const lines = rawMsg.split("\n").map((ln) => ln.trim()).filter(Boolean);
-      subtitle = lines.length > 1 && /^\d+\s+files?\s+selected$/i.test(lines[0])
-        ? lines.slice(1).join(" · ")
-        : lines.join(" · ") || t(l, "wheel.noCommonFormat");
+      subtitle =
+        lines.length > 1 &&
+        (/^\d+\s+files?\s+selected$/i.test(lines[0]) ||
+          /^\d+\s+file\s+selezionat[io]$/i.test(lines[0]))
+          ? lines.slice(1).join(" · ")
+          : lines.join(" · ") || t(l, "wheel.noCommonFormat");
       subClass = "is-error";
     } else if (hoveredSlot) {
       if (hoveredSlot.kind === "more") {

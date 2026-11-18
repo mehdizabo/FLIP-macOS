@@ -47,6 +47,9 @@ pub fn convert(
                     "Cannot convert audio .{ext} to animated GIF"
                 )));
             }
+            if fmt == "M4A" && ext == "alac" {
+                return convert_via_native_audio(source, &fmt, output, cancel, unit_progress);
+            }
             unit_progress(30);
             bridge::convert_av(source, &fmt, output, Some(cancel))?;
             unit_progress(100);
@@ -265,6 +268,7 @@ fn convert_via_native_audio(
                 "WAV" => vec!["-f".into(), "WAVE".into(), "-d".into(), "LEI16@44100".into()],
                 "AIFF" => vec!["-f".into(), "AIFF".into(), "-d".into(), "BEI16@44100".into()],
                 "ALAC" => vec!["-f".into(), "m4af".into(), "-d".into(), "alac".into()],
+                "M4A" => vec!["-f".into(), "m4af".into(), "-d".into(), "aac".into()],
                 "CAF" => vec!["-f".into(), "caff".into(), "-d".into(), "LEI16".into()],
                 _ => {
                     if let Some(tmp) = temp_m4a {

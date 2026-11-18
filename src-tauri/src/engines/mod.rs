@@ -45,6 +45,15 @@ pub enum EngineError {
     Io(#[from] std::io::Error),
 }
 
+impl EngineError {
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self,
+            Self::Cancelled | Self::Bridge(bridge::BridgeError::Cancelled)
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversionResult {
@@ -537,7 +546,7 @@ pub fn convert_files(
                         error: None,
                     });
                 }
-                Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                 Err(e) => {
                     results.push(ConversionResult {
                         source: first.to_string_lossy().into_owned(),
@@ -600,7 +609,7 @@ pub fn convert_files(
                         error: None,
                     });
                 }
-                Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                 Err(err) => {
                     log_event(
                         "conversion.failed",

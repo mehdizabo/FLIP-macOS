@@ -1,4 +1,12 @@
-import { normalizeLanguage, t, type TranslationKey } from "../i18n";
+import {
+  localizeClipboardKind,
+  localizeDisabledReason,
+  localizeKindCategory,
+  localizeNewKindName,
+  normalizeLanguage,
+  t,
+  type TranslationKey,
+} from "../i18n";
 import { UI_ICONS } from "../icons";
 import {
   basename,
@@ -592,7 +600,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
           ${
             clipboardInfo?.available
               ? t(l, "settings.newfile.clipDetected", {
-                  kind: escapeHtml(clipboardInfo.kind),
+                  kind: escapeHtml(localizeClipboardKind(l, clipboardInfo.kind)),
                   ext: escapeHtml(clipboardInfo.extension),
                 })
               : escapeHtml(t(l, "settings.newfile.clipEmptyDesc"))
@@ -611,11 +619,15 @@ export function mountSettingsView(root: HTMLElement): () => void {
           ${newFileKinds
             .map((k) => {
               const pinned = prefs.newFileVisibleKinds.includes(k.id);
-              const extText = k.extension ? `.${k.extension}` : k.category;
+              const extText = k.extension
+                ? `.${k.extension}`
+                : localizeKindCategory(l, k.category);
+              const kindName = localizeNewKindName(l, k.id, k.name);
+              const reasonText = localizeDisabledReason(l, k.disabledReason);
               return `
-                <label class="kind-chip" title="${escapeHtml(k.disabledReason ?? extText)}">
+                <label class="kind-chip" title="${escapeHtml(reasonText ?? extText)}">
                   <div>
-                    <div style="font-weight:600">${escapeHtml(k.name)}</div>
+                    <div style="font-weight:600">${escapeHtml(kindName)}</div>
                     <div style="font-size:11px;color:var(--text-muted)">
                       ${escapeHtml(extText)}${k.available ? "" : escapeHtml(t(l, "settings.newfile.unavailableTag"))}
                     </div>
@@ -1001,8 +1013,11 @@ export function mountSettingsView(root: HTMLElement): () => void {
         d.hapticsEnabled = checked;
       });
     });
-    mainEl.querySelector<HTMLButtonElement>("#btn-test-wheel-feedback")?.addEventListener("click", () => {
-      void playWheelFeedback("tick");
+    mainEl.querySelector<HTMLButtonElement>("#btn-test-wheel-feedback")?.addEventListener("click", async () => {
+      await saveQueue;
+      if (disposed) return;
+      await playWheelFeedback("tick").catch(() => undefined);
+      if (disposed) return;
       showSavedToast(
         prefs.soundEnabled || prefs.hapticsEnabled
           ? t(lang(), "settings.general.testFeedbackPlayed")

@@ -362,6 +362,42 @@ export const EN_STRINGS = {
   "ob.back": "Back",
   "ob.next": "Next",
   "ob.finish": "Finish Setup",
+
+  // Built-in New File Kinds, Clipboard & Availability
+  "newkind.folderShort": "Folder",
+  "newkind.folder": "Folder",
+  "newkind.txt": "Plain Text",
+  "newkind.md": "Markdown",
+  "newkind.rtf": "Rich Text",
+  "newkind.docx": "Word Document",
+  "newkind.xlsx": "Spreadsheet",
+  "newkind.html": "HTML",
+  "newkind.clipboard": "From Clipboard",
+  "newkind.json": "JSON",
+  "newkind.csv": "CSV",
+  "newkind.sh": "Shell Script",
+  "newkind.py": "Python",
+  "newkind.swift": "Swift",
+  "newkind.pptx": "Presentation",
+  "newkind.pages": "Pages Document",
+  "newkind.numbers": "Numbers Sheet",
+  "newkind.keynote": "Keynote Deck",
+  "newkind.disabledClipboard": "Clipboard does not contain image, PDF, RTF, or text",
+  "newkind.disabledAppNotInstalled": "{app} not installed",
+  "kindCat.system": "system",
+  "kindCat.clipboard": "clipboard",
+  "clipKind.image": "image",
+  "clipKind.pdf": "PDF",
+  "clipKind.rtf": "RTF",
+  "clipKind.url": "URL",
+  "clipKind.text": "text",
+  "avail.dropLocal": "Drop local files here",
+  "avail.oneSelected": "1 file selected",
+  "avail.manySelected": "{count} files selected",
+  "avail.unsupported": "Unsupported: {items}",
+  "avail.incompatible": "Incompatible formats: {items}",
+  "avail.noExtension": "no extension",
+  "avail.noCommonFormat": "No common output format",
 } as const;
 
 export type TranslationKey = keyof typeof EN_STRINGS;
@@ -728,7 +764,180 @@ export const IT_STRINGS: Record<TranslationKey, string> = {
   "ob.back": "Indietro",
   "ob.next": "Avanti",
   "ob.finish": "Completa Configurazione",
+
+  // Built-in New File Kinds, Clipboard & Availability
+  "newkind.folderShort": "Cartella",
+  "newkind.folder": "Cartella",
+  "newkind.txt": "Testo Semplice",
+  "newkind.md": "Markdown",
+  "newkind.rtf": "Testo Formattato",
+  "newkind.docx": "Documento Word",
+  "newkind.xlsx": "Foglio di Calcolo",
+  "newkind.html": "HTML",
+  "newkind.clipboard": "Dagli Appunti",
+  "newkind.json": "JSON",
+  "newkind.csv": "CSV",
+  "newkind.sh": "Script Shell",
+  "newkind.py": "Python",
+  "newkind.swift": "Swift",
+  "newkind.pptx": "Presentazione",
+  "newkind.pages": "Documento Pages",
+  "newkind.numbers": "Foglio Numbers",
+  "newkind.keynote": "Presentazione Keynote",
+  "newkind.disabledClipboard": "Gli appunti non contengono immagine, PDF, RTF o testo",
+  "newkind.disabledAppNotInstalled": "{app} non installata",
+  "kindCat.system": "sistema",
+  "kindCat.clipboard": "appunti",
+  "clipKind.image": "immagine",
+  "clipKind.pdf": "PDF",
+  "clipKind.rtf": "RTF",
+  "clipKind.url": "URL",
+  "clipKind.text": "testo",
+  "avail.dropLocal": "Trascina qui file locali",
+  "avail.oneSelected": "1 file selezionato",
+  "avail.manySelected": "{count} file selezionati",
+  "avail.unsupported": "Non supportati: {items}",
+  "avail.incompatible": "Formati incompatibili: {items}",
+  "avail.noExtension": "senza estensione",
+  "avail.noCommonFormat": "Nessun formato di output comune",
 };
+
+const BUILTIN_KIND_KEY_MAP: Record<string, TranslationKey> = {
+  folder: "newkind.folder",
+  txt: "newkind.txt",
+  md: "newkind.md",
+  rtf: "newkind.rtf",
+  docx: "newkind.docx",
+  xlsx: "newkind.xlsx",
+  html: "newkind.html",
+  clipboard: "newkind.clipboard",
+  json: "newkind.json",
+  csv: "newkind.csv",
+  sh: "newkind.sh",
+  py: "newkind.py",
+  swift: "newkind.swift",
+  pptx: "newkind.pptx",
+  pages: "newkind.pages",
+  numbers: "newkind.numbers",
+  keynote: "newkind.keynote",
+};
+
+export function localizeNewKindName(
+  lang: string | null | undefined,
+  id: string,
+  fallbackName: string,
+): string {
+  const key = BUILTIN_KIND_KEY_MAP[id];
+  return key ? t(lang, key) : fallbackName;
+}
+
+export function localizeKindCategory(
+  lang: string | null | undefined,
+  category: string,
+): string {
+  switch (category) {
+    case "system":
+      return t(lang, "kindCat.system");
+    case "clipboard":
+      return t(lang, "kindCat.clipboard");
+    default:
+      return category;
+  }
+}
+
+export function localizeDisabledReason(
+  lang: string | null | undefined,
+  reason: string | null | undefined,
+): string | undefined {
+  if (!reason) {
+    return undefined;
+  }
+  if (normalizeLanguage(lang) === "en") {
+    return reason;
+  }
+  if (reason === "Clipboard does not contain image, PDF, RTF, or text") {
+    return t(lang, "newkind.disabledClipboard");
+  }
+  const appMatch = /^(.+?\.app) not installed$/.exec(reason);
+  if (appMatch) {
+    return t(lang, "newkind.disabledAppNotInstalled", { app: appMatch[1] });
+  }
+  return reason;
+}
+
+export function localizeClipboardKind(
+  lang: string | null | undefined,
+  kind: string,
+): string {
+  switch (kind.toLowerCase()) {
+    case "image":
+      return t(lang, "clipKind.image");
+    case "pdf":
+      return t(lang, "clipKind.pdf");
+    case "rtf":
+      return t(lang, "clipKind.rtf");
+    case "url":
+      return t(lang, "clipKind.url");
+    case "text":
+      return t(lang, "clipKind.text");
+    default:
+      return kind;
+  }
+}
+
+export function localizeAvailabilityMessage(
+  lang: string | null | undefined,
+  rawMsg: string | null | undefined,
+): string {
+  if (!rawMsg) {
+    return "";
+  }
+  const resolved = normalizeLanguage(lang);
+  if (resolved === "en") {
+    return rawMsg;
+  }
+  const translateItemList = (items: string) =>
+    items
+      .split(",")
+      .map((part) => {
+        const trimmed = part.trim();
+        return trimmed === "no extension" ? t(resolved, "avail.noExtension") : trimmed;
+      })
+      .join(", ");
+
+  return rawMsg
+    .split("\n")
+    .map((line) => {
+      const trimmed = line.trim();
+      if (trimmed === "Drop local files here") {
+        return t(resolved, "avail.dropLocal");
+      }
+      if (trimmed === "1 file selected") {
+        return t(resolved, "avail.oneSelected");
+      }
+      const manyMatch = /^(\d+)\s+files selected$/.exec(trimmed);
+      if (manyMatch) {
+        return t(resolved, "avail.manySelected", { count: manyMatch[1] });
+      }
+      const unsupportedMatch = /^Unsupported:\s*(.+)$/.exec(trimmed);
+      if (unsupportedMatch) {
+        return t(resolved, "avail.unsupported", {
+          items: translateItemList(unsupportedMatch[1]),
+        });
+      }
+      const incompatMatch = /^Incompatible formats:\s*(.+)$/.exec(trimmed);
+      if (incompatMatch) {
+        return t(resolved, "avail.incompatible", {
+          items: translateItemList(incompatMatch[1]),
+        });
+      }
+      if (trimmed === "No common output format") {
+        return t(resolved, "avail.noCommonFormat");
+      }
+      return line;
+    })
+    .join("\n");
+}
 
 export const TRANSLATIONS: Record<AppLanguage, Record<TranslationKey, string>> = {
   en: EN_STRINGS,

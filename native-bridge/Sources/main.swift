@@ -22,7 +22,7 @@ func printUsage() {
       optimize-pdf <input-pdf> <output-pdf>
       convert-av <input> <format> <output>
       create-iwork <pages|numbers|key> <output>
-      feedback <tick|alignment|level|generic|error> [wav-path]
+      feedback <tick|sound|alignment|level|generic|success|error> [wav-path]
       notify <title> <body> [reveal-path]
     """
     print(usage)
