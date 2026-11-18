@@ -9,7 +9,8 @@ export type FormatFamily =
   | "data"
   | "audio"
   | "video"
-  | "iwork";
+  | "iwork"
+  | "archive";
 
 export type FeedbackKind =
   | "tick"

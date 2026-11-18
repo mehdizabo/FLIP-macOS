@@ -104,13 +104,14 @@ export function defaultPreferences(): AppPreferences {
     ffmpegPath: null,
     pandocPath: null,
     preferredFormats: {
-      image: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP"],
+      image: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP"],
       pdf: [
         "PNG",
         "JPG",
         "TXT",
         "DOCX",
         "MD",
+        "OPTIMIZE_PDF",
         "HTML",
         "RTF",
         "WEBP",
@@ -258,6 +259,7 @@ const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", 
 const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "csv"]);
 const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf"]);
 const VIDEO_EXTS = new Set(["mp4", "mkv", "webm", "avi", "mov", "wmv", "m4v"]);
+const ARCHIVE_EXTS = new Set(["zip"]);
 export const DOC_NATIVE_EXTS = new Set(["txt", "md", "markdown", "html", "htm", "docx", "odt", "rtf", "doc", "epub"]);
 export const DOC_PANDOC_ONLY_EXTS = new Set(["fb2", "rst"]);
 
@@ -287,7 +289,13 @@ function mockTargetsForExt(
   hasPandoc = false,
 ): { targets: string[]; family: FormatFamily | null } {
   if (IMAGE_EXTS.has(ext)) {
-    return { targets: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP"], family: "image" };
+    return {
+      targets: ["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP"],
+      family: "image",
+    };
+  }
+  if (ARCHIVE_EXTS.has(ext)) {
+    return { targets: ["UNZIP"], family: "archive" };
   }
   if (DATA_EXTS.has(ext)) {
     return { targets: ["JSON", "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"], family: "data" };
@@ -305,6 +313,7 @@ function mockTargetsForExt(
       "WEBP",
       "HEIC",
       "TIFF",
+      "OPTIMIZE_PDF",
       "TXT",
       "DOCX",
       "MD",
@@ -370,7 +379,7 @@ export function inspectFilesLocally(
     const same = canonicalForExt(ext);
     const { targets, family } = mockTargetsForExt(ext, Boolean(caps.pandoc));
     if (primaryFamily === null) primaryFamily = family;
-    const filtered = targets.filter((t) => t !== same);
+    const filtered = targets.filter((t) => t !== same && (paths.length === 1 || t !== "UNZIP"));
     if (shared === null) {
       shared = filtered;
     } else {
@@ -380,13 +389,18 @@ export function inspectFilesLocally(
   }
 
   const exts = paths.map(extLower);
+  const compatibleFormats = shared ?? [];
+  if (paths.length === 1 && !ARCHIVE_EXTS.has(exts[0] ?? "") && !compatibleFormats.includes("ZIP")) {
+    compatibleFormats.push("ZIP");
+  }
+
   const batchActions: string[] = [];
   if (paths.length >= 2) {
     if (exts.every((e) => IMAGE_EXTS.has(e))) batchActions.push("COMBINE_PDF");
     else if (exts.every((e) => e === "pdf")) batchActions.push("MERGE_PDF");
+    batchActions.push("ZIP");
   }
 
-  const compatibleFormats = shared ?? [];
   const availabilityMessage =
     compatibleFormats.length === 0 && batchActions.length === 0
       ? `${paths.length === 1 ? "1 file selected" : `${paths.length} files selected`}\nNo common output format`
@@ -557,7 +571,7 @@ export async function executeConversion(
         return cancelled;
       }
       const label =
-        formats[0] === "COMBINE_PDF" || formats[0] === "MERGE_PDF"
+        formats[0] === "COMBINE_PDF" || formats[0] === "MERGE_PDF" || formats[0] === "ZIP"
           ? `${paths.length} files → ${formats[0]}`
           : `${basename(paths[0] ?? "file")} → ${formats[0] ?? ""}`;
       emitMockEvent<ConversionProgressPayload>("conversion:progress", {
@@ -570,21 +584,33 @@ export async function executeConversion(
     const results: ConversionResult[] = [];
     const prefs = loadMockPrefs();
     for (const fmt of formats) {
-      if (fmt === "COMBINE_PDF" || fmt === "MERGE_PDF") {
+      if (fmt === "COMBINE_PDF" || fmt === "MERGE_PDF" || fmt === "ZIP") {
         const first = paths[0] ?? "/Users/demo/Desktop/file";
-        const stem = basename(first).replace(/\.[^.]+$/, "") || "combined";
-        const out = `${dirname(first)}/${stem}.pdf`;
+        const stem = basename(first).replace(/\.[^.]+$/, "") || "archive";
+        const ext = fmt === "ZIP" ? "zip" : "pdf";
+        const targetFormat = fmt === "ZIP" ? "ZIP" : "PDF";
+        const out = `${dirname(first)}/${stem}.${ext}`;
         results.push({ source: first, format: fmt, outputs: [out], error: null });
         prefs.recentConversions.unshift({
-          sourceName: `${paths.length} files`,
-          targetFormat: "PDF",
+          sourceName: paths.length === 1 ? basename(first) : `${paths.length} files`,
+          targetFormat,
           outputPath: out,
           timestampUtc: new Date().toISOString(),
         });
       } else {
         for (const src of paths) {
           const stem = basename(src).replace(/\.[^.]+$/, "") || "output";
-          const out = `${dirname(src)}/${stem}.${fmt.toLowerCase()}`;
+          const srcExt = extLower(src);
+          let out: string;
+          if (fmt === "UNZIP") {
+            out = `${dirname(src)}/${stem}`;
+          } else if (fmt === "REMOVE_BG") {
+            out = srcExt === "png" ? `${dirname(src)}/${stem} 2.png` : `${dirname(src)}/${stem}.png`;
+          } else if (fmt === "OPTIMIZE_PDF") {
+            out = `${dirname(src)}/${stem} 2.pdf`;
+          } else {
+            out = `${dirname(src)}/${stem}.${fmt.toLowerCase()}`;
+          }
           results.push({ source: src, format: fmt, outputs: [out], error: null });
           prefs.recentConversions.unshift({
             sourceName: basename(src),

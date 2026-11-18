@@ -125,11 +125,55 @@ export const UI_ICONS = {
     `<g ${STROKE_ATTRS}><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12"/><path d="M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></g>`,
     14,
   ),
+  removeBg: svg(
+    `<g ${STROKE_ATTRS}><path d="M12 3l1.4 3.4L17 7.8l-3.6 1.4L12 12.6l-1.4-3.4L7 7.8l3.6-1.4z"/><circle cx="15" cy="15" r="5"/><path d="M12 18l6-6"/></g>`,
+    18,
+  ),
+  optimizePdf: svg(
+    `<g ${STROKE_ATTRS}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 14l3-3 3 3"/><path d="M12 11v6"/></g>`,
+    18,
+  ),
+  zip: svg(
+    `<g ${STROKE_ATTRS}><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M11 4v16"/><path d="M11 8h2.5M11 11h2.5M11 14h2.5"/></g>`,
+    18,
+  ),
+  unzip: svg(
+    `<g ${STROKE_ATTRS}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 15v-5"/><path d="M9.5 12.5L12 10l2.5 2.5"/></g>`,
+    18,
+  ),
 };
 
 export function getFormatMeta(format: string): FormatMeta {
   const key = format.trim().toUpperCase();
   switch (key) {
+    case "REMOVE_BG":
+      return {
+        shortLabel: "No BG",
+        title: "Remove BG",
+        accent: "#ec4899",
+        iconSvg: UI_ICONS.removeBg,
+      };
+    case "OPTIMIZE_PDF":
+      return {
+        shortLabel: "Opt PDF",
+        title: "Optimize PDF",
+        accent: "#f59e0b",
+        iconSvg: UI_ICONS.optimizePdf,
+      };
+    case "ZIP":
+      return {
+        shortLabel: "ZIP",
+        title: "Zip Archive",
+        accent: "#eab308",
+        iconSvg: UI_ICONS.zip,
+      };
+    case "UNZIP":
+      return {
+        shortLabel: "UNZIP",
+        title: "Unzip Folder",
+        accent: "#14b8a6",
+        iconSvg: UI_ICONS.unzip,
+      };
     case "COMBINE_PDF":
       return {
         shortLabel: "PDF+",

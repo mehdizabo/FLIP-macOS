@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod bridge;
 pub mod create_new;
 pub mod data;
@@ -10,7 +11,7 @@ use crate::core::logging::log_event;
 use crate::core::naming::format_extension;
 use crate::core::policy::{
     batch_actions, ext_lower, is_media_ext, outputs, validate_container, validate_input_files,
-    EngineCapabilities, IMAGE_EXTS,
+    EngineCapabilities, ARCHIVE_EXTS, IMAGE_EXTS,
 };
 use crate::core::preferences::{expand_tilde_path, AppPreferences};
 use crate::core::staging::JobStaging;
@@ -156,6 +157,16 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
     let meta = fs::metadata(path).map_err(|e| {
         EngineError::ValidationFailed(path.display().to_string(), e.to_string())
     })?;
+    let fmt = format.trim().to_ascii_uppercase();
+    if fmt == "UNZIP" {
+        if !meta.is_dir() {
+            return Err(EngineError::ValidationFailed(
+                path.display().to_string(),
+                "Unzipped output is not a directory".to_string(),
+            ));
+        }
+        return Ok(());
+    }
     if meta.len() == 0 {
         return Err(EngineError::ValidationFailed(
             path.display().to_string(),
@@ -163,9 +174,8 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
         ));
     }
 
-    let fmt = format.trim().to_ascii_uppercase();
     match fmt.as_str() {
-        "PDF" => {
+        "PDF" | "OPTIMIZE_PDF" => {
             use std::io::{Seek, SeekFrom};
             let mut f = File::open(path)?;
             let mut hdr = [0u8; 5];
@@ -187,7 +197,7 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
                 ));
             }
         }
-        "PNG" | "JPG" | "JPEG" | "WEBP" | "BMP" | "TIFF" | "TIF" | "GIF" => {
+        "PNG" | "REMOVE_BG" | "JPG" | "JPEG" | "WEBP" | "BMP" | "TIFF" | "TIF" | "GIF" => {
             if let Err(e) = ::image::open(path) {
                 return Err(EngineError::ValidationFailed(
                     path.display().to_string(),
@@ -284,7 +294,7 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
                 ));
             }
         }
-        "DOCX" | "ODT" | "EPUB" | "XLSX" | "PPTX" => {
+        "DOCX" | "ODT" | "EPUB" | "XLSX" | "PPTX" | "ZIP" => {
             let f = File::open(path)?;
             let archive = ZipArchive::new(f).map_err(|e| {
                 EngineError::ValidationFailed(path.display().to_string(), e.to_string())
@@ -472,10 +482,10 @@ pub fn convert_files(
     let caps = tools.capabilities();
     let mut results = Vec::new();
 
-    // Handle batch-wide formats first (COMBINE_PDF / MERGE_PDF)
+    // Handle batch-wide formats first (COMBINE_PDF / MERGE_PDF / ZIP)
     let mut per_file_formats = Vec::new();
     for fmt in &distinct_formats {
-        if fmt == "COMBINE_PDF" || fmt == "MERGE_PDF" {
+        if fmt == "COMBINE_PDF" || fmt == "MERGE_PDF" || fmt == "ZIP" {
             if cancel.load(Ordering::Relaxed) {
                 return Err(EngineError::Cancelled);
             }
@@ -484,7 +494,11 @@ pub fn convert_files(
             if let Some(cb) = progress {
                 cb(15, &label);
             }
-            let res = run_batch_merge(&validated, fmt, first, prefs, cancel);
+            let res = if fmt == "ZIP" {
+                run_zip_archive(&validated, first, prefs, cancel)
+            } else {
+                run_batch_merge(&validated, fmt, first, prefs, cancel)
+            };
             match res {
                 Ok(committed) => {
                     results.push(ConversionResult {
@@ -622,6 +636,38 @@ fn run_batch_merge(
     Ok(committed)
 }
 
+fn run_zip_archive(
+    sources: &[PathBuf],
+    anchor: &Path,
+    prefs: &AppPreferences,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Vec<PathBuf>, EngineError> {
+    if sources.len() == 1 && ext_lower(&sources[0]) == "zip" {
+        return Err(EngineError::Unsupported(
+            "Use UNZIP on a single .zip archive.".to_string(),
+        ));
+    }
+    if sources.len() >= 2 && !batch_actions(sources).contains(&"ZIP".to_string()) {
+        return Err(EngineError::Unsupported(
+            "Batch action `ZIP` is not valid for this file selection.".to_string(),
+        ));
+    }
+    let target_dir = resolve_target_dir(anchor, prefs)?;
+    let staging = JobStaging::create(&target_dir)?;
+    let staged_zip = staging.staged_path("archive.zip");
+
+    archive::zip_files(sources, &staged_zip, cancel)?;
+
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EngineError::Cancelled);
+    }
+
+    validate_output(&staged_zip, "ZIP")?;
+    let committed = staging.commit_all(&[staged_zip], anchor, "ZIP", false)?;
+    staging.cleanup()?;
+    Ok(committed)
+}
+
 fn convert_single_unit(
     source: &Path,
     format: &str,
@@ -673,6 +719,11 @@ fn convert_single_unit(
         vec![out]
     } else if ext == "pdf" {
         pdf::convert(source, format, staging.dir(), prefs, tools, cancel, unit_progress)?
+    } else if ARCHIVE_EXTS.contains(&ext.as_str()) {
+        unit_progress(35);
+        let extract_dir = staging.staged_path("extracted");
+        archive::unzip_archive(source, &extract_dir, cancel)?;
+        vec![extract_dir]
     } else {
         document::convert(source, format, staging.dir(), prefs, tools, cancel, unit_progress)?
     };

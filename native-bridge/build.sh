@@ -17,8 +17,10 @@ SDK_PATH="$(xcrun --show-sdk-path)"
   -framework Foundation \
   -framework AppKit \
   -framework CoreGraphics \
+  -framework CoreImage \
   -framework CoreText \
   -framework CoreML \
+  -framework Quartz \
   -framework ApplicationServices \
   -framework PDFKit \
   -framework Vision \

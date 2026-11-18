@@ -96,7 +96,7 @@ describe("Frontend IPC surface & contract alignment", () => {
 
       const ws = await openWheelMode("convert", ["/tmp/a.png", "/tmp/b.png"]);
       expect(ws.mode).toBe("convert");
-      expect(ws.batchActions).toEqual(["COMBINE_PDF"]);
+      expect(ws.batchActions).toEqual(["COMBINE_PDF", "ZIP"]);
       expect(wheelStates).toContain("convert");
 
       const switched = await switchWheelMode("new");
@@ -106,8 +106,30 @@ describe("Frontend IPC surface & contract alignment", () => {
       expect(cur.mode).toBe("new");
 
       const inspected = await inspectFiles(["/tmp/a.pdf", "/tmp/b.pdf"]);
-      expect(inspected.batchActions).toEqual(["MERGE_PDF"]);
+      expect(inspected.batchActions).toEqual(["MERGE_PDF", "ZIP"]);
+      expect(inspected.compatibleFormats).toContain("OPTIMIZE_PDF");
       expect(inspected.family).toBe("pdf");
+
+      const zipInspect = await inspectFiles(["/tmp/archive.zip"]);
+      expect(zipInspect.family).toBe("archive");
+      expect(zipInspect.compatibleFormats).toEqual(["UNZIP"]);
+      expect(zipInspect.batchActions).toEqual([]);
+
+      const bgConv = await executeConversion(["/tmp/photo.jpg"], ["REMOVE_BG"]);
+      expect(bgConv.success).toBe(true);
+      expect(bgConv.results[0]?.outputs[0]).toBe("/tmp/photo.png");
+
+      const optConv = await executeConversion(["/tmp/report.pdf"], ["OPTIMIZE_PDF"]);
+      expect(optConv.success).toBe(true);
+      expect(optConv.results[0]?.outputs[0]).toBe("/tmp/report 2.pdf");
+
+      const unzipConv = await executeConversion(["/tmp/archive.zip"], ["UNZIP"]);
+      expect(unzipConv.success).toBe(true);
+      expect(unzipConv.results[0]?.outputs[0]).toBe("/tmp/archive");
+
+      const zipConv = await executeConversion(["/tmp/a.png", "/tmp/b.png"], ["ZIP"]);
+      expect(zipConv.success).toBe(true);
+      expect(zipConv.results[0]?.outputs[0]).toBe("/tmp/a.zip");
 
       const conv = await executeConversion(["/tmp/photo.heic"], ["PNG"]);
       expect(conv.success).toBe(true);
@@ -267,7 +289,7 @@ describe("Frontend IPC surface & contract alignment", () => {
     expect(pdfInputNoPandoc.compatibleFormats).not.toContain("RST");
 
     const fb2NoPandoc = inspectFilesLocally(["/tmp/book.fb2"], { pandoc: false });
-    expect(fb2NoPandoc.compatibleFormats).toEqual([]);
+    expect(fb2NoPandoc.compatibleFormats).toEqual(["ZIP"]);
 
     const fb2WithPandoc = inspectFilesLocally(["/tmp/book.fb2"], { pandoc: true });
     expect(fb2WithPandoc.compatibleFormats).toContain("EPUB");

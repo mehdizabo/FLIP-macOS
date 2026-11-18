@@ -51,6 +51,7 @@ pub enum FormatFamily {
     Pdf,
     Document,
     IWork,
+    Archive,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -94,6 +95,7 @@ pub const DOC_NATIVE_EXTS: &[&str] = &[
 ];
 pub const DOC_PANDOC_ONLY_EXTS: &[&str] = &["fb2", "rst"];
 pub const IWORK_EXTS: &[&str] = &["pages", "numbers", "key"];
+pub const ARCHIVE_EXTS: &[&str] = &["zip"];
 
 pub fn ext_lower(path: &Path) -> String {
     path.extension()
@@ -132,6 +134,8 @@ pub fn family_for_ext(ext: &str) -> Option<FormatFamily> {
         Some(FormatFamily::Document)
     } else if IWORK_EXTS.contains(&es) {
         Some(FormatFamily::IWork)
+    } else if ARCHIVE_EXTS.contains(&es) {
+        Some(FormatFamily::Archive)
     } else {
         None
     }
@@ -145,7 +149,9 @@ pub fn is_media_ext(ext: &str) -> bool {
 fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static str> {
     match ext {
         e if IMAGE_EXTS.contains(&e) => {
-            vec!["PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP"]
+            vec![
+                "PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP", "REMOVE_BG",
+            ]
         }
         e if DATA_EXTS.contains(&e) => {
             vec!["JSON", "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"]
@@ -170,8 +176,19 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
         }
         "pdf" => {
             let mut out = vec![
-                "PNG", "JPG", "WEBP", "HEIC", "TIFF", "TXT", "DOCX", "MD", "HTML", "RTF", "ODT",
+                "PNG",
+                "JPG",
+                "WEBP",
+                "HEIC",
+                "TIFF",
+                "TXT",
+                "DOCX",
+                "MD",
+                "HTML",
+                "RTF",
+                "ODT",
                 "EPUB",
+                "OPTIMIZE_PDF",
             ];
             if caps.pandoc {
                 out.extend_from_slice(&["FB2", "RST"]);
@@ -219,6 +236,7 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
             }
             out
         }
+        e if ARCHIVE_EXTS.contains(&e) => vec!["UNZIP"],
         _ => vec![],
     }
 }
@@ -228,13 +246,43 @@ pub fn outputs<P: AsRef<Path>>(paths: &[P], caps: &EngineCapabilities) -> Vec<St
         return Vec::new();
     }
 
+    if paths.len() == 1 {
+        let single = paths[0].as_ref();
+        if single.is_dir() {
+            let ext = ext_lower(single);
+            if !IWORK_EXTS.contains(&ext.as_str()) {
+                return Vec::new();
+            }
+            let same = canonical_format_for_ext(&ext);
+            return targets_for_single_ext(&ext, caps)
+                .into_iter()
+                .filter(|t| *t != same)
+                .map(String::from)
+                .collect();
+        }
+        let ext = ext_lower(single);
+        let same = canonical_format_for_ext(&ext);
+        let mut out: Vec<String> = targets_for_single_ext(&ext, caps)
+            .into_iter()
+            .filter(|t| *t != same)
+            .map(String::from)
+            .collect();
+        if !ARCHIVE_EXTS.contains(&ext.as_str()) && !out.iter().any(|f| f == "ZIP") {
+            out.push("ZIP".to_string());
+        }
+        return out;
+    }
+
     let mut shared: Option<Vec<String>> = None;
     for p in paths {
+        if p.as_ref().is_dir() {
+            return Vec::new();
+        }
         let ext = ext_lower(p.as_ref());
         let same = canonical_format_for_ext(&ext);
         let filtered: Vec<String> = targets_for_single_ext(&ext, caps)
             .into_iter()
-            .filter(|t| *t != same)
+            .filter(|t| *t != same && *t != "UNZIP")
             .map(String::from)
             .collect();
 
@@ -258,14 +306,18 @@ pub fn batch_actions<P: AsRef<Path>>(paths: &[P]) -> Vec<String> {
     if paths.len() < 2 || paths.len() > MAX_BATCH_FILES {
         return Vec::new();
     }
+    let has_dir = paths.iter().any(|p| p.as_ref().is_dir());
     let exts: Vec<String> = paths.iter().map(|p| ext_lower(p.as_ref())).collect();
+    let mut actions = Vec::new();
     if exts.iter().all(|e| IMAGE_EXTS.contains(&e.as_str())) {
-        return vec!["COMBINE_PDF".to_string()];
+        actions.push("COMBINE_PDF".to_string());
+    } else if exts.iter().all(|e| e == "pdf") {
+        actions.push("MERGE_PDF".to_string());
     }
-    if exts.iter().all(|e| e == "pdf") {
-        return vec!["MERGE_PDF".to_string()];
+    if !has_dir {
+        actions.push("ZIP".to_string());
     }
-    Vec::new()
+    actions
 }
 
 pub fn order_formats(
@@ -279,6 +331,7 @@ pub fn order_formats(
         .unwrap_or(&default_map);
 
     let preferred_list: Vec<&str> = match family {
+        Some(FormatFamily::Archive) => vec!["UNZIP", "ZIP"],
         Some(fam) => {
             let key = match fam {
                 FormatFamily::Image => "image",
@@ -287,6 +340,7 @@ pub fn order_formats(
                 FormatFamily::Data => "data",
                 FormatFamily::Audio => "audio",
                 FormatFamily::Video => "video",
+                FormatFamily::Archive => unreachable!(),
             };
             pref_map
                 .get(key)
@@ -295,10 +349,47 @@ pub fn order_formats(
                 .unwrap_or_default()
         }
         None => vec![
-            "DOCX", "PDF", "HTML", "MD", "TXT", "RTF", "ODT", "EPUB", "FB2", "RST", "JSON",
-            "YAML", "TOML", "XML", "CSV", "PNG", "JPG", "WEBP", "HEIC", "TIFF", "GIF", "BMP",
-            "MP4", "MOV", "M4A", "MP3", "WAV", "FLAC", "AIFF", "ALAC", "OGG", "OPUS", "AAC",
-            "MKV", "WEBM", "AVI", "M4V",
+            "DOCX",
+            "PDF",
+            "OPTIMIZE_PDF",
+            "HTML",
+            "MD",
+            "TXT",
+            "RTF",
+            "ODT",
+            "EPUB",
+            "FB2",
+            "RST",
+            "JSON",
+            "YAML",
+            "TOML",
+            "XML",
+            "CSV",
+            "PNG",
+            "JPG",
+            "WEBP",
+            "HEIC",
+            "REMOVE_BG",
+            "TIFF",
+            "GIF",
+            "BMP",
+            "MP4",
+            "MOV",
+            "M4A",
+            "MP3",
+            "WAV",
+            "FLAC",
+            "AIFF",
+            "ALAC",
+            "OGG",
+            "OPUS",
+            "AAC",
+            "MKV",
+            "WEBM",
+            "AVI",
+            "M4V",
+            "UNZIP",
+            "ZIP",
         ],
     };
 
@@ -554,29 +645,48 @@ mod tests {
         let png_out = outputs(&["image.png"], &caps);
         assert!(png_out.contains(&"JPG".to_string()));
         assert!(png_out.contains(&"HEIC".to_string()));
+        assert!(png_out.contains(&"REMOVE_BG".to_string()));
+        assert!(png_out.contains(&"ZIP".to_string()));
         assert!(!png_out.contains(&"PNG".to_string()));
 
-        // Mixed image + audio shares zero formats and explains blocker
+        // Mixed image + audio shares zero per-file formats, while batch ZIP remains available
         assert!(outputs(&["image.png", "audio.mp3"], &EngineCapabilities::all()).is_empty());
-        let msg = availability_message(&["image.png", "audio.mp3"], &EngineCapabilities::all());
-        assert!(msg.contains("MP3"), "msg was: {msg}");
+        assert_eq!(
+            batch_actions(&["image.png", "audio.mp3"]),
+            vec!["ZIP".to_string()]
+        );
+        assert_eq!(
+            availability_message(&["image.png", "audio.mp3"], &EngineCapabilities::all()),
+            ""
+        );
 
-        // Without FFmpeg, unsupported MKV in batch explains MKV blocker
+        // Without FFmpeg, unsupported MKV batch still exposes ZIP while per-file intersection is empty
         assert!(outputs(&["image.png", "video.mkv"], &caps).is_empty());
-        let mkv_msg = availability_message(&["image.png", "video.mkv"], &caps);
-        assert!(mkv_msg.contains("MKV"), "msg was: {mkv_msg}");
+        assert_eq!(
+            batch_actions(&["image.png", "video.mkv"]),
+            vec!["ZIP".to_string()]
+        );
+
+        // Non-iWork directory triggers explicit availability warning message
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("myfolder");
+        std::fs::create_dir(&folder).unwrap();
+        let dir_msg = availability_message(&[&folder], &caps);
+        assert!(dir_msg.contains("Unsupported"), "dir_msg was: {dir_msg}");
 
         // Pure intersection: image + mp4 shares GIF on macOS
         assert_eq!(outputs(&["image.png", "video.mp4"], &caps), vec!["GIF".to_string()]);
 
-        // Supported image batch keeps intersection & exposes COMBINE_PDF
+        // Supported image batch keeps intersection & exposes COMBINE_PDF + ZIP
         let batch = outputs(&["image.png", "image.webp"], &caps);
         assert!(batch.contains(&"JPG".to_string()));
+        assert!(batch.contains(&"REMOVE_BG".to_string()));
         assert!(!batch.contains(&"PNG".to_string()));
         assert!(!batch.contains(&"WEBP".to_string()));
+        assert!(!batch.contains(&"ZIP".to_string()));
         assert_eq!(
             batch_actions(&["a.png", "b.jpg"]),
-            vec!["COMBINE_PDF".to_string()]
+            vec!["COMBINE_PDF".to_string(), "ZIP".to_string()]
         );
 
         assert_eq!(availability_message(&["image.png"], &caps), "");
@@ -622,8 +732,8 @@ mod tests {
         assert!(!epub_native.contains(&"FB2".to_string()));
         assert!(!epub_native.contains(&"RST".to_string()));
 
-        assert!(outputs(&["book.fb2"], &native).is_empty());
-        assert!(outputs(&["guide.rst"], &native).is_empty());
+        assert_eq!(outputs(&["book.fb2"], &native), vec!["ZIP".to_string()]);
+        assert_eq!(outputs(&["guide.rst"], &native), vec!["ZIP".to_string()]);
         assert!(outputs(&["book.fb2"], &with_pd).contains(&"EPUB".to_string()));
         assert!(!outputs(&["note.txt"], &with_pd).contains(&"PAGES".to_string()));
 
@@ -631,7 +741,8 @@ mod tests {
         assert!(txt_pd.contains(&"EPUB".to_string()));
         assert!(txt_pd.contains(&"FB2".to_string()));
         assert!(txt_pd.contains(&"RST".to_string()));
-        assert_eq!(txt_pd.len(), 13);
+        assert!(txt_pd.contains(&"ZIP".to_string()));
+        assert_eq!(txt_pd.len(), 14);
 
         // Order formats preserves set membership
         let ordered = order_formats(&txt_pd, Some(FormatFamily::Document), None);
@@ -649,7 +760,9 @@ mod tests {
         };
 
         let json_out: HashSet<String> = outputs(&["data.json"], &native).into_iter().collect();
-        let expected: HashSet<String> = ["YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"]
+        let expected: HashSet<String> = [
+            "YAML", "TOML", "XML", "CSV", "TXT", "HTML", "MD", "PDF", "ZIP",
+        ]
             .into_iter()
             .map(String::from)
             .collect();
@@ -657,7 +770,21 @@ mod tests {
 
         assert!(outputs(&["table.csv"], &native).contains(&"JSON".to_string()));
         assert!(outputs(&["audio.mp3"], &with_ff).contains(&"WAV".to_string()));
-        assert!(outputs(&["audio.ogg"], &native).is_empty());
+        assert_eq!(outputs(&["audio.ogg"], &native), vec!["ZIP".to_string()]);
+
+        // PDF and archive policy rules
+        let pdf_out = outputs(&["doc.pdf"], &native);
+        assert!(pdf_out.contains(&"OPTIMIZE_PDF".to_string()));
+        assert!(pdf_out.contains(&"ZIP".to_string()));
+        assert_eq!(outputs(&["bundle.zip"], &native), vec!["UNZIP".to_string()]);
+        assert_eq!(
+            batch_actions(&["a.zip", "b.zip"]),
+            vec!["ZIP".to_string()]
+        );
+        assert_eq!(
+            batch_actions(&["a.pdf", "b.pdf"]),
+            vec!["MERGE_PDF".to_string(), "ZIP".to_string()]
+        );
         assert!(outputs(&["audio.ogg"], &with_ff).contains(&"WAV".to_string()));
 
         let mp4_ff: HashSet<String> = outputs(&["clip.mp4"], &with_ff).into_iter().collect();

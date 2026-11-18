@@ -264,7 +264,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   }
 
   function getPreferredListForState(): string[] | undefined {
-    if (!prefs || !state.family) return undefined;
+    if (!prefs || !state.family || state.family === "archive") return undefined;
     const key = state.family === "iwork" ? "document" : state.family;
     return prefs.preferredFormats[key];
   }
@@ -313,7 +313,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       state.compatibleFormats,
       getPreferredListForState(),
     );
-    const allTargets = [...state.batchActions, ...orderedFormats];
+    const allTargets = Array.from(new Set([...state.batchActions, ...orderedFormats]));
 
     return allTargets.map((fmt) => {
       const meta = getFormatMeta(fmt);

@@ -326,6 +326,32 @@ pub fn convert_image(
     run_bridge_json(&args, 60, cancel)
 }
 
+pub fn remove_bg(
+    input: &Path,
+    output_png: &Path,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Value, BridgeError> {
+    let args = vec![
+        "remove-bg".to_string(),
+        input.to_string_lossy().into_owned(),
+        output_png.to_string_lossy().into_owned(),
+    ];
+    run_bridge_json(&args, 60, cancel)
+}
+
+pub fn optimize_pdf(
+    input: &Path,
+    output_pdf: &Path,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<Value, BridgeError> {
+    let args = vec![
+        "optimize-pdf".to_string(),
+        input.to_string_lossy().into_owned(),
+        output_pdf.to_string_lossy().into_owned(),
+    ];
+    run_bridge_json(&args, 120, cancel)
+}
+
 pub fn create_iwork(kind: &str, output: &Path) -> Result<Value, BridgeError> {
     let args = vec![
         "create-iwork".to_string(),

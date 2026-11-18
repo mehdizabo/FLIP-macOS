@@ -80,7 +80,7 @@ pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
     let mut map = HashMap::new();
     map.insert(
         "image".to_string(),
-        vec!["PNG", "JPG", "WEBP", "HEIC", "PDF", "TIFF", "GIF", "BMP"]
+        vec!["PNG", "JPG", "WEBP", "HEIC", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP"]
             .into_iter()
             .map(String::from)
             .collect(),
@@ -88,8 +88,8 @@ pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
     map.insert(
         "pdf".to_string(),
         vec![
-            "PNG", "JPG", "TXT", "DOCX", "MD", "HTML", "RTF", "WEBP", "HEIC", "TIFF", "ODT",
-            "EPUB", "FB2", "RST",
+            "PNG", "JPG", "TXT", "DOCX", "OPTIMIZE_PDF", "MD", "HTML", "RTF", "WEBP", "HEIC",
+            "TIFF", "ODT", "EPUB", "FB2", "RST",
         ]
         .into_iter()
         .map(String::from)
@@ -349,5 +349,7 @@ mod tests {
         assert_eq!(&doc[0..3], &["EPUB", "MD", "PDF"]);
         assert!(doc.contains(&"HEIC".to_string()));
         assert!(prefs.preferred_formats["pdf"].contains(&"TIFF".to_string()));
+        assert!(prefs.preferred_formats["pdf"].contains(&"OPTIMIZE_PDF".to_string()));
+        assert!(prefs.preferred_formats["image"].contains(&"REMOVE_BG".to_string()));
     }
 }

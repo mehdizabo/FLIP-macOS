@@ -81,6 +81,28 @@ pub fn convert(
         return Ok(());
     }
 
+    if fmt == "REMOVE_BG" {
+        match bridge::remove_bg(source, output, Some(cancel)) {
+            Ok(_) => return Ok(()),
+            Err(first_err) => {
+                let no_subject = match &first_err {
+                    bridge::BridgeError::CommandFailed(_, msg) => {
+                        msg.to_ascii_lowercase().contains("no foreground subject")
+                    }
+                    _ => false,
+                };
+                if is_fatal_bridge_error(&first_err) || no_subject {
+                    return Err(EngineError::Bridge(first_err));
+                }
+                if let Ok(png_fallback) = ensure_png_via_rust_image(source, staging_dir) {
+                    bridge::remove_bg(&png_fallback, output, Some(cancel))?;
+                    return Ok(());
+                }
+                return Err(EngineError::Bridge(first_err));
+            }
+        }
+    }
+
     if fmt == "WEBP" {
         let ext = ext_lower(source);
         // Normalize via ImageIO PNG first when possible so EXIF orientation + HEIC/AVIF are upright

@@ -18,6 +18,8 @@ func printUsage() {
       convert-pdf merge <out-pdf> <pdf1> <pdf2>...
       convert-doc <input> <format> <output> [--page-size a4|letter]
       convert-image <input> <format> <output> [quality] [preserve-exif:true|false] [strip-gps:true|false]
+      remove-bg <input-image> <output-png>
+      optimize-pdf <input-pdf> <output-pdf>
       convert-av <input> <format> <output>
       create-iwork <pages|numbers|key> <output>
       feedback <tick|alignment|level|generic|error> [wav-path]
@@ -157,6 +159,22 @@ func runCLI() {
                 preserveExif: preserveExif,
                 stripGps: stripGps
             ))
+        } catch {
+            failExit(error.localizedDescription)
+        }
+
+    case "remove-bg":
+        guard args.count >= 3 else { failExit("remove-bg <input-image> <output-png>") }
+        do {
+            writeJSON(try MediaAndDocs.removeBackground(inputPath: args[1], outputPath: args[2]))
+        } catch {
+            failExit(error.localizedDescription)
+        }
+
+    case "optimize-pdf":
+        guard args.count >= 3 else { failExit("optimize-pdf <input-pdf> <output-pdf>") }
+        do {
+            writeJSON(try MediaAndDocs.optimizePDF(inputPath: args[1], outputPath: args[2]))
         } catch {
             failExit(error.localizedDescription)
         }

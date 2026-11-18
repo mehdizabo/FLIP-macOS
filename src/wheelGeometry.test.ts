@@ -262,20 +262,30 @@ describe("router and IPC policy/escaping helpers", () => {
     expect(resolveRoute("#unknown")).toBe("settings");
   });
 
-  test("inspectFilesLocally enforces batch intersection and COMBINE_PDF / MERGE_PDF actions", () => {
+  test("inspectFilesLocally enforces batch intersection, ZIP/UNZIP, REMOVE_BG, and OPTIMIZE_PDF", () => {
     const imgs = inspectFilesLocally(["/tmp/a.png", "/tmp/b.webp"]);
     expect(imgs.compatibleFormats).toContain("JPG");
+    expect(imgs.compatibleFormats).toContain("REMOVE_BG");
     expect(imgs.compatibleFormats).not.toContain("PNG");
     expect(imgs.compatibleFormats).not.toContain("WEBP");
-    expect(imgs.batchActions).toEqual(["COMBINE_PDF"]);
+    expect(imgs.batchActions).toEqual(["COMBINE_PDF", "ZIP"]);
 
     const pdfs = inspectFilesLocally(["/tmp/a.pdf", "/tmp/b.pdf"]);
-    expect(pdfs.batchActions).toEqual(["MERGE_PDF"]);
+    expect(pdfs.compatibleFormats).toContain("OPTIMIZE_PDF");
+    expect(pdfs.batchActions).toEqual(["MERGE_PDF", "ZIP"]);
 
     const mixed = inspectFilesLocally(["/tmp/a.png", "/tmp/b.mp3"]);
     expect(mixed.compatibleFormats).toEqual([]);
-    expect(mixed.batchActions).toEqual([]);
-    expect(mixed.availabilityMessage).toContain("No common output format");
+    expect(mixed.batchActions).toEqual(["ZIP"]);
+    expect(mixed.availabilityMessage).toBe("");
+
+    const singleZip = inspectFilesLocally(["/tmp/bundle.zip"]);
+    expect(singleZip.family).toBe("archive");
+    expect(singleZip.compatibleFormats).toEqual(["UNZIP"]);
+    expect(singleZip.batchActions).toEqual([]);
+
+    const singleOther = inspectFilesLocally(["/tmp/notes.bin"]);
+    expect(singleOther.compatibleFormats).toEqual(["ZIP"]);
   });
 
   test("escapeHtml escapes special HTML characters safely", () => {

@@ -17,6 +17,13 @@ pub fn convert(
 ) -> Result<Vec<PathBuf>, EngineError> {
     let fmt = format.trim().to_ascii_uppercase();
 
+    if fmt == "OPTIMIZE_PDF" {
+        unit_progress(35);
+        let out_pdf = staging_dir.join("optimized.pdf");
+        bridge::optimize_pdf(source, &out_pdf, Some(cancel))?;
+        return Ok(vec![out_pdf]);
+    }
+
     if matches!(fmt.as_str(), "PNG" | "JPG" | "HEIC" | "TIFF") {
         unit_progress(35);
         let render_dir = staging_dir.join("pdf-pages");

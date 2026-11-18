@@ -1,4 +1,6 @@
-use flip_lib::core::policy::EngineCapabilities;
+use flip_lib::core::policy::{
+    EngineCapabilities, MAX_CONTAINER_ENTRIES, MAX_CONTAINER_EXPANDED_BYTES,
+};
 use flip_lib::core::preferences::AppPreferences;
 use flip_lib::engines::create_new::{
     built_in_kinds, create_new_item, ensure_templates_dir_initialized, scan_user_templates,
@@ -8,7 +10,7 @@ use image::{GenericImageView, ImageBuffer, ImageFormat, Rgba};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -1369,4 +1371,483 @@ fn native_epub3_md_epub_txt_and_pdf_epub_roundtrips_without_pandoc() {
     }
 
     assert_eq!(sha256_file(&md_src), md_hash);
+}
+
+fn assert_no_residual_staging(root: &Path) {
+    for entry in fs::read_dir(root).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+        assert!(
+            !name.starts_with(".flip-job-"),
+            "Residual staging directory leaked in {}: {name}",
+            root.display()
+        );
+    }
+}
+
+fn build_test_pdf(path: &Path, page_count: usize, embed_rgb_image: bool) {
+    // Minimal valid PDF 1.4 generator with Helvetica font, selectable text per page,
+    // and optional uncompressed 500x360 DeviceRGB raster stream (~540 KB) for OPTIMIZE_PDF tests.
+    let mut pdf = Vec::<u8>::new();
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+
+    let mut offsets = Vec::<usize>::new();
+    let img_obj_id = 4usize;
+    let first_page_id = if embed_rgb_image { 5 } else { 4 };
+
+    // 1: Catalog
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    // 2: Pages
+    let kids: String = (0..page_count)
+        .map(|i| format!("{} 0 R", first_page_id + i * 2))
+        .collect::<Vec<_>>()
+        .join(" ");
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        format!("2 0 obj\n<< /Type /Pages /Kids [{kids}] /Count {page_count} >>\nendobj\n")
+            .as_bytes(),
+    );
+
+    // 3: Font
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        b"3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    );
+
+    // 4: Optional large uncompressed RGB Image XObject
+    if embed_rgb_image {
+        let w = 500usize;
+        let h = 360usize;
+        let mut raw_rgb = Vec::with_capacity(w * h * 3);
+        for y in 0..h {
+            for x in 0..w {
+                raw_rgb.push(((x * 255) / w) as u8);
+                raw_rgb.push(((y * 255) / h) as u8);
+                raw_rgb.push((((x ^ y) * 3) & 0xFF) as u8);
+            }
+        }
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(
+            format!(
+                "{img_obj_id} 0 obj\n<< /Type /XObject /Subtype /Image /Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {} >>\nstream\n",
+                raw_rgb.len()
+            )
+            .as_bytes(),
+        );
+        pdf.extend_from_slice(&raw_rgb);
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+    }
+
+    let xobj_res = if embed_rgb_image {
+        format!(" /XObject << /Im1 {img_obj_id} 0 R >>")
+    } else {
+        String::new()
+    };
+
+    for i in 0..page_count {
+        let page_id = first_page_id + i * 2;
+        let content_id = page_id + 1;
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(
+            format!(
+                "{page_id} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >>{xobj_res} >> /Contents {content_id} 0 R >>\nendobj\n"
+            )
+            .as_bytes(),
+        );
+
+        let stream_body = if embed_rgb_image {
+            format!(
+                "q 500 0 0 360 47 220 cm /Im1 Do Q\nBT /F1 18 Tf 72 720 Td (FLIP Selectable Marker Page {}) Tj ET\n",
+                i + 1
+            )
+        } else {
+            format!("BT /F1 14 Tf 72 720 Td (Page {}) Tj ET\n", i + 1)
+        };
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(
+            format!(
+                "{content_id} 0 obj\n<< /Length {} >>\nstream\n{stream_body}endstream\nendobj\n",
+                stream_body.len()
+            )
+            .as_bytes(),
+        );
+    }
+
+    let xref_pos = pdf.len();
+    pdf.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len() + 1).as_bytes());
+    for off in &offsets {
+        pdf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n",
+            offsets.len() + 1
+        )
+        .as_bytes(),
+    );
+
+    fs::write(path, &pdf).expect("write generated pdf");
+}
+
+#[test]
+fn zip_and_unzip_roundtrip_dedup_collisions_and_safety_rejections() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // 1. Single-file ZIP + non-overwrite collision (`note.zip` -> `note 2.zip`)
+    let note = dir.path().join("note.txt");
+    fs::write(&note, b"single zip payload").unwrap();
+    let note_hash = sha256_file(&note);
+
+    let single_zip_res =
+        convert_files(std::slice::from_ref(&note), &["ZIP".into()], &prefs, &cancel, None).unwrap();
+    assert!(single_zip_res[0].error.is_none(), "{:?}", single_zip_res[0].error);
+    let first_zip = PathBuf::from(&single_zip_res[0].outputs[0]);
+    assert_eq!(first_zip.file_name().unwrap().to_str().unwrap(), "note.zip");
+    let first_zip_hash = sha256_file(&first_zip);
+
+    let second_zip_res =
+        convert_files(std::slice::from_ref(&note), &["ZIP".into()], &prefs, &cancel, None).unwrap();
+    assert!(second_zip_res[0].error.is_none(), "{:?}", second_zip_res[0].error);
+    let second_zip = PathBuf::from(&second_zip_res[0].outputs[0]);
+    assert_eq!(second_zip.file_name().unwrap().to_str().unwrap(), "note 2.zip");
+    assert_eq!(sha256_file(&first_zip), first_zip_hash);
+    assert_eq!(sha256_file(&note), note_hash);
+
+    // 2. Single .zip refused for ZIP (must use UNZIP)
+    let double_zip_err =
+        convert_files(std::slice::from_ref(&first_zip), &["ZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(double_zip_err[0].error.is_some());
+
+    // 3. Multi-file ZIP across distinct folders with colliding basenames -> `report.txt` & `report (2).txt`
+    let folder_a = dir.path().join("folder_a");
+    let folder_b = dir.path().join("folder_b");
+    let folder_c = dir.path().join("folder_c");
+    fs::create_dir_all(&folder_a).unwrap();
+    fs::create_dir_all(&folder_b).unwrap();
+    fs::create_dir_all(&folder_c).unwrap();
+    let r_a = folder_a.join("report.txt");
+    let r_b = folder_b.join("report.txt");
+    let pic_c = folder_c.join("photo.png");
+    fs::write(&r_a, b"alpha report").unwrap();
+    fs::write(&r_b, b"beta report").unwrap();
+    make_transparent_test_png(&pic_c);
+
+    let batch_zip_res = convert_files(
+        &[r_a.clone(), r_b.clone(), pic_c.clone()],
+        &["ZIP".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(batch_zip_res[0].error.is_none(), "{:?}", batch_zip_res[0].error);
+    let batch_zip = PathBuf::from(&batch_zip_res[0].outputs[0]);
+    assert_eq!(batch_zip.file_name().unwrap().to_str().unwrap(), "report.zip");
+
+    let mut zr = ZipArchive::new(File::open(&batch_zip).unwrap()).unwrap();
+    assert_eq!(zr.len(), 3);
+    let mut entry_contents = HashMap::new();
+    for idx in 0..zr.len() {
+        let mut e = zr.by_index(idx).unwrap();
+        let mut data = Vec::new();
+        e.read_to_end(&mut data).unwrap();
+        entry_contents.insert(e.name().to_string(), data);
+    }
+    assert_eq!(entry_contents.get("report.txt").map(Vec::as_slice), Some(b"alpha report".as_slice()));
+    assert_eq!(entry_contents.get("report (2).txt").map(Vec::as_slice), Some(b"beta report".as_slice()));
+    assert!(entry_contents.contains_key("photo.png"));
+
+    // 4. UNZIP nested folder with executable permissions + sibling collision (`bundle` & `bundle 2`)
+    let bundle_zip = dir.path().join("bundle.zip");
+    {
+        let mut zw = ZipWriter::new(File::create(&bundle_zip).unwrap());
+        zw.add_directory(
+            "docs/",
+            SimpleFileOptions::default().compression_method(CompressionMethod::Stored),
+        )
+        .unwrap();
+        zw.start_file(
+            "docs/readme.txt",
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )
+        .unwrap();
+        zw.write_all(b"Hello bundle").unwrap();
+        zw.start_file(
+            "bin/run.sh",
+            SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Deflated)
+                .unix_permissions(0o755),
+        )
+        .unwrap();
+        zw.write_all(b"#!/bin/sh\necho ok\n").unwrap();
+        zw.finish().unwrap();
+    }
+
+    let unzip1 =
+        convert_files(std::slice::from_ref(&bundle_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(unzip1[0].error.is_none(), "{:?}", unzip1[0].error);
+    let out_dir1 = PathBuf::from(&unzip1[0].outputs[0]);
+    assert_eq!(out_dir1, dir.path().join("bundle"));
+    assert_eq!(
+        fs::read_to_string(out_dir1.join("docs/readme.txt")).unwrap(),
+        "Hello bundle"
+    );
+    let script_mode = fs::metadata(out_dir1.join("bin/run.sh")).unwrap().permissions().mode();
+    assert_ne!(script_mode & 0o111, 0, "executable bit should be preserved");
+
+    let unzip2 =
+        convert_files(std::slice::from_ref(&bundle_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(unzip2[0].error.is_none(), "{:?}", unzip2[0].error);
+    let out_dir2 = PathBuf::from(&unzip2[0].outputs[0]);
+    assert_eq!(out_dir2, dir.path().join("bundle 2"));
+    assert_eq!(
+        fs::read_to_string(out_dir1.join("docs/readme.txt")).unwrap(),
+        "Hello bundle"
+    );
+    assert_eq!(
+        fs::read_to_string(out_dir2.join("docs/readme.txt")).unwrap(),
+        "Hello bundle"
+    );
+
+    // 5. Reject zip-slip traversal (`../escaped.txt` and `/tmp/abs.txt`)
+    let slip_zip = dir.path().join("slip.zip");
+    {
+        let mut zw = ZipWriter::new(File::create(&slip_zip).unwrap());
+        zw.start_file("../escaped.txt", SimpleFileOptions::default()).unwrap();
+        zw.write_all(b"pwned").unwrap();
+        zw.finish().unwrap();
+    }
+    let slip_res =
+        convert_files(std::slice::from_ref(&slip_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(slip_res[0].error.is_some());
+    assert!(!dir.path().join("escaped.txt").exists());
+    assert!(!dir.path().join("slip").exists());
+
+    let abs_zip = dir.path().join("abs.zip");
+    {
+        let mut zw = ZipWriter::new(File::create(&abs_zip).unwrap());
+        zw.start_file("/tmp/abs_escaped.txt", SimpleFileOptions::default()).unwrap();
+        zw.write_all(b"pwned").unwrap();
+        zw.finish().unwrap();
+    }
+    let abs_res =
+        convert_files(std::slice::from_ref(&abs_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(abs_res[0].error.is_some());
+
+    // 6. Reject Unix symlink entry (`S_IFLNK = 0o120000`)
+    let link_zip = dir.path().join("symlink.zip");
+    {
+        let mut zw = ZipWriter::new(File::create(&link_zip).unwrap());
+        zw.add_symlink("leak", "/etc/passwd", SimpleFileOptions::default())
+            .unwrap();
+        zw.finish().unwrap();
+    }
+    let link_res =
+        convert_files(std::slice::from_ref(&link_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(link_res[0].error.is_some());
+    assert!(!dir.path().join("symlink").exists());
+
+    // 7. Reject > MAX_CONTAINER_ENTRIES (4,096)
+    let many_zip = dir.path().join("many.zip");
+    {
+        let mut zw = ZipWriter::new(File::create(&many_zip).unwrap());
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        for i in 0..=MAX_CONTAINER_ENTRIES {
+            zw.start_file(format!("e{i}.txt"), opts).unwrap();
+        }
+        zw.finish().unwrap();
+    }
+    let many_res =
+        convert_files(std::slice::from_ref(&many_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(many_res[0].error.is_some());
+    assert!(!dir.path().join("many").exists());
+
+    // 8. Reject cumulative > MAX_CONTAINER_EXPANDED_BYTES (256 MiB) compression bomb
+    let bomb_zip = dir.path().join("bomb.zip");
+    {
+        let mut zw = ZipWriter::new(File::create(&bomb_zip).unwrap());
+        let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let chunk = vec![0u8; 1024 * 1024];
+        let half_limit_mib = (MAX_CONTAINER_EXPANDED_BYTES as usize / (1024 * 1024)) / 2 + 8;
+        for part in ["part_a.bin", "part_b.bin"] {
+            zw.start_file(part, opts).unwrap();
+            for _ in 0..half_limit_mib {
+                zw.write_all(&chunk).unwrap();
+            }
+        }
+        zw.finish().unwrap();
+    }
+    let bomb_res =
+        convert_files(std::slice::from_ref(&bomb_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(bomb_res[0].error.is_some());
+    assert!(!dir.path().join("bomb").exists());
+
+    // 8b. Also verify forged small header uncompressed_size cannot bypass cumulative actual-byte check
+    let mut forged = fs::read(&bomb_zip).unwrap();
+    let half_bytes = (((MAX_CONTAINER_EXPANDED_BYTES as usize / (1024 * 1024)) / 2 + 8) * 1024 * 1024) as u32;
+    let half_le = half_bytes.to_le_bytes();
+    let forged_le = 16u32.to_le_bytes();
+    let mut patched_headers = 0usize;
+    for idx in 0..forged.len().saturating_sub(30) {
+        if &forged[idx..idx + 4] == b"PK\x03\x04" && forged[idx + 22..idx + 26] == half_le {
+            forged[idx + 22..idx + 26].copy_from_slice(&forged_le);
+            patched_headers += 1;
+        } else if &forged[idx..idx + 4] == b"PK\x01\x02" && forged[idx + 24..idx + 28] == half_le {
+            forged[idx + 24..idx + 28].copy_from_slice(&forged_le);
+            patched_headers += 1;
+        }
+    }
+    assert_eq!(patched_headers, 4, "expected 2 local + 2 central headers");
+    let forged_zip = dir.path().join("forged_bomb.zip");
+    fs::write(&forged_zip, &forged).unwrap();
+    let forged_res =
+        convert_files(std::slice::from_ref(&forged_zip), &["UNZIP".into()], &prefs, &cancel, None)
+            .unwrap();
+    assert!(
+        forged_res[0].error.is_some(),
+        "forged header bomb unexpectedly succeeded"
+    );
+    assert!(!dir.path().join("forged_bomb").exists());
+
+    assert_no_residual_staging(dir.path());
+}
+
+#[test]
+fn vision_remove_bg_cuts_subject_and_rejects_blank_image() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let src_cover = repo_root().join("docs/assets/flip-cover.png");
+    let cover_png = dir.path().join("cover.png");
+    fs::copy(&src_cover, &cover_png).unwrap();
+    let cover_hash = sha256_file(&cover_png);
+
+    let bg_res = convert_files(
+        std::slice::from_ref(&cover_png),
+        &["REMOVE_BG".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(bg_res[0].error.is_none(), "REMOVE_BG failed: {:?}", bg_res[0].error);
+    let out_png = PathBuf::from(&bg_res[0].outputs[0]);
+    assert_eq!(out_png.file_name().unwrap().to_str().unwrap(), "cover 2.png");
+    assert_eq!(sha256_file(&cover_png), cover_hash);
+
+    let rgba = image::open(&out_png).unwrap().to_rgba8();
+    assert_eq!(rgba.dimensions(), image::image_dimensions(&cover_png).unwrap());
+    let transparent_px = rgba.pixels().filter(|p| p[3] < 20).count();
+    let opaque_px = rgba.pixels().filter(|p| p[3] > 200).count();
+    assert!(transparent_px > 1000, "expected background transparency, got {transparent_px}");
+    assert!(opaque_px > 1000, "expected foreground subject pixels, got {opaque_px}");
+
+    // Solid uniform frame has no foreground subject and must fail cleanly without creating output
+    let blank_png = dir.path().join("blank.png");
+    let blank_img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+        ImageBuffer::from_pixel(120, 90, Rgba([128, 128, 128, 255]));
+    blank_img.save_with_format(&blank_png, ImageFormat::Png).unwrap();
+
+    let blank_res = convert_files(
+        std::slice::from_ref(&blank_png),
+        &["REMOVE_BG".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    let blank_err = blank_res[0].error.as_deref().unwrap_or("");
+    assert!(
+        !blank_err.is_empty()
+            && (blank_err.to_ascii_lowercase().contains("foreground")
+                || blank_err.to_ascii_lowercase().contains("subject")),
+        "unexpected blank REMOVE_BG error: {blank_err:?}"
+    );
+    assert!(!dir.path().join("blank 2.png").exists());
+    assert_no_residual_staging(dir.path());
+}
+
+#[test]
+fn optimize_pdf_shrinks_heavy_pdf_preserves_text_and_rejects_over_200_pages() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    // 1. 2-page PDF with heavy uncompressed RGB images + selectable Helvetica text
+    let heavy_pdf = dir.path().join("heavy.pdf");
+    build_test_pdf(&heavy_pdf, 2, true);
+    let heavy_len = fs::metadata(&heavy_pdf).unwrap().len();
+    let heavy_hash = sha256_file(&heavy_pdf);
+    assert!(heavy_len > 500_000, "expected uncompressed heavy PDF, got {heavy_len}");
+
+    let opt_res = convert_files(
+        std::slice::from_ref(&heavy_pdf),
+        &["OPTIMIZE_PDF".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(opt_res[0].error.is_none(), "OPTIMIZE_PDF failed: {:?}", opt_res[0].error);
+    let out_pdf = PathBuf::from(&opt_res[0].outputs[0]);
+    assert_eq!(out_pdf.file_name().unwrap().to_str().unwrap(), "heavy 2.pdf");
+    assert_eq!(sha256_file(&heavy_pdf), heavy_hash);
+
+    let out_bytes = fs::read(&out_pdf).unwrap();
+    assert!(out_bytes.starts_with(b"%PDF-"));
+    assert!(out_bytes.windows(5).any(|w| w == b"%%EOF"));
+    assert!(
+        (out_bytes.len() as u64) < heavy_len / 2,
+        "expected Quartz OPTIMIZE_PDF size reduction (< {}), got {}",
+        heavy_len / 2,
+        out_bytes.len()
+    );
+
+    // Selectable vector text must still extract cleanly after optimization
+    let txt_res = convert_files(
+        std::slice::from_ref(&out_pdf),
+        &["TXT".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(txt_res[0].error.is_none(), "TXT extract failed: {:?}", txt_res[0].error);
+    let extracted = fs::read_to_string(&txt_res[0].outputs[0]).unwrap();
+    assert!(
+        extracted.contains("FLIP Selectable Marker Page 1")
+            && extracted.contains("FLIP Selectable Marker Page 2"),
+        "Optimized PDF lost selectable text:\n{extracted}"
+    );
+
+    // 2. Reject 201-page PDF cleanly with 200-page safety limit
+    let pdf_201 = dir.path().join("too_many_pages.pdf");
+    build_test_pdf(&pdf_201, 201, false);
+    let over_res = convert_files(
+        std::slice::from_ref(&pdf_201),
+        &["OPTIMIZE_PDF".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    let over_err = over_res[0].error.as_deref().unwrap_or("");
+    assert!(
+        over_err.contains("200"),
+        "expected 200-page limit error, got: {over_err:?}"
+    );
+    assert!(!dir.path().join("too_many_pages 2.pdf").exists());
+    assert_no_residual_staging(dir.path());
 }

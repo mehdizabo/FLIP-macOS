@@ -3,6 +3,8 @@ import AppKit
 import PDFKit
 import Vision
 import CoreML
+import CoreImage
+import Quartz
 import AVFoundation
 import QuickLookThumbnailing
 import UniformTypeIdentifiers
@@ -425,6 +427,165 @@ enum MediaAndDocs {
             throw BridgeError.operationFailed("Failed to write merged PDF")
         }
         return ["ok": true, "pages": outDoc.pageCount, "output": outPdfPath]
+    }
+
+    private static func resolveReduceFileSizeFilter() -> QuartzFilter? {
+        let systemFilterURL = URL(fileURLWithPath: "/System/Library/Filters/Reduce File Size.qfilter")
+        if FileManager.default.fileExists(atPath: systemFilterURL.path),
+           let filter = QuartzFilter(url: systemFilterURL) {
+            return filter
+        }
+        let available = (QuartzFilterManager.filters(inDomains: nil) as? [QuartzFilter]) ?? []
+        if let byFilename = available.first(where: { $0.url()?.lastPathComponent == "Reduce File Size.qfilter" }) {
+            return byFilename
+        }
+        if let byName = available.first(where: { ($0.localizedName() ?? "").lowercased().contains("reduce") }) {
+            return byName
+        }
+        let fallbackProps: [String: Any] = [
+            "FilterType": 1,
+            "Name": "FLIP Reduce File Size",
+            "FilterData": [
+                "ColorSettings": [
+                    "ImageSettings": [
+                        "Compression Quality": 0.70,
+                        "ImageCompression": "ImageJPEGCompress",
+                        "ImageScaleSettings": [
+                            "ImageResolution": 144,
+                            "ImageScaleInterpolate": true,
+                            "ImageSizeMax": 2400,
+                            "ImageSizeMin": 0
+                        ]
+                    ]
+                ]
+            ]
+        ]
+        return QuartzFilter(properties: fallbackProps)
+    }
+
+    static func optimizePDF(inputPath: String, outputPath: String) throws -> [String: Any] {
+        guard !FileManager.default.fileExists(atPath: outputPath),
+              (try? FileManager.default.attributesOfItem(atPath: outputPath)) == nil else {
+            throw BridgeError.operationFailed("Refusing to overwrite existing output PDF: \(outputPath)")
+        }
+
+        let inURL = URL(fileURLWithPath: inputPath)
+        guard let doc = PDFDocument(url: inURL) else {
+            throw BridgeError.operationFailed("Failed to open PDF: \(inputPath)")
+        }
+        if doc.isLocked {
+            throw BridgeError.operationFailed("PDF is password-protected or encrypted")
+        }
+        let pageCount = doc.pageCount
+        guard pageCount > 0 else {
+            throw BridgeError.operationFailed("PDF has 0 pages")
+        }
+        if pageCount > 200 {
+            throw BridgeError.operationFailed("PDF exceeds 200-page safety limit (\(pageCount) pages)")
+        }
+
+        let inputAttrs = try? FileManager.default.attributesOfItem(atPath: inputPath)
+        let inputBytes = (inputAttrs?[.size] as? NSNumber)?.intValue ?? 0
+
+        let outData = NSMutableData()
+        guard let consumer = CGDataConsumer(data: outData as CFMutableData) else {
+            throw BridgeError.operationFailed("Failed to allocate PDF data consumer")
+        }
+        var defaultBox = CGRect(x: 0, y: 0, width: 595, height: 842)
+        guard let outCtx = CGContext(consumer: consumer, mediaBox: &defaultBox, nil) else {
+            throw BridgeError.operationFailed("Failed to create PDF CGContext")
+        }
+
+        let filter = resolveReduceFileSizeFilter()
+        let filterApplied = filter?.apply(to: outCtx) ?? false
+
+        if filterApplied {
+            for idx in 0..<pageCount {
+                try autoreleasepool {
+                    guard let page = doc.page(at: idx), let pageRef = page.pageRef else {
+                        throw BridgeError.operationFailed("Failed to load PDF page \(idx + 1)")
+                    }
+                    let mb = page.bounds(for: .mediaBox)
+                    let tr = page.transform(for: .mediaBox)
+                    let db = mb.applying(tr)
+                    var targetBox = CGRect(
+                        origin: .zero,
+                        size: CGSize(width: max(1, db.width), height: max(1, db.height))
+                    )
+                    let boxData = Data(bytes: &targetBox, count: MemoryLayout<CGRect>.size) as CFData
+                    outCtx.beginPDFPage([kCGPDFContextMediaBox: boxData] as CFDictionary)
+                    outCtx.saveGState()
+                    let drawTransform = pageRef.getDrawingTransform(
+                        .mediaBox,
+                        rect: targetBox,
+                        rotate: 0,
+                        preserveAspectRatio: true
+                    )
+                    outCtx.concatenate(drawTransform)
+                    outCtx.drawPDFPage(pageRef)
+                    outCtx.restoreGState()
+                    outCtx.endPDFPage()
+                }
+            }
+        } else {
+            // Fallback: rasterize at 144 DPI JPEG if QuartzFilter is unavailable
+            for idx in 0..<pageCount {
+                try autoreleasepool {
+                    guard let page = doc.page(at: idx) else {
+                        throw BridgeError.operationFailed("Failed to load PDF page \(idx + 1)")
+                    }
+                    let mb = page.bounds(for: .mediaBox)
+                    let tr = page.transform(for: .mediaBox)
+                    let db = mb.applying(tr)
+                    var targetBox = CGRect(
+                        origin: .zero,
+                        size: CGSize(width: max(1, db.width), height: max(1, db.height))
+                    )
+                    let cgImg = try renderPageToCGImage(page, dpi: 144.0)
+                    let jpgData = NSMutableData()
+                    guard let jpgDest = CGImageDestinationCreateWithData(
+                        jpgData as CFMutableData,
+                        UTType.jpeg.identifier as CFString,
+                        1,
+                        nil
+                    ) else {
+                        throw BridgeError.operationFailed("Failed to encode compressed PDF page image")
+                    }
+                    CGImageDestinationAddImage(
+                        jpgDest,
+                        cgImg,
+                        [kCGImageDestinationLossyCompressionQuality: 0.72] as CFDictionary
+                    )
+                    guard CGImageDestinationFinalize(jpgDest),
+                          let jpgSrc = CGImageSourceCreateWithData(jpgData as CFData, nil),
+                          let jpgImg = CGImageSourceCreateImageAtIndex(jpgSrc, 0, nil) else {
+                        throw BridgeError.operationFailed("Failed to decode compressed PDF page image")
+                    }
+                    let boxData = Data(bytes: &targetBox, count: MemoryLayout<CGRect>.size) as CFData
+                    outCtx.beginPDFPage([kCGPDFContextMediaBox: boxData] as CFDictionary)
+                    outCtx.draw(jpgImg, in: targetBox)
+                    outCtx.endPDFPage()
+                }
+            }
+        }
+
+        outCtx.closePDF()
+
+        let bytes = outData as Data
+        guard !bytes.isEmpty else {
+            throw BridgeError.operationFailed("PDF optimization produced empty output")
+        }
+        let outURL = URL(fileURLWithPath: outputPath)
+        try bytes.write(to: outURL, options: .withoutOverwriting)
+
+        return [
+            "ok": true,
+            "output": outputPath,
+            "pages": pageCount,
+            "inputBytes": inputBytes,
+            "outputBytes": bytes.count,
+            "quartzFilter": filterApplied
+        ]
     }
 
     private static func sanitizeHTMLForOfflineImport(_ html: String) -> String {
@@ -1114,6 +1275,96 @@ enum MediaAndDocs {
             throw BridgeError.operationFailed("ImageIO failed to write \(outputPath)")
         }
         return ["ok": true, "output": outputPath, "width": finalImage.width, "height": finalImage.height]
+    }
+
+    static func removeBackground(inputPath: String, outputPath: String) throws -> [String: Any] {
+        guard !FileManager.default.fileExists(atPath: outputPath),
+              (try? FileManager.default.attributesOfItem(atPath: outputPath)) == nil else {
+            throw BridgeError.operationFailed("Refusing to overwrite existing output PNG: \(outputPath)")
+        }
+
+        let inURL = URL(fileURLWithPath: inputPath)
+        guard let src = CGImageSourceCreateWithURL(inURL as CFURL, nil) else {
+            throw BridgeError.operationFailed("Could not open image: \(inputPath)")
+        }
+        let (orientation, _) = try inspectImagePropertiesPreDecode(src, path: inputPath)
+        guard let rawImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+            throw BridgeError.operationFailed("Could not decode image: \(inputPath)")
+        }
+        let (pixels, overflow) = Int64(rawImage.width).multipliedReportingOverflow(by: Int64(rawImage.height))
+        if rawImage.width <= 0 || rawImage.height <= 0 || overflow || pixels > maxImagePixels {
+            throw BridgeError.operationFailed("Image exceeds 40 megapixel safety limit or has zero size")
+        }
+
+        let uprightImage: CGImage
+        if orientation != 1 || rawImage.colorSpace?.model != .rgb {
+            uprightImage = normalizeOrientedImage(rawImage, orientation: orientation, flattenAlpha: false) ?? rawImage
+        } else {
+            uprightImage = rawImage
+        }
+
+        guard #available(macOS 14.0, *) else {
+            throw BridgeError.operationFailed("Vision background removal requires macOS 14.0 or newer")
+        }
+
+        let request = VNGenerateForegroundInstanceMaskRequest()
+        let handler = VNImageRequestHandler(cgImage: uprightImage, options: [:])
+        try handler.perform([request])
+
+        guard let observation = request.results?.first, !observation.allInstances.isEmpty else {
+            throw BridgeError.operationFailed("No foreground subject detected in image")
+        }
+
+        let maskPixelBuffer = try observation.generateScaledMaskForImage(
+            forInstances: observation.allInstances,
+            from: handler
+        )
+
+        let inputCI = CIImage(cgImage: uprightImage)
+        var maskCI = CIImage(cvPixelBuffer: maskPixelBuffer)
+        if maskCI.extent.size != inputCI.extent.size || maskCI.extent.origin != inputCI.extent.origin {
+            let sx = inputCI.extent.width / max(1.0, maskCI.extent.width)
+            let sy = inputCI.extent.height / max(1.0, maskCI.extent.height)
+            maskCI = maskCI
+                .transformed(by: CGAffineTransform(translationX: -maskCI.extent.origin.x, y: -maskCI.extent.origin.y))
+                .transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+                .transformed(by: CGAffineTransform(translationX: inputCI.extent.origin.x, y: inputCI.extent.origin.y))
+        }
+
+        let transparentBg = CIImage(color: .clear).cropped(to: inputCI.extent)
+        guard let blendFilter = CIFilter(name: "CIBlendWithMask", parameters: [
+            kCIInputImageKey: inputCI,
+            kCIInputBackgroundImageKey: transparentBg,
+            kCIInputMaskImageKey: maskCI
+        ]), let outputCI = blendFilter.outputImage else {
+            throw BridgeError.operationFailed("CoreImage CIBlendWithMask failed to composite foreground")
+        }
+
+        guard let srgb = CGColorSpace(name: CGColorSpace.sRGB) else {
+            throw BridgeError.operationFailed("Failed to allocate sRGB color space")
+        }
+        let ciCtx = CIContext(options: [.workingColorSpace: srgb])
+        guard let outCG = ciCtx.createCGImage(outputCI, from: inputCI.extent, format: .RGBA8, colorSpace: srgb) else {
+            throw BridgeError.operationFailed("CoreImage failed to render cutout PNG")
+        }
+
+        let outURL = URL(fileURLWithPath: outputPath)
+        guard let dest = CGImageDestinationCreateWithURL(outURL as CFURL, UTType.png.identifier as CFString, 1, nil) else {
+            throw BridgeError.operationFailed("Failed to create ImageIO PNG destination")
+        }
+        let outProps: [CFString: Any] = [kCGImagePropertyOrientation: 1]
+        CGImageDestinationAddImage(dest, outCG, outProps as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else {
+            throw BridgeError.operationFailed("ImageIO failed to finalize cutout PNG: \(outputPath)")
+        }
+
+        return [
+            "ok": true,
+            "output": outputPath,
+            "width": outCG.width,
+            "height": outCG.height,
+            "instances": observation.allInstances.count
+        ]
     }
 
     // MARK: - AVFoundation Native Media Export

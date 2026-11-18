@@ -442,7 +442,7 @@ fn host_inspect_paths_and_screen_clamp_integration() {
         &prefs,
     );
     assert_eq!(res.files.len(), 2);
-    assert_eq!(res.batch_actions, vec!["COMBINE_PDF"]);
+    assert_eq!(res.batch_actions, vec!["COMBINE_PDF", "ZIP"]);
     assert!(res.compatible_formats.contains(&"WEBP".to_string()));
     assert!(!res.compatible_formats.contains(&"PNG".to_string()));
     assert!(!res.compatible_formats.contains(&"JPG".to_string()));

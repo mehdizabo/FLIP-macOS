@@ -21,6 +21,10 @@ pub fn format_extension(format: &str) -> String {
         "YML" => "yaml".to_string(),
         "HEIF" => "heic".to_string(),
         "AIF" => "aiff".to_string(),
+        "REMOVE_BG" => "png".to_string(),
+        "OPTIMIZE_PDF" => "pdf".to_string(),
+        "ZIP" => "zip".to_string(),
+        "UNZIP" => String::new(),
         other => other.to_ascii_lowercase(),
     }
 }

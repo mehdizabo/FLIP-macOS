@@ -51,8 +51,12 @@ export const DEFAULT_PREFERRED_FORMATS: readonly string[] = [
   "ALAC",
   "XLSX",
   "PPTX",
+  "REMOVE_BG",
+  "OPTIMIZE_PDF",
   "COMBINE_PDF",
   "MERGE_PDF",
+  "UNZIP",
+  "ZIP",
 ];
 
 export interface Point2D {

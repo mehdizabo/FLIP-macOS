@@ -95,7 +95,7 @@ export function mountBatchView(root: HTMLElement): () => void {
         </div>
         <div class="batch-format-grid" id="batch-format-grid"></div>
         <div id="batch-actions-wrap" style="margin-top:12px;display:none">
-          <div class="setting-desc" style="margin-bottom:6px;font-weight:600">Batch Combine / Merge Actions</div>
+          <div class="setting-desc" style="margin-bottom:6px;font-weight:600">Batch &amp; Archive Actions</div>
           <div class="batch-format-grid" id="batch-actions-grid"></div>
         </div>
       </section>
@@ -176,6 +176,25 @@ export function mountBatchView(root: HTMLElement): () => void {
     const allOptions = [...inspection.compatibleFormats, ...inspection.batchActions];
     selectedFormats = new Set(Array.from(selectedFormats).filter((f) => allOptions.includes(f)));
 
+    const formatDisplayLabel = (fmt: string): string => {
+      switch (fmt) {
+        case "COMBINE_PDF":
+          return "Combine into PDF";
+        case "MERGE_PDF":
+          return "Merge PDFs";
+        case "ZIP":
+          return "Zip Archive";
+        case "UNZIP":
+          return "Unzip Folder";
+        case "REMOVE_BG":
+          return "Remove BG";
+        case "OPTIMIZE_PDF":
+          return "Optimize PDF";
+        default:
+          return getFormatMeta(fmt).shortLabel;
+      }
+    };
+
     if (files.length === 0) {
       compatSubtitleEl.textContent = "Add files to inspect compatible formats";
       formatGridEl.innerHTML = `<div class="setting-desc">Compatible output formats will appear here.</div>`;
@@ -186,29 +205,30 @@ export function mountBatchView(root: HTMLElement): () => void {
       actionsWrapEl.style.display = "none";
     } else {
       compatSubtitleEl.textContent = `${files.length} ${files.length === 1 ? "file" : "files"} · ${inspection.compatibleFormats.length} shared formats`;
-      formatGridEl.innerHTML = inspection.compatibleFormats
-        .map((fmt) => {
-          const checked = selectedFormats.has(fmt);
-          const meta = getFormatMeta(fmt);
-          return `
-            <label class="format-check-pill">
-              <input type="checkbox" data-format-chk="${escapeHtml(fmt)}" ${checked ? "checked" : ""} ${busy ? "disabled" : ""} />
-              <span>${escapeHtml(meta.shortLabel)}</span>
-            </label>
-          `;
-        })
-        .join("");
+      formatGridEl.innerHTML =
+        inspection.compatibleFormats.length === 0
+          ? `<div class="setting-desc">No shared per-file conversions — archive actions are available below.</div>`
+          : inspection.compatibleFormats
+              .map((fmt) => {
+                const checked = selectedFormats.has(fmt);
+                return `
+                  <label class="format-check-pill">
+                    <input type="checkbox" data-format-chk="${escapeHtml(fmt)}" ${checked ? "checked" : ""} ${busy ? "disabled" : ""} />
+                    <span>${escapeHtml(formatDisplayLabel(fmt))}</span>
+                  </label>
+                `;
+              })
+              .join("");
 
       if (inspection.batchActions.length > 0) {
         actionsWrapEl.style.display = "block";
         actionsGridEl.innerHTML = inspection.batchActions
           .map((act) => {
             const checked = selectedFormats.has(act);
-            const label = act === "COMBINE_PDF" ? "Combine into PDF" : act === "MERGE_PDF" ? "Merge PDFs" : act;
             return `
               <label class="format-check-pill">
                 <input type="checkbox" data-format-chk="${escapeHtml(act)}" ${checked ? "checked" : ""} ${busy ? "disabled" : ""} />
-                <span>${escapeHtml(label)}</span>
+                <span>${escapeHtml(formatDisplayLabel(act))}</span>
               </label>
             `;
           })
@@ -256,12 +276,7 @@ export function mountBatchView(root: HTMLElement): () => void {
           const detail = hasErr
             ? r.error!
             : r.outputs.map((p) => basename(p)).join(", ");
-          const fmtLabel =
-            r.format === "COMBINE_PDF"
-              ? "Combine into PDF"
-              : r.format === "MERGE_PDF"
-                ? "Merge PDFs"
-                : r.format;
+          const fmtLabel = formatDisplayLabel(r.format);
           return `
             <div class="batch-result-row">
               <div style="min-width:0;flex:1">
