@@ -240,7 +240,7 @@ export const EN_STRINGS = {
   "settings.engines.ready": "Ready",
   "settings.engines.missing": "Missing",
   "settings.engines.cliTitle": "Optional Local CLI Engines",
-  "settings.engines.cliSub": "Unlocks MKV/WebM/MP3/OGG/OPUS transcoding &amp; enhanced Pandoc passes (CAF, FLAC, EPUB 3, FB2, and RST are built-in)",
+  "settings.engines.cliSub": "Unlocks MKV/WebM/MP3/OGG/OPUS transcoding & enhanced Pandoc passes (CAF, FLAC, EPUB 3, FB2, and RST are built-in)",
   "settings.engines.detected": "Detected",
   "settings.engines.notFound": "Not Found",
   "settings.engines.autoDetect": "Auto-detect",

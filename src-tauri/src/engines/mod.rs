@@ -410,15 +410,38 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
             let mut reader = quick_xml::Reader::from_str(&raw);
             let mut buf = Vec::new();
             let mut root_name: Option<String> = None;
+            let mut depth: usize = 0;
             loop {
                 match reader.read_event_into(&mut buf) {
-                    Ok(quick_xml::events::Event::Start(ref e))
-                    | Ok(quick_xml::events::Event::Empty(ref e)) => {
+                    Ok(quick_xml::events::Event::Start(ref e)) => {
+                        if depth == 0 && root_name.is_some() {
+                            return Err(EngineError::ValidationFailed(
+                                path.display().to_string(),
+                                "Multiple XML root elements in FB2".to_string(),
+                            ));
+                        }
                         if root_name.is_none() {
                             root_name = Some(
                                 String::from_utf8_lossy(e.local_name().as_ref()).to_string(),
                             );
                         }
+                        depth += 1;
+                    }
+                    Ok(quick_xml::events::Event::Empty(ref e)) => {
+                        if depth == 0 && root_name.is_some() {
+                            return Err(EngineError::ValidationFailed(
+                                path.display().to_string(),
+                                "Multiple XML root elements in FB2".to_string(),
+                            ));
+                        }
+                        if root_name.is_none() {
+                            root_name = Some(
+                                String::from_utf8_lossy(e.local_name().as_ref()).to_string(),
+                            );
+                        }
+                    }
+                    Ok(quick_xml::events::Event::End(_)) => {
+                        depth = depth.saturating_sub(1);
                     }
                     Ok(quick_xml::events::Event::Eof) => break,
                     Ok(_) => {}
@@ -430,6 +453,12 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
                     }
                 }
                 buf.clear();
+            }
+            if depth != 0 {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Truncated FB2 XML with unclosed element".to_string(),
+                ));
             }
             if !root_name
                 .as_deref()
@@ -455,8 +484,32 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
             let raw = fs::read_to_string(path)?;
             let mut reader = quick_xml::Reader::from_str(&raw);
             let mut buf = Vec::new();
+            let mut saw_root = false;
+            let mut depth: usize = 0;
             loop {
                 match reader.read_event_into(&mut buf) {
+                    Ok(quick_xml::events::Event::Start(_)) => {
+                        if depth == 0 && saw_root {
+                            return Err(EngineError::ValidationFailed(
+                                path.display().to_string(),
+                                "Multiple XML root elements".to_string(),
+                            ));
+                        }
+                        saw_root = true;
+                        depth += 1;
+                    }
+                    Ok(quick_xml::events::Event::Empty(_)) => {
+                        if depth == 0 && saw_root {
+                            return Err(EngineError::ValidationFailed(
+                                path.display().to_string(),
+                                "Multiple XML root elements".to_string(),
+                            ));
+                        }
+                        saw_root = true;
+                    }
+                    Ok(quick_xml::events::Event::End(_)) => {
+                        depth = depth.saturating_sub(1);
+                    }
                     Ok(quick_xml::events::Event::Eof) => break,
                     Ok(_) => {}
                     Err(e) => {
@@ -467,6 +520,12 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
                     }
                 }
                 buf.clear();
+            }
+            if !saw_root || depth != 0 {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Truncated or empty XML document".to_string(),
+                ));
             }
         }
         _ => {}
@@ -961,6 +1020,14 @@ mod tests {
         let malformed_fb2 = dir.path().join("bad.fb2");
         fs::write(&malformed_fb2, "<FictionBook><body></FictionBook>").unwrap();
         assert!(validate_output(&malformed_fb2, "FB2").is_err());
+
+        let truncated_fb2 = dir.path().join("truncated.fb2");
+        fs::write(&truncated_fb2, "<FictionBook><body><section><p>unclosed").unwrap();
+        assert!(validate_output(&truncated_fb2, "FB2").is_err());
+
+        let multiroot_fb2 = dir.path().join("multiroot.fb2");
+        fs::write(&multiroot_fb2, "<FictionBook/> <extra/>").unwrap();
+        assert!(validate_output(&multiroot_fb2, "FB2").is_err());
 
         let valid_rst = dir.path().join("valid.rst");
         fs::write(&valid_rst, "Title\n=====\n\nBody\n").unwrap();

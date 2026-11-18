@@ -584,7 +584,11 @@ pub fn convert_via_pandoc(
     }
     args.push(input.to_string_lossy().into_owned());
 
-    let (_out, err) = bridge::run_external_command(pandoc, &args, Some(staging_dir), 120, Some(cancel))?;
+    let (_out, err) = bridge::run_external_command(pandoc, &args, Some(staging_dir), 120, Some(cancel))
+        .map_err(|e| match e {
+            bridge::BridgeError::Cancelled => EngineError::Cancelled,
+            other => EngineError::Bridge(other),
+        })?;
     let err_low = err.to_ascii_lowercase();
     if err_low.contains("could not fetch")
         || err_low.contains("could not convert image")
@@ -1980,9 +1984,9 @@ fn read_text_bounded_with_utf16(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fb2OpenTag {
     Section,
-    Title,
+    Title(u8),
     TitlePara,
-    Subtitle,
+    Subtitle(u8),
     Poem,
     Stanza,
     Verse,
@@ -2054,6 +2058,11 @@ pub fn parse_fb2_to_html(xml: &str, fallback_title: &str) -> Result<(String, Str
                         "Invalid FB2 root element <{lname}>; expected <FictionBook>"
                     )));
                 }
+                if tag_stack.is_empty() {
+                    return Err(EngineError::ConversionFailed(format!(
+                        "Unexpected trailing XML element <{lname}> after </FictionBook>"
+                    )));
+                }
 
                 if skip_depth > 0 {
                     if lname == "title-info" && in_description && !in_src_title_info {
@@ -2088,17 +2097,17 @@ pub fn parse_fb2_to_html(xml: &str, fallback_title: &str) -> Result<(String, Str
                         tag_stack.push(Fb2OpenTag::Section);
                     }
                     "title" => {
-                        let lvl = section_depth.clamp(1, 6);
+                        let lvl = section_depth.clamp(1, 6) as u8;
                         body_out.push_str(&format!("<h{lvl}>"));
                         title_depth += 1;
                         title_has_para = false;
-                        tag_stack.push(Fb2OpenTag::Title);
+                        tag_stack.push(Fb2OpenTag::Title(lvl));
                     }
                     "subtitle" => {
-                        let lvl = (section_depth + 1).clamp(2, 6);
+                        let lvl = (section_depth + 1).clamp(2, 6) as u8;
                         body_out.push_str(&format!("<h{lvl}>"));
                         title_depth += 1;
-                        tag_stack.push(Fb2OpenTag::Subtitle);
+                        tag_stack.push(Fb2OpenTag::Subtitle(lvl));
                     }
                     "poem" => {
                         body_out.push_str("<div class=\"poem\">\n");
@@ -2222,6 +2231,11 @@ pub fn parse_fb2_to_html(xml: &str, fallback_title: &str) -> Result<(String, Str
                         "Invalid FB2 root element <{lname}>; expected <FictionBook>"
                     )));
                 }
+                if tag_stack.is_empty() {
+                    return Err(EngineError::ConversionFailed(format!(
+                        "Unexpected trailing XML element <{lname}/> after </FictionBook>"
+                    )));
+                }
                 if skip_depth == 0 && lname == "empty-line" {
                     if title_depth > 0
                         || tag_stack.contains(&Fb2OpenTag::Paragraph)
@@ -2242,14 +2256,14 @@ pub fn parse_fb2_to_html(xml: &str, fallback_title: &str) -> Result<(String, Str
                 };
                 if in_book_title {
                     book_title_acc.push_str(&text);
-                } else if skip_depth == 0 && saw_root {
+                } else if skip_depth == 0 && saw_root && !tag_stack.is_empty() {
                     let in_mixed_content = matches!(
                         tag_stack.last(),
                         Some(
                             Fb2OpenTag::Paragraph
-                                | Fb2OpenTag::Title
+                                | Fb2OpenTag::Title(_)
                                 | Fb2OpenTag::TitlePara
-                                | Fb2OpenTag::Subtitle
+                                | Fb2OpenTag::Subtitle(_)
                                 | Fb2OpenTag::Verse
                                 | Fb2OpenTag::TextAuthor
                                 | Fb2OpenTag::Code
@@ -2272,7 +2286,7 @@ pub fn parse_fb2_to_html(xml: &str, fallback_title: &str) -> Result<(String, Str
                 let text = String::from_utf8_lossy(t.as_ref());
                 if in_book_title {
                     book_title_acc.push_str(&text);
-                } else if skip_depth == 0 && saw_root {
+                } else if skip_depth == 0 && saw_root && !tag_stack.is_empty() {
                     body_out.push_str(&html_escape(&text));
                 }
             }
@@ -2304,13 +2318,11 @@ pub fn parse_fb2_to_html(xml: &str, fallback_title: &str) -> Result<(String, Str
                             section_depth = section_depth.saturating_sub(1);
                             body_out.push_str("</section>\n");
                         }
-                        Fb2OpenTag::Title => {
-                            let lvl = section_depth.clamp(1, 6);
+                        Fb2OpenTag::Title(lvl) => {
                             title_depth = title_depth.saturating_sub(1);
                             body_out.push_str(&format!("</h{lvl}>\n"));
                         }
-                        Fb2OpenTag::Subtitle => {
-                            let lvl = (section_depth + 1).clamp(2, 6);
+                        Fb2OpenTag::Subtitle(lvl) => {
                             title_depth = title_depth.saturating_sub(1);
                             body_out.push_str(&format!("</h{lvl}>\n"));
                         }
@@ -2350,6 +2362,11 @@ pub fn parse_fb2_to_html(xml: &str, fallback_title: &str) -> Result<(String, Str
             "Empty or invalid FB2 XML: missing <FictionBook>".to_string(),
         ));
     }
+    if !tag_stack.is_empty() {
+        return Err(EngineError::ConversionFailed(
+            "Malformed FB2 XML: unexpected EOF with unclosed elements".to_string(),
+        ));
+    }
 
     let final_title = book_title
         .filter(|t| !t.trim().is_empty())
@@ -2378,7 +2395,7 @@ pub fn read_fb2_to_html(path: &Path) -> Result<(String, String), EngineError> {
     parse_fb2_to_html(&raw, fallback)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Fb2WriteInline {
     Strong,
     Emphasis,
@@ -2386,23 +2403,23 @@ enum Fb2WriteInline {
     Strikethrough,
     Sup,
     Sub,
-    Link,
+    Link(String),
 }
 
 impl Fb2WriteInline {
-    fn open_tag(self) -> &'static str {
+    fn open_tag(&self) -> String {
         match self {
-            Self::Strong => "<strong>",
-            Self::Emphasis => "<emphasis>",
-            Self::Code => "<code>",
-            Self::Strikethrough => "<strikethrough>",
-            Self::Sup => "<sup>",
-            Self::Sub => "<sub>",
-            Self::Link => "<a>",
+            Self::Strong => "<strong>".to_string(),
+            Self::Emphasis => "<emphasis>".to_string(),
+            Self::Code => "<code>".to_string(),
+            Self::Strikethrough => "<strikethrough>".to_string(),
+            Self::Sup => "<sup>".to_string(),
+            Self::Sub => "<sub>".to_string(),
+            Self::Link(href) => format!("<a l:href=\"{}\">", xml_escape(href)),
         }
     }
 
-    fn close_tag(self) -> &'static str {
+    fn close_tag(&self) -> &'static str {
         match self {
             Self::Strong => "</strong>",
             Self::Emphasis => "</emphasis>",
@@ -2410,8 +2427,12 @@ impl Fb2WriteInline {
             Self::Strikethrough => "</strikethrough>",
             Self::Sup => "</sup>",
             Self::Sub => "</sub>",
-            Self::Link => "</a>",
+            Self::Link(_) => "</a>",
         }
+    }
+
+    fn same_kind(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
 
@@ -2443,10 +2464,12 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
     let mut block_buf = String::new();
     let mut block_has_non_ws = false;
     let mut inline_stack: Vec<Fb2WriteInline> = Vec::new();
+    let mut ignored_link_depth = 0usize;
     let mut in_pre = false;
     let mut pre_buf = String::new();
-    let mut in_cite = false;
+    let mut cite_depth = 0usize;
     let mut in_table = false;
+    let mut table_nest_depth = 0usize;
     let mut in_tr = false;
     let mut list_stack: Vec<(bool, usize)> = Vec::new();
     let mut pending_li_prefix: Option<String> = None;
@@ -2457,15 +2480,16 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
         }
     };
 
-    let close_inline_until = |kind: Fb2WriteInline, buf: &mut String, stack: &mut Vec<Fb2WriteInline>| {
-        if let Some(pos) = stack.iter().rposition(|&k| k == kind) {
-            while stack.len() > pos {
-                if let Some(popped) = stack.pop() {
-                    buf.push_str(popped.close_tag());
+    let close_inline_until =
+        |kind: &Fb2WriteInline, buf: &mut String, stack: &mut Vec<Fb2WriteInline>| {
+            if let Some(pos) = stack.iter().rposition(|k| k.same_kind(kind)) {
+                while stack.len() > pos {
+                    if let Some(popped) = stack.pop() {
+                        buf.push_str(popped.close_tag());
+                    }
                 }
             }
-        }
-    };
+        };
 
     let ensure_section = |out: &mut String, open: &mut bool| {
         if !*open {
@@ -2481,8 +2505,10 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                         buf: &mut String,
                         has_non_ws: &mut bool,
                         stack: &mut Vec<Fb2WriteInline>,
-                        prefix: &mut Option<String>| {
+                        prefix: &mut Option<String>,
+                        ignored_links: &mut usize| {
         close_all_inline(buf, stack);
+        *ignored_links = 0;
         match *target {
             BlockTarget::None => {}
             BlockTarget::SectionTitle => {
@@ -2550,7 +2576,7 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
 
     let bytes = body_slice.as_bytes();
     let mut i = 0;
-    let mut skip_tag: Option<String> = None;
+    let mut skip_tag: Option<(String, usize)> = None;
 
     while i < bytes.len() {
         if bytes[i] == b'<' {
@@ -2573,7 +2599,10 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                     if in_pre {
                         pre_buf.push_str(raw);
                     } else {
-                        if matches!(block_target, BlockTarget::None) && !raw.trim().is_empty() {
+                        if matches!(block_target, BlockTarget::None)
+                            && !in_table
+                            && !raw.trim().is_empty()
+                        {
                             block_target = BlockTarget::Para;
                         }
                         if !matches!(block_target, BlockTarget::None) {
@@ -2594,7 +2623,7 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                 if skip_tag.is_none() {
                     if in_pre {
                         pre_buf.push('<');
-                    } else {
+                    } else if !in_table || matches!(block_target, BlockTarget::TableCell(_)) {
                         if matches!(block_target, BlockTarget::None) {
                             block_target = BlockTarget::Para;
                         }
@@ -2647,25 +2676,59 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                 i = find_raw_close_tag(body_slice, i, &tag_name).unwrap_or(bytes.len());
                 continue;
             }
-            if let Some(ref skipping) = skip_tag {
-                if is_close && &tag_name == skipping {
-                    skip_tag = None;
+            if let Some((ref skipping, ref mut depth)) = skip_tag {
+                if &tag_name == skipping {
+                    if is_close {
+                        *depth -= 1;
+                        if *depth == 0 {
+                            skip_tag = None;
+                        }
+                    } else if !self_closing {
+                        *depth += 1;
+                    }
                 }
                 continue;
             }
-            if !is_close && tag_name == "head" && !self_closing {
-                skip_tag = Some(tag_name);
+            if !is_close
+                && matches!(tag_name.as_str(), "head" | "svg" | "iframe" | "object" | "embed")
+                && !self_closing
+            {
+                skip_tag = Some((tag_name, 1));
                 continue;
             }
 
             if in_pre {
                 if is_close && tag_name == "pre" {
-                    flush_pre(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut pre_buf,
-                    );
+                    if matches!(block_target, BlockTarget::TableCell(_)) {
+                        let decoded = decode_html_entities(&pre_buf);
+                        let normalized = decoded.replace("\r\n", "\n").replace('\r', "\n");
+                        let trimmed_end = normalized.strip_suffix('\n').unwrap_or(&normalized);
+                        for line in trimmed_end.split('\n') {
+                            let piece = line.trim();
+                            if !piece.is_empty() {
+                                if block_has_non_ws
+                                    && !block_buf.is_empty()
+                                    && !block_buf.ends_with(' ')
+                                {
+                                    block_buf.push(' ');
+                                }
+                                block_buf.push_str("<code>");
+                                block_buf.push_str(&xml_escape_text(piece));
+                                block_buf.push_str("</code>");
+                                block_has_non_ws = true;
+                            }
+                        }
+                        pre_buf.clear();
+                    } else if !in_table {
+                        flush_pre(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut pre_buf,
+                        );
+                    } else {
+                        pre_buf.clear();
+                    }
                     in_pre = false;
                 } else if !is_close && tag_name == "br" {
                     pre_buf.push('\n');
@@ -2673,167 +2736,226 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                 continue;
             }
 
+            let in_cell = matches!(block_target, BlockTarget::TableCell(_));
+
             match (is_close, tag_name.as_str()) {
                 (false, "h1" | "h2") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                    if in_cite {
-                        sections_xml.push_str("      </cite>\n");
-                        in_cite = false;
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        if in_tr {
+                            sections_xml.push_str("</tr>\n");
+                            in_tr = false;
+                        }
+                        if in_table {
+                            sections_xml.push_str("      </table>\n");
+                            in_table = false;
+                            table_nest_depth = 0;
+                        }
+                        if cite_depth > 0 {
+                            sections_xml.push_str("      </cite>\n");
+                            cite_depth = 0;
+                        }
+                        if section_open && section_has_body {
+                            sections_xml.push_str("    </section>\n");
+                            section_open = false;
+                            section_has_body = false;
+                        } else if section_open {
+                            sections_xml.push_str("      <empty-line/>\n    </section>\n");
+                            section_open = false;
+                        }
+                        block_target = BlockTarget::SectionTitle;
                     }
-                    if section_open && section_has_body {
-                        sections_xml.push_str("    </section>\n");
-                        section_open = false;
-                        section_has_body = false;
-                    } else if section_open {
-                        sections_xml.push_str("      <empty-line/>\n    </section>\n");
-                        section_open = false;
-                    }
-                    block_target = BlockTarget::SectionTitle;
                 }
                 (true, "h1" | "h2") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else if matches!(block_target, BlockTarget::SectionTitle) {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                    }
                 }
                 (false, "h3" | "h4" | "h5" | "h6") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                    block_target = BlockTarget::Subtitle;
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else if !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        block_target = BlockTarget::Subtitle;
+                    }
                 }
                 (true, "h3" | "h4" | "h5" | "h6") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else if matches!(block_target, BlockTarget::Subtitle) {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                    }
                 }
                 (false, "pre") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
+                    if !in_cell && !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                    } else if in_cell && block_has_non_ws && !block_buf.ends_with(' ') {
+                        block_buf.push(' ');
+                    }
                     in_pre = true;
                     pre_buf.clear();
                 }
                 (false, "blockquote") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                    ensure_section(&mut sections_xml, &mut section_open);
-                    if !in_cite {
-                        sections_xml.push_str("      <cite>\n");
-                        in_cite = true;
-                        section_has_body = true;
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else if !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        ensure_section(&mut sections_xml, &mut section_open);
+                        if cite_depth == 0 {
+                            sections_xml.push_str("      <cite>\n");
+                            section_has_body = true;
+                        }
+                        cite_depth += 1;
                     }
                 }
                 (true, "blockquote") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                    if in_cite {
-                        sections_xml.push_str("      </cite>\n");
-                        in_cite = false;
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else if !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        if cite_depth > 0 {
+                            cite_depth -= 1;
+                            if cite_depth == 0 {
+                                sections_xml.push_str("      </cite>\n");
+                            }
+                        }
                     }
                 }
                 (false, "ul") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
+                    if !in_cell && !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                    }
                     list_stack.push((false, 0));
                 }
                 (false, "ol") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
+                    if !in_cell && !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                    }
                     list_stack.push((true, 0));
                 }
                 (true, "ul" | "ol") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
+                    if !in_cell && !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                    }
                     list_stack.pop();
                 }
                 (false, "li") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
                     let indent = "  ".repeat(list_stack.len().saturating_sub(1));
                     let marker = if let Some((true, count)) = list_stack.last_mut() {
                         *count += 1;
@@ -2841,25 +2963,57 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                     } else {
                         format!("{indent}- ")
                     };
-                    block_target = BlockTarget::Para;
-                    block_buf.push_str(&xml_escape_text(&marker));
-                    block_has_non_ws = true;
-                    pending_li_prefix = Some(marker);
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push_str("; ");
+                        }
+                        block_buf.push_str(&xml_escape_text(&marker));
+                        block_has_non_ws = true;
+                        pending_li_prefix = Some(marker);
+                    } else if !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        block_target = BlockTarget::Para;
+                        block_buf.push_str(&xml_escape_text(&marker));
+                        block_has_non_ws = true;
+                        pending_li_prefix = Some(marker);
+                    }
                 }
                 (true, "li") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
+                    if !in_cell && !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                    } else if in_cell {
+                        pending_li_prefix = None;
+                    }
                 }
                 (false, "p" | "div") => {
-                    if !matches!(block_target, BlockTarget::TableCell(_))
+                    if in_cell {
+                        if block_has_non_ws
+                            && pending_li_prefix.is_none()
+                            && !block_buf.ends_with(' ')
+                        {
+                            block_buf.push(' ');
+                        }
+                    } else if !in_table
                         && !(matches!(block_target, BlockTarget::Para)
                             && pending_li_prefix.is_some())
                     {
@@ -2872,12 +3026,17 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                             &mut block_has_non_ws,
                             &mut inline_stack,
                             &mut pending_li_prefix,
+                            &mut ignored_link_depth,
                         );
                         block_target = BlockTarget::Para;
                     }
                 }
                 (true, "p" | "div") => {
-                    if !matches!(block_target, BlockTarget::TableCell(_)) {
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else if !in_table {
                         finish_block(
                             &mut sections_xml,
                             &mut section_open,
@@ -2887,6 +3046,7 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                             &mut block_has_non_ws,
                             &mut inline_stack,
                             &mut pending_li_prefix,
+                            &mut ignored_link_depth,
                         );
                     }
                 }
@@ -2902,10 +3062,11 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                             &mut block_has_non_ws,
                             &mut inline_stack,
                             &mut pending_li_prefix,
+                            &mut ignored_link_depth,
                         );
                         block_target = BlockTarget::Para;
                         for tag in saved_stack {
-                            block_buf.push_str(tag.open_tag());
+                            block_buf.push_str(&tag.open_tag());
                             inline_stack.push(tag);
                         }
                     } else if matches!(
@@ -2913,179 +3074,290 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                         BlockTarget::SectionTitle
                             | BlockTarget::Subtitle
                             | BlockTarget::TableCell(_)
-                    ) {
+                    ) && !block_buf.ends_with(' ')
+                    {
                         block_buf.push(' ');
                     }
                 }
                 (false, "hr") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                    ensure_section(&mut sections_xml, &mut section_open);
-                    sections_xml.push_str("      <p>---</p>\n");
-                    section_has_body = true;
+                    if in_cell {
+                        if block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else if !in_table {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        ensure_section(&mut sections_xml, &mut section_open);
+                        sections_xml.push_str("      <p>---</p>\n");
+                        section_has_body = true;
+                    }
                 }
                 (false, "table") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                    ensure_section(&mut sections_xml, &mut section_open);
-                    sections_xml.push_str("      <table>\n");
-                    in_table = true;
-                    section_has_body = true;
+                    if in_table {
+                        table_nest_depth += 1;
+                        if in_cell && block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        ensure_section(&mut sections_xml, &mut section_open);
+                        sections_xml.push_str("      <table>\n");
+                        in_table = true;
+                        table_nest_depth = 0;
+                        section_has_body = true;
+                    }
                 }
                 (true, "table") => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                    if in_tr {
-                        sections_xml.push_str("</tr>\n");
-                        in_tr = false;
-                    }
-                    if in_table {
-                        sections_xml.push_str("      </table>\n");
-                        in_table = false;
-                    }
-                }
-                (false, "tr") if in_table => {
-                    sections_xml.push_str("        <tr>");
-                    in_tr = true;
-                }
-                (true, "tr") if in_tr => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                    sections_xml.push_str("</tr>\n");
-                    in_tr = false;
-                }
-                (false, "th") if in_tr => {
-                    block_target = BlockTarget::TableCell("th");
-                }
-                (false, "td") if in_tr => {
-                    block_target = BlockTarget::TableCell("td");
-                }
-                (true, "th" | "td") if in_tr => {
-                    finish_block(
-                        &mut sections_xml,
-                        &mut section_open,
-                        &mut section_has_body,
-                        &mut block_target,
-                        &mut block_buf,
-                        &mut block_has_non_ws,
-                        &mut inline_stack,
-                        &mut pending_li_prefix,
-                    );
-                }
-                (false, "strong" | "b") => {
-                    if matches!(block_target, BlockTarget::None) {
-                        block_target = BlockTarget::Para;
-                    }
-                    block_buf.push_str(Fb2WriteInline::Strong.open_tag());
-                    inline_stack.push(Fb2WriteInline::Strong);
-                }
-                (true, "strong" | "b") => close_inline_until(
-                    Fb2WriteInline::Strong,
-                    &mut block_buf,
-                    &mut inline_stack,
-                ),
-                (false, "em" | "i") => {
-                    if matches!(block_target, BlockTarget::None) {
-                        block_target = BlockTarget::Para;
-                    }
-                    block_buf.push_str(Fb2WriteInline::Emphasis.open_tag());
-                    inline_stack.push(Fb2WriteInline::Emphasis);
-                }
-                (true, "em" | "i") => close_inline_until(
-                    Fb2WriteInline::Emphasis,
-                    &mut block_buf,
-                    &mut inline_stack,
-                ),
-                (false, "code" | "kbd" | "samp" | "tt") => {
-                    if matches!(block_target, BlockTarget::None) {
-                        block_target = BlockTarget::Para;
-                    }
-                    block_buf.push_str(Fb2WriteInline::Code.open_tag());
-                    inline_stack.push(Fb2WriteInline::Code);
-                }
-                (true, "code" | "kbd" | "samp" | "tt") => close_inline_until(
-                    Fb2WriteInline::Code,
-                    &mut block_buf,
-                    &mut inline_stack,
-                ),
-                (false, "del" | "s" | "strike") => {
-                    if matches!(block_target, BlockTarget::None) {
-                        block_target = BlockTarget::Para;
-                    }
-                    block_buf.push_str(Fb2WriteInline::Strikethrough.open_tag());
-                    inline_stack.push(Fb2WriteInline::Strikethrough);
-                }
-                (true, "del" | "s" | "strike") => close_inline_until(
-                    Fb2WriteInline::Strikethrough,
-                    &mut block_buf,
-                    &mut inline_stack,
-                ),
-                (false, "sup") => {
-                    if matches!(block_target, BlockTarget::None) {
-                        block_target = BlockTarget::Para;
-                    }
-                    block_buf.push_str(Fb2WriteInline::Sup.open_tag());
-                    inline_stack.push(Fb2WriteInline::Sup);
-                }
-                (true, "sup") => {
-                    close_inline_until(Fb2WriteInline::Sup, &mut block_buf, &mut inline_stack)
-                }
-                (false, "sub") => {
-                    if matches!(block_target, BlockTarget::None) {
-                        block_target = BlockTarget::Para;
-                    }
-                    block_buf.push_str(Fb2WriteInline::Sub.open_tag());
-                    inline_stack.push(Fb2WriteInline::Sub);
-                }
-                (true, "sub") => {
-                    close_inline_until(Fb2WriteInline::Sub, &mut block_buf, &mut inline_stack)
-                }
-                (false, "a") => {
-                    if let Some(href) = extract_attr(inner, "href") {
-                        let trimmed = href.trim();
-                        if is_safe_xhtml_url(trimmed, false) {
-                            if matches!(block_target, BlockTarget::None) {
-                                block_target = BlockTarget::Para;
-                            }
-                            block_buf.push_str(&format!("<a l:href=\"{}\">", xml_escape(trimmed)));
-                            inline_stack.push(Fb2WriteInline::Link);
+                    if table_nest_depth > 0 {
+                        table_nest_depth -= 1;
+                        if in_cell && block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        if in_tr {
+                            sections_xml.push_str("</tr>\n");
+                            in_tr = false;
+                        }
+                        if in_table {
+                            sections_xml.push_str("      </table>\n");
+                            in_table = false;
                         }
                     }
                 }
-                (true, "a") => {
-                    close_inline_until(Fb2WriteInline::Link, &mut block_buf, &mut inline_stack)
+                (false, "tr") if in_table => {
+                    if table_nest_depth > 0 {
+                        if in_cell && block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        if in_tr {
+                            sections_xml.push_str("</tr>\n");
+                        }
+                        sections_xml.push_str("        <tr>");
+                        in_tr = true;
+                    }
+                }
+                (true, "tr") if in_table => {
+                    if table_nest_depth > 0 {
+                        if in_cell && block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push(' ');
+                        }
+                    } else if in_tr {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        sections_xml.push_str("</tr>\n");
+                        in_tr = false;
+                    }
+                }
+                (false, "th") if in_table && in_tr => {
+                    if table_nest_depth > 0 {
+                        if in_cell && block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push_str(" | ");
+                        }
+                    } else {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        block_target = BlockTarget::TableCell("th");
+                    }
+                }
+                (false, "td") if in_table && in_tr => {
+                    if table_nest_depth > 0 {
+                        if in_cell && block_has_non_ws && !block_buf.ends_with(' ') {
+                            block_buf.push_str(" | ");
+                        }
+                    } else {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                        block_target = BlockTarget::TableCell("td");
+                    }
+                }
+                (true, "th" | "td") if in_table && in_tr => {
+                    if table_nest_depth == 0 && in_cell {
+                        finish_block(
+                            &mut sections_xml,
+                            &mut section_open,
+                            &mut section_has_body,
+                            &mut block_target,
+                            &mut block_buf,
+                            &mut block_has_non_ws,
+                            &mut inline_stack,
+                            &mut pending_li_prefix,
+                            &mut ignored_link_depth,
+                        );
+                    }
+                }
+                (false, "strong" | "b") if !in_table || in_cell => {
+                    if matches!(block_target, BlockTarget::None) {
+                        block_target = BlockTarget::Para;
+                    }
+                    block_buf.push_str(&Fb2WriteInline::Strong.open_tag());
+                    inline_stack.push(Fb2WriteInline::Strong);
+                }
+                (true, "strong" | "b") if !in_table || in_cell => close_inline_until(
+                    &Fb2WriteInline::Strong,
+                    &mut block_buf,
+                    &mut inline_stack,
+                ),
+                (false, "em" | "i") if !in_table || in_cell => {
+                    if matches!(block_target, BlockTarget::None) {
+                        block_target = BlockTarget::Para;
+                    }
+                    block_buf.push_str(&Fb2WriteInline::Emphasis.open_tag());
+                    inline_stack.push(Fb2WriteInline::Emphasis);
+                }
+                (true, "em" | "i") if !in_table || in_cell => close_inline_until(
+                    &Fb2WriteInline::Emphasis,
+                    &mut block_buf,
+                    &mut inline_stack,
+                ),
+                (false, "code" | "kbd" | "samp" | "tt") if !in_table || in_cell => {
+                    if matches!(block_target, BlockTarget::None) {
+                        block_target = BlockTarget::Para;
+                    }
+                    block_buf.push_str(&Fb2WriteInline::Code.open_tag());
+                    inline_stack.push(Fb2WriteInline::Code);
+                }
+                (true, "code" | "kbd" | "samp" | "tt") if !in_table || in_cell => {
+                    close_inline_until(&Fb2WriteInline::Code, &mut block_buf, &mut inline_stack)
+                }
+                (false, "del" | "s" | "strike") if !in_table || in_cell => {
+                    if matches!(block_target, BlockTarget::None) {
+                        block_target = BlockTarget::Para;
+                    }
+                    block_buf.push_str(&Fb2WriteInline::Strikethrough.open_tag());
+                    inline_stack.push(Fb2WriteInline::Strikethrough);
+                }
+                (true, "del" | "s" | "strike") if !in_table || in_cell => close_inline_until(
+                    &Fb2WriteInline::Strikethrough,
+                    &mut block_buf,
+                    &mut inline_stack,
+                ),
+                (false, "sup") if !in_table || in_cell => {
+                    if matches!(block_target, BlockTarget::None) {
+                        block_target = BlockTarget::Para;
+                    }
+                    block_buf.push_str(&Fb2WriteInline::Sup.open_tag());
+                    inline_stack.push(Fb2WriteInline::Sup);
+                }
+                (true, "sup") if !in_table || in_cell => {
+                    close_inline_until(&Fb2WriteInline::Sup, &mut block_buf, &mut inline_stack)
+                }
+                (false, "sub") if !in_table || in_cell => {
+                    if matches!(block_target, BlockTarget::None) {
+                        block_target = BlockTarget::Para;
+                    }
+                    block_buf.push_str(&Fb2WriteInline::Sub.open_tag());
+                    inline_stack.push(Fb2WriteInline::Sub);
+                }
+                (true, "sub") if !in_table || in_cell => {
+                    close_inline_until(&Fb2WriteInline::Sub, &mut block_buf, &mut inline_stack)
+                }
+                (false, "a") if !in_table || in_cell => {
+                    if let Some(href) = extract_attr(inner, "href") {
+                        let decoded_href = decode_html_entities(&href);
+                        let trimmed = decoded_href.trim();
+                        if is_safe_xhtml_url(trimmed, false) {
+                            if inline_stack
+                                .iter()
+                                .any(|k| matches!(k, Fb2WriteInline::Link(_)))
+                            {
+                                close_inline_until(
+                                    &Fb2WriteInline::Link(String::new()),
+                                    &mut block_buf,
+                                    &mut inline_stack,
+                                );
+                            }
+                            if matches!(block_target, BlockTarget::None) {
+                                block_target = BlockTarget::Para;
+                            }
+                            let link = Fb2WriteInline::Link(trimmed.to_string());
+                            block_buf.push_str(&link.open_tag());
+                            inline_stack.push(link);
+                        } else {
+                            ignored_link_depth += 1;
+                        }
+                    } else {
+                        ignored_link_depth += 1;
+                    }
+                }
+                (true, "a") if !in_table || in_cell => {
+                    if ignored_link_depth > 0 {
+                        ignored_link_depth -= 1;
+                    } else {
+                        close_inline_until(
+                            &Fb2WriteInline::Link(String::new()),
+                            &mut block_buf,
+                            &mut inline_stack,
+                        );
+                    }
                 }
                 _ => {}
             }
@@ -3116,7 +3388,7 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
                 }
             })
             .collect();
-        if matches!(block_target, BlockTarget::None) && !collapsed.trim().is_empty() {
+        if matches!(block_target, BlockTarget::None) && !in_table && !collapsed.trim().is_empty() {
             block_target = BlockTarget::Para;
         }
         if !matches!(block_target, BlockTarget::None) {
@@ -3127,7 +3399,7 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
         }
     }
 
-    if in_pre {
+    if in_pre && !in_table {
         flush_pre(
             &mut sections_xml,
             &mut section_open,
@@ -3144,6 +3416,7 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
         &mut block_has_non_ws,
         &mut inline_stack,
         &mut pending_li_prefix,
+        &mut ignored_link_depth,
     );
     if in_tr {
         sections_xml.push_str("</tr>\n");
@@ -3151,7 +3424,7 @@ pub fn write_fb2_from_html(title: &str, html_input: &str) -> String {
     if in_table {
         sections_xml.push_str("      </table>\n");
     }
-    if in_cite {
+    if cite_depth > 0 {
         sections_xml.push_str("      </cite>\n");
     }
     if section_open {
@@ -3288,7 +3561,7 @@ fn render_rst_inline(input: &str, targets: &HashMap<String, String>) -> String {
                     if let Some(end_bt) = after.find('`') {
                         let inner = &after[..end_bt];
                         out.push_str(&format!("<{tag}>{}</{tag}>", html_escape(inner)));
-                        i += prefix.chars().count() + end_bt + 1;
+                        i += prefix.chars().count() + inner.chars().count() + 1;
                         matched_role = true;
                         break;
                     }
@@ -3719,10 +3992,24 @@ fn try_parse_rst_grid_table(
             continue;
         }
         if t.starts_with('|') && t.ends_with('|') {
-            let cols: Vec<String> = t[1..t.len() - 1]
-                .split('|')
-                .map(|c| c.trim().to_string())
-                .collect();
+            let body = &t[1..t.len() - 1];
+            let mut cols: Vec<String> = Vec::new();
+            let mut cell = String::new();
+            let mut chars = body.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\\' && matches!(chars.peek(), Some(&'|')) {
+                    cell.push('|');
+                    chars.next();
+                    continue;
+                }
+                if c == '|' {
+                    cols.push(cell.trim().to_string());
+                    cell.clear();
+                } else {
+                    cell.push(c);
+                }
+            }
+            cols.push(cell.trim().to_string());
             if cur_cells.is_empty() {
                 cur_cells = cols;
             } else {
@@ -4085,7 +4372,7 @@ fn wrap_rst_inline(raw: &str, open: &str, close: &str) -> String {
 pub fn html_to_rst(html_input: &str) -> String {
     let body_slice = extract_html_body_slice(html_input);
     let mut out = String::new();
-    let mut skip_tag: Option<String> = None;
+    let mut skip_tag: Option<(String, usize)> = None;
 
     let mut heading_level: Option<usize> = None;
     let mut heading_buf = String::new();
@@ -4095,12 +4382,55 @@ pub fn html_to_rst(html_input: &str) -> String {
     let mut in_blockquote = false;
     let mut quote_buf = String::new();
 
-    let mut inline_kind: Option<(&'static str, &'static str)> = None;
-    let mut inline_buf = String::new();
-    let mut link_hrefs: Vec<Option<String>> = Vec::new();
-    let mut link_buf = String::new();
-    let mut in_link = false;
+    enum RstInlineFrame {
+        Style {
+            tag: &'static str,
+            open: &'static str,
+            close: &'static str,
+            buf: String,
+        },
+        Link {
+            href: Option<String>,
+            buf: String,
+        },
+    }
 
+    impl RstInlineFrame {
+        fn buf_mut(&mut self) -> &mut String {
+            match self {
+                Self::Style { buf, .. } | Self::Link { buf, .. } => buf,
+            }
+        }
+
+        fn matches_close(&self, tag: &str) -> bool {
+            match self {
+                Self::Style { tag: t, .. } => match *t {
+                    "strong" => matches!(tag, "strong" | "b"),
+                    "em" => matches!(tag, "em" | "i"),
+                    "code" => matches!(tag, "code" | "kbd" | "samp" | "tt"),
+                    _ => false,
+                },
+                Self::Link { .. } => tag == "a",
+            }
+        }
+
+        fn render(self) -> String {
+            match self {
+                Self::Style { open, close, buf, .. } => wrap_rst_inline(&buf, open, close),
+                Self::Link { href, buf } => {
+                    let label = buf.trim().to_string();
+                    if let Some(url) = href {
+                        let display = if label.is_empty() { url.as_str() } else { label.as_str() };
+                        format!("`{display} <{url}>`_")
+                    } else {
+                        label
+                    }
+                }
+            }
+        }
+    }
+
+    let mut frame_stack: Vec<RstInlineFrame> = Vec::new();
     let mut list_stack: Vec<(bool, usize)> = Vec::new();
 
     let mut in_table = false;
@@ -4112,64 +4442,255 @@ pub fn html_to_rst(html_input: &str) -> String {
 
     #[allow(clippy::too_many_arguments)]
     fn push_target(
-        raw_str: &str,
+        text: &str,
         heading_level: &Option<usize>,
         heading_buf: &mut String,
         in_cell: bool,
         cur_cell: &mut String,
-        in_link: bool,
-        link_buf: &mut String,
-        inline_kind: &Option<(&str, &str)>,
-        inline_buf: &mut String,
+        frame_stack: &mut [RstInlineFrame],
         in_blockquote: bool,
         quote_buf: &mut String,
         out: &mut String,
     ) {
-        if inline_kind.is_some() {
-            inline_buf.push_str(raw_str);
-        } else if in_link {
-            link_buf.push_str(raw_str);
+        if let Some(frame) = frame_stack.last_mut() {
+            frame.buf_mut().push_str(text);
         } else if heading_level.is_some() {
-            heading_buf.push_str(raw_str);
+            heading_buf.push_str(text);
         } else if in_cell {
-            cur_cell.push_str(raw_str);
+            cur_cell.push_str(text);
         } else if in_blockquote {
-            quote_buf.push_str(raw_str);
+            quote_buf.push_str(text);
         } else {
-            out.push_str(raw_str);
+            out.push_str(text);
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn flush_inline(
-        inline_kind: &mut Option<(&'static str, &'static str)>,
-        inline_buf: &mut String,
+    fn emit_rendered_inline(
+        rendered: &str,
         heading_level: &Option<usize>,
         heading_buf: &mut String,
         in_cell: bool,
         cur_cell: &mut String,
-        in_link: bool,
-        link_buf: &mut String,
+        frame_stack: &mut [RstInlineFrame],
         in_blockquote: bool,
         quote_buf: &mut String,
         out: &mut String,
     ) {
-        if let Some((open, close)) = inline_kind.take() {
-            let decoded = decode_html_entities(inline_buf);
-            inline_buf.clear();
-            let wrapped = wrap_rst_inline(&decoded, open, close);
-            if in_link {
-                link_buf.push_str(&wrapped);
-            } else if heading_level.is_some() {
-                heading_buf.push_str(&wrapped);
-            } else if in_cell {
-                cur_cell.push_str(&wrapped);
-            } else if in_blockquote {
-                quote_buf.push_str(&wrapped);
-            } else {
-                out.push_str(&wrapped);
+        if let Some(parent) = frame_stack.last_mut() {
+            parent.buf_mut().push_str(rendered);
+        } else if heading_level.is_some() {
+            heading_buf.push_str(rendered);
+        } else if in_cell {
+            cur_cell.push_str(rendered);
+        } else if in_blockquote {
+            quote_buf.push_str(rendered);
+        } else {
+            out.push_str(rendered);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn flush_all_frames(
+        frame_stack: &mut Vec<RstInlineFrame>,
+        heading_level: &Option<usize>,
+        heading_buf: &mut String,
+        in_cell: bool,
+        cur_cell: &mut String,
+        in_blockquote: bool,
+        quote_buf: &mut String,
+        out: &mut String,
+    ) {
+        while let Some(frame) = frame_stack.pop() {
+            let rendered = frame.render();
+            emit_rendered_inline(
+                &rendered,
+                heading_level,
+                heading_buf,
+                in_cell,
+                cur_cell,
+                frame_stack,
+                in_blockquote,
+                quote_buf,
+                out,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn close_matching_frame(
+        tag: &str,
+        frame_stack: &mut Vec<RstInlineFrame>,
+        heading_level: &Option<usize>,
+        heading_buf: &mut String,
+        in_cell: bool,
+        cur_cell: &mut String,
+        in_blockquote: bool,
+        quote_buf: &mut String,
+        out: &mut String,
+    ) {
+        if let Some(pos) = frame_stack.iter().rposition(|f| f.matches_close(tag)) {
+            while frame_stack.len() > pos {
+                if let Some(frame) = frame_stack.pop() {
+                    let rendered = frame.render();
+                    emit_rendered_inline(
+                        &rendered,
+                        heading_level,
+                        heading_buf,
+                        in_cell,
+                        cur_cell,
+                        frame_stack,
+                        in_blockquote,
+                        quote_buf,
+                        out,
+                    );
+                }
             }
         }
+    }
+
+    fn emit_pre_block(in_blockquote: bool, quote_buf: &mut String, out: &mut String, pre: &str) {
+        let norm = pre.replace("\r\n", "\n").replace('\r', "\n");
+        let trimmed_end = norm.strip_suffix('\n').unwrap_or(&norm);
+        let dst = if in_blockquote { quote_buf } else { out };
+        if !dst.ends_with("\n\n") && !dst.is_empty() {
+            if !dst.ends_with('\n') {
+                dst.push('\n');
+            }
+            dst.push('\n');
+        }
+        dst.push_str("::\n\n");
+        for line in trimmed_end.split('\n') {
+            if line.trim().is_empty() {
+                dst.push('\n');
+            } else {
+                dst.push_str("    ");
+                dst.push_str(line);
+                dst.push('\n');
+            }
+        }
+        dst.push('\n');
+    }
+
+    fn emit_heading(
+        lvl: usize,
+        heading_buf: &str,
+        in_blockquote: bool,
+        quote_buf: &mut String,
+        out: &mut String,
+    ) {
+        let clean = heading_buf.split_whitespace().collect::<Vec<_>>().join(" ");
+        if clean.is_empty() {
+            return;
+        }
+        let underline_ch = match lvl {
+            1 => '=',
+            2 => '-',
+            3 => '~',
+            4 => '^',
+            5 => '"',
+            _ => '+',
+        };
+        let underline_len = clean.chars().count().max(3);
+        let dst = if in_blockquote { quote_buf } else { out };
+        if !dst.is_empty() && !dst.ends_with("\n\n") {
+            if !dst.ends_with('\n') {
+                dst.push('\n');
+            }
+            dst.push('\n');
+        }
+        dst.push_str(&clean);
+        dst.push('\n');
+        dst.push_str(&underline_ch.to_string().repeat(underline_len));
+        dst.push_str("\n\n");
+    }
+
+    fn emit_blockquote(quote_buf: &str, out: &mut String) {
+        let qtext = quote_buf.trim_matches(|c| c == '\n' || c == '\r');
+        if qtext.trim().is_empty() {
+            return;
+        }
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+        let mut in_q_literal = false;
+        for qline in qtext.lines() {
+            let trimmed_end = qline.trim_end();
+            if trimmed_end == "::" {
+                in_q_literal = true;
+                out.push_str("    ::\n");
+            } else if trimmed_end.trim().is_empty() {
+                out.push('\n');
+            } else if in_q_literal && qline.starts_with("  ") {
+                out.push_str("    ");
+                out.push_str(trimmed_end);
+                out.push('\n');
+            } else {
+                in_q_literal = false;
+                out.push_str("    ");
+                out.push_str(qline.trim());
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+
+    fn emit_table(
+        table_rows: &[(Vec<String>, bool)],
+        in_blockquote: bool,
+        quote_buf: &mut String,
+        out: &mut String,
+    ) {
+        let ncols = table_rows.iter().map(|(r, _)| r.len()).max().unwrap_or(0);
+        if ncols == 0 {
+            return;
+        }
+        let mut widths = vec![3usize; ncols];
+        for (cells, _) in table_rows {
+            for (c_idx, cell) in cells.iter().enumerate() {
+                widths[c_idx] = widths[c_idx].max(cell.chars().count());
+            }
+        }
+        let make_border = |ch: char| -> String {
+            let mut s = String::from("+");
+            for w in &widths {
+                s.push(ch);
+                s.push_str(&ch.to_string().repeat(*w));
+                s.push(ch);
+                s.push('+');
+            }
+            s
+        };
+        let thin = make_border('-');
+        let thick = make_border('=');
+        let dst = if in_blockquote { quote_buf } else { out };
+        if !dst.is_empty() && !dst.ends_with("\n\n") {
+            if !dst.ends_with('\n') {
+                dst.push('\n');
+            }
+            dst.push('\n');
+        }
+        dst.push_str(&thin);
+        dst.push('\n');
+        for (r_idx, (cells, is_th)) in table_rows.iter().enumerate() {
+            dst.push('|');
+            for (c_idx, width) in widths.iter().enumerate().take(ncols) {
+                let txt = cells.get(c_idx).map(|s| s.as_str()).unwrap_or("");
+                let pad = width.saturating_sub(txt.chars().count());
+                dst.push(' ');
+                dst.push_str(txt);
+                dst.push_str(&" ".repeat(pad));
+                dst.push_str(" |");
+            }
+            dst.push('\n');
+            let use_thick = *is_th && r_idx == 0;
+            dst.push_str(if use_thick { &thick } else { &thin });
+            dst.push('\n');
+        }
+        dst.push('\n');
     }
 
     let bytes = body_slice.as_bytes();
@@ -4202,10 +4723,7 @@ pub fn html_to_rst(html_input: &str) -> String {
                             &mut heading_buf,
                             in_cell,
                             &mut cur_cell,
-                            in_link,
-                            &mut link_buf,
-                            &inline_kind,
-                            &mut inline_buf,
+                            &mut frame_stack,
                             in_blockquote,
                             &mut quote_buf,
                             &mut out,
@@ -4229,10 +4747,7 @@ pub fn html_to_rst(html_input: &str) -> String {
                             &mut heading_buf,
                             in_cell,
                             &mut cur_cell,
-                            in_link,
-                            &mut link_buf,
-                            &inline_kind,
-                            &mut inline_buf,
+                            &mut frame_stack,
                             in_blockquote,
                             &mut quote_buf,
                             &mut out,
@@ -4283,40 +4798,30 @@ pub fn html_to_rst(html_input: &str) -> String {
                 i = find_raw_close_tag(body_slice, i, &tag_name).unwrap_or(bytes.len());
                 continue;
             }
-            if let Some(ref skipping) = skip_tag {
-                if is_close && &tag_name == skipping {
-                    skip_tag = None;
+            if let Some((ref skipping, ref mut depth)) = skip_tag {
+                if &tag_name == skipping {
+                    if is_close {
+                        *depth -= 1;
+                        if *depth == 0 {
+                            skip_tag = None;
+                        }
+                    } else if !self_closing {
+                        *depth += 1;
+                    }
                 }
                 continue;
             }
-            if !is_close && tag_name == "head" && !self_closing {
-                skip_tag = Some(tag_name);
+            if !is_close
+                && matches!(tag_name.as_str(), "head" | "svg" | "iframe" | "object" | "embed")
+                && !self_closing
+            {
+                skip_tag = Some((tag_name, 1));
                 continue;
             }
 
             if in_pre {
                 if is_close && tag_name == "pre" {
-                    let decoded = decode_html_entities(&pre_buf);
-                    let norm = decoded.replace("\r\n", "\n").replace('\r', "\n");
-                    let trimmed_end = norm.strip_suffix('\n').unwrap_or(&norm);
-                    let dst = if in_blockquote { &mut quote_buf } else { &mut out };
-                    if !dst.ends_with("\n\n") && !dst.is_empty() {
-                        if !dst.ends_with('\n') {
-                            dst.push('\n');
-                        }
-                        dst.push('\n');
-                    }
-                    dst.push_str("::\n\n");
-                    for line in trimmed_end.split('\n') {
-                        if line.trim().is_empty() {
-                            dst.push('\n');
-                        } else {
-                            dst.push_str("    ");
-                            dst.push_str(line);
-                            dst.push('\n');
-                        }
-                    }
-                    dst.push('\n');
+                    emit_pre_block(in_blockquote, &mut quote_buf, &mut out, &pre_buf);
                     pre_buf.clear();
                     in_pre = false;
                 } else if !is_close && tag_name == "br" {
@@ -4327,55 +4832,47 @@ pub fn html_to_rst(html_input: &str) -> String {
 
             match (is_close, tag_name.as_str()) {
                 (false, "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
+                    flush_all_frames(
+                        &mut frame_stack,
+                        &heading_level,
+                        &mut heading_buf,
+                        in_cell,
+                        &mut cur_cell,
+                        in_blockquote,
+                        &mut quote_buf,
+                        &mut out,
+                    );
                     let lvl = tag_name[1..].parse::<usize>().unwrap_or(1);
                     heading_level = Some(lvl);
                     heading_buf.clear();
                 }
                 (true, "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => {
-                    flush_inline(
-                        &mut inline_kind,
-                        &mut inline_buf,
+                    flush_all_frames(
+                        &mut frame_stack,
                         &heading_level,
                         &mut heading_buf,
                         in_cell,
                         &mut cur_cell,
-                        in_link,
-                        &mut link_buf,
                         in_blockquote,
                         &mut quote_buf,
                         &mut out,
                     );
                     if let Some(lvl) = heading_level.take() {
-                        let clean = decode_html_entities(&heading_buf)
-                            .split_whitespace()
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        if !clean.is_empty() {
-                            let underline_ch = match lvl {
-                                1 => '=',
-                                2 => '-',
-                                3 => '~',
-                                4 => '^',
-                                5 => '"',
-                                _ => '+',
-                            };
-                            let underline_len = clean.chars().count().max(3);
-                            let dst = if in_blockquote { &mut quote_buf } else { &mut out };
-                            if !dst.is_empty() && !dst.ends_with("\n\n") {
-                                if !dst.ends_with('\n') {
-                                    dst.push('\n');
-                                }
-                                dst.push('\n');
-                            }
-                            dst.push_str(&clean);
-                            dst.push('\n');
-                            dst.push_str(&underline_ch.to_string().repeat(underline_len));
-                            dst.push_str("\n\n");
-                        }
+                        emit_heading(lvl, &heading_buf, in_blockquote, &mut quote_buf, &mut out);
                     }
                     heading_buf.clear();
                 }
                 (false, "pre") => {
+                    flush_all_frames(
+                        &mut frame_stack,
+                        &heading_level,
+                        &mut heading_buf,
+                        in_cell,
+                        &mut cur_cell,
+                        in_blockquote,
+                        &mut quote_buf,
+                        &mut out,
+                    );
                     in_pre = true;
                     pre_buf.clear();
                 }
@@ -4386,41 +4883,20 @@ pub fn html_to_rst(html_input: &str) -> String {
                     }
                 }
                 (true, "blockquote") => {
-                    flush_inline(
-                        &mut inline_kind,
-                        &mut inline_buf,
+                    flush_all_frames(
+                        &mut frame_stack,
                         &heading_level,
                         &mut heading_buf,
                         in_cell,
                         &mut cur_cell,
-                        in_link,
-                        &mut link_buf,
                         in_blockquote,
                         &mut quote_buf,
                         &mut out,
                     );
                     if in_blockquote {
                         in_blockquote = false;
-                        let qtext = decode_html_entities(&quote_buf).trim().to_string();
+                        emit_blockquote(&quote_buf, &mut out);
                         quote_buf.clear();
-                        if !qtext.is_empty() {
-                            if !out.is_empty() && !out.ends_with("\n\n") {
-                                if !out.ends_with('\n') {
-                                    out.push('\n');
-                                }
-                                out.push('\n');
-                            }
-                            for qline in qtext.lines() {
-                                if qline.trim().is_empty() {
-                                    out.push('\n');
-                                } else {
-                                    out.push_str("    ");
-                                    out.push_str(qline.trim());
-                                    out.push('\n');
-                                }
-                            }
-                            out.push('\n');
-                        }
                     }
                 }
                 (false, "ul") => {
@@ -4444,6 +4920,16 @@ pub fn html_to_rst(html_input: &str) -> String {
                     list_stack.push((true, 0));
                 }
                 (true, "ul" | "ol") => {
+                    flush_all_frames(
+                        &mut frame_stack,
+                        &heading_level,
+                        &mut heading_buf,
+                        in_cell,
+                        &mut cur_cell,
+                        in_blockquote,
+                        &mut quote_buf,
+                        &mut out,
+                    );
                     list_stack.pop();
                     let dst = if in_blockquote { &mut quote_buf } else { &mut out };
                     dst.push_str("\n\n");
@@ -4462,15 +4948,12 @@ pub fn html_to_rst(html_input: &str) -> String {
                     }
                 }
                 (true, "li") => {
-                    flush_inline(
-                        &mut inline_kind,
-                        &mut inline_buf,
+                    flush_all_frames(
+                        &mut frame_stack,
                         &heading_level,
                         &mut heading_buf,
                         in_cell,
                         &mut cur_cell,
-                        in_link,
-                        &mut link_buf,
                         in_blockquote,
                         &mut quote_buf,
                         &mut out,
@@ -4481,124 +4964,130 @@ pub fn html_to_rst(html_input: &str) -> String {
                     }
                 }
                 (false, "strong" | "b") => {
-                    inline_kind = Some(("**", "**"));
-                    inline_buf.clear();
+                    frame_stack.push(RstInlineFrame::Style {
+                        tag: "strong",
+                        open: "**",
+                        close: "**",
+                        buf: String::new(),
+                    });
                 }
-                (true, "strong" | "b") => flush_inline(
-                    &mut inline_kind,
-                    &mut inline_buf,
+                (true, "strong" | "b") => close_matching_frame(
+                    "strong",
+                    &mut frame_stack,
                     &heading_level,
                     &mut heading_buf,
                     in_cell,
                     &mut cur_cell,
-                    in_link,
-                    &mut link_buf,
                     in_blockquote,
                     &mut quote_buf,
                     &mut out,
                 ),
                 (false, "em" | "i") => {
-                    inline_kind = Some(("*", "*"));
-                    inline_buf.clear();
+                    frame_stack.push(RstInlineFrame::Style {
+                        tag: "em",
+                        open: "*",
+                        close: "*",
+                        buf: String::new(),
+                    });
                 }
-                (true, "em" | "i") => flush_inline(
-                    &mut inline_kind,
-                    &mut inline_buf,
+                (true, "em" | "i") => close_matching_frame(
+                    "em",
+                    &mut frame_stack,
                     &heading_level,
                     &mut heading_buf,
                     in_cell,
                     &mut cur_cell,
-                    in_link,
-                    &mut link_buf,
                     in_blockquote,
                     &mut quote_buf,
                     &mut out,
                 ),
                 (false, "code" | "kbd" | "samp" | "tt") => {
-                    inline_kind = Some(("``", "``"));
-                    inline_buf.clear();
+                    frame_stack.push(RstInlineFrame::Style {
+                        tag: "code",
+                        open: "``",
+                        close: "``",
+                        buf: String::new(),
+                    });
                 }
-                (true, "code" | "kbd" | "samp" | "tt") => flush_inline(
-                    &mut inline_kind,
-                    &mut inline_buf,
+                (true, "code" | "kbd" | "samp" | "tt") => close_matching_frame(
+                    "code",
+                    &mut frame_stack,
                     &heading_level,
                     &mut heading_buf,
                     in_cell,
                     &mut cur_cell,
-                    in_link,
-                    &mut link_buf,
                     in_blockquote,
                     &mut quote_buf,
                     &mut out,
                 ),
                 (false, "a") => {
-                    let href = extract_attr(inner, "href");
-                    link_hrefs.push(href);
-                    link_buf.clear();
-                    in_link = true;
-                }
-                (true, "a") => {
-                    flush_inline(
-                        &mut inline_kind,
-                        &mut inline_buf,
-                        &heading_level,
-                        &mut heading_buf,
-                        in_cell,
-                        &mut cur_cell,
-                        in_link,
-                        &mut link_buf,
-                        in_blockquote,
-                        &mut quote_buf,
-                        &mut out,
-                    );
-                    in_link = false;
-                    let label = decode_html_entities(&link_buf).trim().to_string();
-                    link_buf.clear();
-                    let rendered = if let Some(Some(href)) = link_hrefs.pop() {
-                        let href_clean = decode_html_entities(&href).trim().to_string();
-                        if !label.is_empty() && !href_clean.is_empty() {
-                            format!("`{label} <{href_clean}>`_")
+                    let href = extract_attr(inner, "href").and_then(|raw| {
+                        let cleaned = decode_html_entities(&raw).trim().to_string();
+                        if !cleaned.is_empty() && is_safe_xhtml_url(&cleaned, false) {
+                            Some(cleaned)
                         } else {
-                            label
+                            None
                         }
-                    } else {
-                        label
-                    };
-                    if heading_level.is_some() {
-                        heading_buf.push_str(&rendered);
-                    } else if in_cell {
-                        cur_cell.push_str(&rendered);
-                    } else if in_blockquote {
-                        quote_buf.push_str(&rendered);
-                    } else {
-                        out.push_str(&rendered);
-                    }
+                    });
+                    frame_stack.push(RstInlineFrame::Link {
+                        href,
+                        buf: String::new(),
+                    });
                 }
+                (true, "a") => close_matching_frame(
+                    "a",
+                    &mut frame_stack,
+                    &heading_level,
+                    &mut heading_buf,
+                    in_cell,
+                    &mut cur_cell,
+                    in_blockquote,
+                    &mut quote_buf,
+                    &mut out,
+                ),
                 (false, "br") => {
                     if heading_level.is_some() {
                         heading_buf.push(' ');
-                    } else if !list_stack.is_empty() {
-                        let dst = if in_blockquote { &mut quote_buf } else { &mut out };
-                        dst.push(' ');
+                    } else if in_cell {
+                        cur_cell.push(' ');
+                    } else if !list_stack.is_empty() || !frame_stack.is_empty() {
+                        push_target(
+                            " ",
+                            &heading_level,
+                            &mut heading_buf,
+                            in_cell,
+                            &mut cur_cell,
+                            &mut frame_stack,
+                            in_blockquote,
+                            &mut quote_buf,
+                            &mut out,
+                        );
                     } else {
                         let dst = if in_blockquote { &mut quote_buf } else { &mut out };
                         dst.push_str("\n\n");
                     }
                 }
                 (false, "hr") => {
-                    let dst = if in_blockquote { &mut quote_buf } else { &mut out };
-                    dst.push_str("\n----\n\n");
-                }
-                (true, "p" | "div") if !in_cell => {
-                    flush_inline(
-                        &mut inline_kind,
-                        &mut inline_buf,
+                    flush_all_frames(
+                        &mut frame_stack,
                         &heading_level,
                         &mut heading_buf,
                         in_cell,
                         &mut cur_cell,
-                        in_link,
-                        &mut link_buf,
+                        in_blockquote,
+                        &mut quote_buf,
+                        &mut out,
+                    );
+                    let dst = if in_blockquote { &mut quote_buf } else { &mut out };
+                    dst.push_str("\n----\n\n");
+                }
+                (true, "p" | "div") if !in_cell => {
+                    flush_all_frames(
+                        &mut frame_stack,
+                        &heading_level,
+                        &mut heading_buf,
+                        in_cell,
+                        &mut cur_cell,
                         in_blockquote,
                         &mut quote_buf,
                         &mut out,
@@ -4616,53 +5105,18 @@ pub fn html_to_rst(html_input: &str) -> String {
                     table_rows.clear();
                 }
                 (true, "table") if in_table => {
+                    flush_all_frames(
+                        &mut frame_stack,
+                        &heading_level,
+                        &mut heading_buf,
+                        in_cell,
+                        &mut cur_cell,
+                        in_blockquote,
+                        &mut quote_buf,
+                        &mut out,
+                    );
                     in_table = false;
-                    let ncols = table_rows.iter().map(|(r, _)| r.len()).max().unwrap_or(0);
-                    if ncols > 0 {
-                        let mut widths = vec![3usize; ncols];
-                        for (cells, _) in &table_rows {
-                            for (c_idx, cell) in cells.iter().enumerate() {
-                                widths[c_idx] = widths[c_idx].max(cell.chars().count());
-                            }
-                        }
-                        let make_border = |ch: char| -> String {
-                            let mut s = String::from("+");
-                            for w in &widths {
-                                s.push(ch);
-                                s.push_str(&ch.to_string().repeat(*w));
-                                s.push(ch);
-                                s.push('+');
-                            }
-                            s
-                        };
-                        let thin = make_border('-');
-                        let thick = make_border('=');
-                        let dst = if in_blockquote { &mut quote_buf } else { &mut out };
-                        if !dst.is_empty() && !dst.ends_with("\n\n") {
-                            if !dst.ends_with('\n') {
-                                dst.push('\n');
-                            }
-                            dst.push('\n');
-                        }
-                        dst.push_str(&thin);
-                        dst.push('\n');
-                        for (r_idx, (cells, is_th)) in table_rows.iter().enumerate() {
-                            dst.push('|');
-                            for (c_idx, width) in widths.iter().enumerate().take(ncols) {
-                                let txt = cells.get(c_idx).map(|s| s.as_str()).unwrap_or("");
-                                let pad = width.saturating_sub(txt.chars().count());
-                                dst.push(' ');
-                                dst.push_str(txt);
-                                dst.push_str(&" ".repeat(pad));
-                                dst.push_str(" |");
-                            }
-                            dst.push('\n');
-                            let use_thick = *is_th && r_idx == 0;
-                            dst.push_str(if use_thick { &thick } else { &thin });
-                            dst.push('\n');
-                        }
-                        dst.push('\n');
-                    }
+                    emit_table(&table_rows, in_blockquote, &mut quote_buf, &mut out);
                     table_rows.clear();
                 }
                 (false, "tr") if in_table => {
@@ -4684,21 +5138,18 @@ pub fn html_to_rst(html_input: &str) -> String {
                     cur_cell.clear();
                 }
                 (true, "th" | "td") if in_table => {
-                    flush_inline(
-                        &mut inline_kind,
-                        &mut inline_buf,
+                    flush_all_frames(
+                        &mut frame_stack,
                         &heading_level,
                         &mut heading_buf,
                         in_cell,
                         &mut cur_cell,
-                        in_link,
-                        &mut link_buf,
                         in_blockquote,
                         &mut quote_buf,
                         &mut out,
                     );
                     in_cell = false;
-                    let cleaned = decode_html_entities(&cur_cell)
+                    let cleaned = cur_cell
                         .split_whitespace()
                         .collect::<Vec<_>>()
                         .join(" ")
@@ -4711,59 +5162,86 @@ pub fn html_to_rst(html_input: &str) -> String {
             continue;
         }
 
-        let ch = body_slice[i..].chars().next().unwrap();
-        if skip_tag.is_none() {
-            if in_pre {
-                pre_buf.push(ch);
-            } else if ch != '\r' {
-                if ch == '\n' {
-                    push_target(
-                        " ",
-                        &heading_level,
-                        &mut heading_buf,
-                        in_cell,
-                        &mut cur_cell,
-                        in_link,
-                        &mut link_buf,
-                        &inline_kind,
-                        &mut inline_buf,
-                        in_blockquote,
-                        &mut quote_buf,
-                        &mut out,
-                    );
-                } else {
-                    let s = ch.to_string();
-                    push_target(
-                        &s,
-                        &heading_level,
-                        &mut heading_buf,
-                        in_cell,
-                        &mut cur_cell,
-                        in_link,
-                        &mut link_buf,
-                        &inline_kind,
-                        &mut inline_buf,
-                        in_blockquote,
-                        &mut quote_buf,
-                        &mut out,
-                    );
-                }
+        let next_tag_rel = body_slice[i..].find('<').unwrap_or(body_slice.len() - i);
+        let raw_chunk = &body_slice[i..i + next_tag_rel];
+        i += next_tag_rel;
+        if skip_tag.is_some() {
+            continue;
+        }
+        let decoded_chunk = decode_html_entities_inner(raw_chunk, true);
+        if in_pre {
+            pre_buf.push_str(&decoded_chunk);
+        } else {
+            let normalized: String = decoded_chunk
+                .chars()
+                .filter_map(|c| match c {
+                    '\r' => None,
+                    '\n' => Some(' '),
+                    other => Some(other),
+                })
+                .collect();
+            if !normalized.is_empty() {
+                push_target(
+                    &normalized,
+                    &heading_level,
+                    &mut heading_buf,
+                    in_cell,
+                    &mut cur_cell,
+                    &mut frame_stack,
+                    in_blockquote,
+                    &mut quote_buf,
+                    &mut out,
+                );
             }
         }
-        i += ch.len_utf8();
     }
 
-    let decoded = decode_html_entities(&out).replace('\u{00A0}', " ");
+    if in_pre {
+        emit_pre_block(in_blockquote, &mut quote_buf, &mut out, &pre_buf);
+    }
+    flush_all_frames(
+        &mut frame_stack,
+        &heading_level,
+        &mut heading_buf,
+        in_cell,
+        &mut cur_cell,
+        in_blockquote,
+        &mut quote_buf,
+        &mut out,
+    );
+    if let Some(lvl) = heading_level.take() {
+        emit_heading(lvl, &heading_buf, in_blockquote, &mut quote_buf, &mut out);
+    }
+    if in_cell && in_table {
+        let cleaned = cur_cell
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace('|', "\\|");
+        cur_row.push(cleaned);
+    }
+    if in_table {
+        if !cur_row.is_empty() {
+            table_rows.push((std::mem::take(&mut cur_row), cur_row_has_th));
+        }
+        emit_table(&table_rows, in_blockquote, &mut quote_buf, &mut out);
+    }
+    if in_blockquote {
+        emit_blockquote(&quote_buf, &mut out);
+    }
+
+    let cleaned_out = out.replace('\u{00A0}', " ");
     let mut collapsed = String::new();
     let mut blank_run = 0usize;
     let mut in_indented_block = false;
 
-    for raw_line in decoded.lines() {
+    for raw_line in cleaned_out.lines() {
         let mut line = raw_line.trim_end().to_string();
-        if line == "::" {
+        if line == "::" || line == "    ::" {
             in_indented_block = true;
             blank_run = 0;
-            collapsed.push_str("::\n");
+            collapsed.push_str(&line);
+            collapsed.push('\n');
             continue;
         }
         let is_indented = line.starts_with("  ");
@@ -4882,7 +5360,7 @@ pub fn convert(
                 match convert_via_pandoc(source, "markdown", &fmt, &output, staging_dir, tools, cancel)
                 {
                     Ok(()) => return Ok(vec![output]),
-                    Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                    Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                     Err(_) => {}
                 }
             }
@@ -4919,7 +5397,7 @@ pub fn convert(
             if tools.pandoc.is_some() {
                 match convert_via_pandoc(&html_mid, "html", &fmt, &output, staging_dir, tools, cancel) {
                     Ok(()) => return Ok(vec![output]),
-                    Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                    Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                     Err(_) => {}
                 }
             }
@@ -4960,7 +5438,7 @@ pub fn convert(
                     Ok(()) => {
                         pandoc_html = Some(read_html_file_safe(&html_mid, MAX_HTML_READ_BYTES)?);
                     }
-                    Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                    Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                     Err(_) => {}
                 }
             }
@@ -5000,12 +5478,12 @@ pub fn convert(
                 other => other,
             };
             if matches!(fmt.as_str(), "FB2" | "RST") && prepared_ext == "txt" {
-                let txt_raw = fs::read_to_string(&prepared_input)?;
+                let txt_raw = read_text_bounded_with_utf16(&prepared_input, MAX_TEXT_READ_BYTES, "TXT")?;
                 let html_path = staging_dir.join("txt-wrap.html");
                 fs::write(&html_path, plain_text_to_html("FLIP Document", &txt_raw))?;
                 match convert_via_pandoc(&html_path, "html", &fmt, &output, staging_dir, tools, cancel) {
                     Ok(()) => return Ok(vec![output]),
-                    Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                    Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                     Err(_) => {}
                 }
             } else if matches!(prepared_ext.as_str(), "fb2" | "rst") && fmt == "PDF" {
@@ -5015,13 +5493,13 @@ pub fn convert(
                         bridge::convert_doc(&html_mid, "PDF", &output, &prefs.pdf_page_size, Some(cancel))?;
                         return Ok(vec![output]);
                     }
-                    Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                    Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                     Err(_) => {}
                 }
             } else {
                 match convert_via_pandoc(&prepared_input, from_pandoc, &fmt, &output, staging_dir, tools, cancel) {
                     Ok(()) => return Ok(vec![output]),
-                    Err(EngineError::Cancelled) => return Err(EngineError::Cancelled),
+                    Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                     Err(_) => {}
                 }
             }
@@ -5064,13 +5542,7 @@ pub fn convert(
         }
 
         let html_for_target = if prepared_ext == "txt" {
-            let meta = fs::metadata(&prepared_input)?;
-            if meta.len() > MAX_TEXT_READ_BYTES {
-                return Err(EngineError::ConversionFailed(
-                    "Text file exceeds 2 MiB limit".to_string(),
-                ));
-            }
-            let txt_raw = fs::read_to_string(&prepared_input)?;
+            let txt_raw = read_text_bounded_with_utf16(&prepared_input, MAX_TEXT_READ_BYTES, "TXT")?;
             plain_text_to_html(source_title, &txt_raw)
         } else if matches!(prepared_ext.as_str(), "html" | "htm") {
             read_html_file_safe(&prepared_input, MAX_HTML_READ_BYTES)?
@@ -5093,8 +5565,10 @@ pub fn convert(
     if fmt == "MD" {
         if tools.pandoc.is_some() && matches!(prepared_ext.as_str(), "html" | "htm" | "docx" | "odt" | "rtf") {
             let from_pd = if prepared_ext == "htm" { "html" } else { prepared_ext.as_str() };
-            if convert_via_pandoc(&prepared_input, from_pd, "MD", &output, staging_dir, tools, cancel).is_ok() {
-                return Ok(vec![output]);
+            match convert_via_pandoc(&prepared_input, from_pd, "MD", &output, staging_dir, tools, cancel) {
+                Ok(()) => return Ok(vec![output]),
+                Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
+                Err(_) => {}
             }
         }
         if prepared_ext == "txt" {
@@ -5573,5 +6047,82 @@ Intro before quote:
         assert!(txt.contains("Bullet one"), "txt={txt}");
         assert!(txt.contains("Quoted remark"), "txt={txt}");
         assert!(txt.contains("code line 1"), "txt={txt}");
+    }
+
+    #[test]
+    fn rst_reader_handles_utf8_roles_and_escaped_grid_table_pipes() {
+        let rst = concat!(
+            "Café test: :code:`caffè-perché` **after** and :emphasis:`naïve` *tail*.\n\n",
+            "+---------+---------+\n",
+            "| Col A   | Col B   |\n",
+            "+=========+=========+\n",
+            "| x \\| y  | z       |\n",
+            "+---------+---------+\n"
+        );
+        let html = rst_to_html("UTF8", rst);
+        assert!(html.contains("<code>caffè-perché</code> <strong>after</strong>"), "html={html}");
+        assert!(html.contains("<em>naïve</em> <em>tail</em>"), "html={html}");
+        assert!(html.contains("<td>x | y</td><td>z</td>"), "html={html}");
+    }
+
+    #[test]
+    fn rst_writer_handles_nested_inline_entities_links_svg_and_blockquote_code() {
+        let html = concat!(
+            "<html><body>",
+            "<svg><text>svg-ignored</text></svg>",
+            "<p>Literal &amp;lt;tag&amp;gt; and <strong>Hello <em>world</em> and <a href=\"https://ex.com?a=1&amp;b=2\">Docs</a></strong>.</p>",
+            "<p><a href=\"https://bare.example/path\"></a> and <a href=\"java&#9;script:alert(1)\">blocked</a></p>",
+            "<blockquote><p>Note:</p><pre>let x = 1;\nlet y = 2;</pre></blockquote>",
+            "</body></html>"
+        );
+        let rst = html_to_rst(html);
+        assert!(!rst.contains("svg-ignored"), "rst={rst}");
+        assert!(rst.contains("Literal &lt;tag&gt;"), "rst={rst}");
+        assert!(rst.contains("Hello *world*"), "rst={rst}");
+        assert!(rst.contains("`Docs <https://ex.com?a=1&b=2>`_"), "rst={rst}");
+        assert!(rst.contains("`https://bare.example/path <https://bare.example/path>`_"), "rst={rst}");
+        assert!(!rst.contains("javascript:"), "rst={rst}");
+        assert!(rst.contains("blocked"), "rst={rst}");
+        assert!(rst.contains("    Note:\n\n    ::\n\n        let x = 1;\n        let y = 2;"), "rst={rst}");
+
+        let back = rst_to_html("Check", &rst);
+        assert!(back.contains("<pre><code>let x = 1;\nlet y = 2;</code></pre>"), "back={back}");
+    }
+
+    #[test]
+    fn fb2_reader_rejects_truncated_and_multiroot_xml() {
+        let truncated = "<?xml version=\"1.0\"?><FictionBook><body><section><p>Hi";
+        assert!(parse_fb2_to_html(truncated, "T").is_err());
+
+        let multiroot = "<?xml version=\"1.0\"?><FictionBook><body><section><p>Hi</p></section></body></FictionBook><extra/>";
+        assert!(parse_fb2_to_html(multiroot, "T").is_err());
+    }
+
+    #[test]
+    fn fb2_writer_preserves_link_href_across_br_sanitizes_urls_and_handles_table_blocks() {
+        let html = concat!(
+            "<html><body>",
+            "<svg><text>ignore-me</text></svg>",
+            "<p><a href=\"https://example.com/?a=1&amp;b=2\">First line<br/>Second line</a></p>",
+            "<p><a href=\"java&#9;script:alert(1)\">bad link</a></p>",
+            "<table><tr><th><p>Header</p></th></tr><tr><td><ul><li>One</li><li>Two</li></ul><pre>code()</pre><h3>Sub</h3></td></tr></table>",
+            "</body></html>"
+        );
+        let fb2 = write_fb2_from_html("Complex", html);
+        assert!(!fb2.contains("ignore-me"), "fb2={fb2}");
+        assert!(!fb2.contains("javascript:"), "fb2={fb2}");
+        assert!(!fb2.contains("&amp;amp;"), "fb2={fb2}");
+        assert!(
+            fb2.contains("<p><a l:href=\"https://example.com/?a=1&amp;b=2\">First line</a></p>")
+                && fb2.contains("<p><a l:href=\"https://example.com/?a=1&amp;b=2\">Second line</a></p>"),
+            "fb2={fb2}"
+        );
+        assert!(!fb2.contains("<a>Second line</a>"), "fb2={fb2}");
+        // Verify strict quick-xml parse_fb2_to_html accepts generated FB2 XML
+        let (_title, back_html) = parse_fb2_to_html(&fb2, "Complex").expect("valid FB2 XML");
+        assert!(back_html.contains("One"), "back_html={back_html}");
+        assert!(back_html.contains("Two"), "back_html={back_html}");
+        assert!(back_html.contains("<code>code()</code>"), "back_html={back_html}");
+        assert!(back_html.contains("Sub"), "back_html={back_html}");
     }
 }

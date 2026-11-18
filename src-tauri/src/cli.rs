@@ -1,5 +1,5 @@
 use crate::core::ipc_socket::{self, IpcCommand, IpcResponse, IpcSocketError};
-use crate::core::policy::{batch_actions, order_formats, outputs, EngineCapabilities, FormatFamily};
+use crate::core::policy::{batch_actions, ext_lower, family_for_ext, order_formats, outputs};
 use crate::core::preferences::{expand_tilde_path, AppPreferences};
 use crate::core::quick_actions::{
     parse_flip_url, resolve_app_bundle_path, resolve_cli_executable, FlipUrlAction,
@@ -1020,6 +1020,9 @@ fn preview_new_kind_short_label(id: &str, name: &str) -> String {
         "py" => "PY".to_string(),
         "swift" => "Swift".to_string(),
         "pptx" => "PPTX".to_string(),
+        "pages" => "Pages".to_string(),
+        "numbers" => "Numbers".to_string(),
+        "keynote" => "Keynote".to_string(),
         _ => name.to_string(),
     }
 }
@@ -1029,72 +1032,93 @@ fn polar_to_cartesian(cx: f64, cy: f64, r: f64, angle_deg: f64) -> (f64, f64) {
     (cx + r * rad.cos(), cy + r * rad.sin())
 }
 
+fn fmt_svg_num(n: f64) -> String {
+    let rounded = (n * 1000.0).round() / 1000.0;
+    let normalized = if rounded == -0.0 { 0.0 } else { rounded };
+    let mut s = format!("{normalized:.3}");
+    if s.contains('.') {
+        while s.ends_with('0') {
+            s.pop();
+        }
+        if s.ends_with('.') {
+            s.pop();
+        }
+    }
+    s
+}
+
 fn build_preview_sector_path(index: usize, count: usize) -> String {
+    if count == 0 {
+        return String::new();
+    }
     let cx = 220.0_f64;
     let cy = 220.0_f64;
     let r_in = 78.0_f64;
     let r_out = 170.0_f64;
     let corner_inset = 7.0_f64;
 
-    if count <= 1 {
-        let p_top_out = polar_to_cartesian(cx, cy, r_out, 0.0);
-        let p_bot_out = polar_to_cartesian(cx, cy, r_out, 180.0);
-        let p_top_in = polar_to_cartesian(cx, cy, r_in, 0.0);
-        let p_bot_in = polar_to_cartesian(cx, cy, r_in, 180.0);
-        return format!(
-            "M {:.2} {:.2} A {r_out} {r_out} 0 1 1 {:.2} {:.2} A {r_out} {r_out} 0 1 1 {:.2} {:.2} \
-             M {:.2} {:.2} A {r_in} {r_in} 0 1 0 {:.2} {:.2} A {r_in} {r_in} 0 1 0 {:.2} {:.2} Z",
-            p_top_out.0,
-            p_top_out.1,
-            p_bot_out.0,
-            p_bot_out.1,
-            p_top_out.0,
-            p_top_out.1,
-            p_top_in.0,
-            p_top_in.1,
-            p_bot_in.0,
-            p_bot_in.1,
-            p_top_in.0,
-            p_top_in.1
-        );
-    }
+    let safe_count = count.max(1);
+    let span_deg = 360.0 / (safe_count as f64);
+    let gap_deg = if safe_count == 1 {
+        1.8
+    } else {
+        2.2_f64.min(span_deg * 0.06)
+    };
+    let mid_deg = (index as f64) * span_deg;
+    let start_deg = mid_deg - span_deg / 2.0 + gap_deg;
+    let end_deg = mid_deg + span_deg / 2.0 - gap_deg;
+    let arc_span = (end_deg - start_deg).max(1.0);
+    let large_arc = if arc_span > 180.0 { 1 } else { 0 };
 
-    let sweep = 360.0 / (count as f64);
-    let center = (index as f64) * sweep;
-    let raw_start = center - sweep / 2.0;
-    let raw_end = center + sweep / 2.0;
-    let gap_deg = if count <= 2 { 4.2 } else { 2.6 };
-    let mid_r = (r_in + r_out) / 2.0;
-    let in_gap = gap_deg * (mid_r / r_in);
-    let out_gap = gap_deg * (mid_r / r_out);
+    let outer_corner_deg = 2.4_f64.min(arc_span * 0.08);
+    let inner_corner_deg = 4.2_f64.min(arc_span * 0.14);
 
-    let in_start = raw_start + in_gap / 2.0;
-    let in_end = raw_end - in_gap / 2.0;
-    let out_start = raw_start + out_gap / 2.0;
-    let out_end = raw_end - out_gap / 2.0;
+    let p0 = polar_to_cartesian(cx, cy, r_out - corner_inset, start_deg);
+    let p1_ctrl = polar_to_cartesian(cx, cy, r_out, start_deg);
+    let p1_end = polar_to_cartesian(cx, cy, r_out, start_deg + outer_corner_deg);
 
-    let c_deg_out = (corner_inset / r_out).to_degrees();
-    let c_deg_in = (corner_inset / r_in).to_degrees();
+    let p2_start = polar_to_cartesian(cx, cy, r_out, end_deg - outer_corner_deg);
+    let p3_ctrl = polar_to_cartesian(cx, cy, r_out, end_deg);
+    let p3_end = polar_to_cartesian(cx, cy, r_out - corner_inset, end_deg);
 
-    let o_a = polar_to_cartesian(cx, cy, r_out - corner_inset, out_start);
-    let o_b = polar_to_cartesian(cx, cy, r_out, out_start + c_deg_out);
-    let o_c = polar_to_cartesian(cx, cy, r_out, out_end - c_deg_out);
-    let o_d = polar_to_cartesian(cx, cy, r_out - corner_inset, out_end);
+    let p4 = polar_to_cartesian(cx, cy, r_in + corner_inset, end_deg);
+    let p5_ctrl = polar_to_cartesian(cx, cy, r_in, end_deg);
+    let p5_end = polar_to_cartesian(cx, cy, r_in, end_deg - inner_corner_deg);
 
-    let i_d = polar_to_cartesian(cx, cy, r_in + corner_inset, in_end);
-    let i_c = polar_to_cartesian(cx, cy, r_in, in_end - c_deg_in);
-    let i_b = polar_to_cartesian(cx, cy, r_in, in_start + c_deg_in);
-    let i_a = polar_to_cartesian(cx, cy, r_in + corner_inset, in_start);
-
-    let outer_arc_span = (out_end - c_deg_out) - (out_start + c_deg_out);
-    let inner_arc_span = (in_end - c_deg_in) - (in_start + c_deg_in);
-    let large_out = if outer_arc_span > 180.0 { 1 } else { 0 };
-    let large_in = if inner_arc_span > 180.0 { 1 } else { 0 };
+    let p6_start = polar_to_cartesian(cx, cy, r_in, start_deg + inner_corner_deg);
+    let p7_ctrl = polar_to_cartesian(cx, cy, r_in, start_deg);
+    let p7_end = polar_to_cartesian(cx, cy, r_in + corner_inset, start_deg);
 
     format!(
-        "M {:.2} {:.2} L {:.2} {:.2} A {r_out} {r_out} 0 {large_out} 1 {:.2} {:.2} \
-         L {:.2} {:.2} L {:.2} {:.2} A {r_in} {r_in} 0 {large_in} 0 {:.2} {:.2} L {:.2} {:.2} L {:.2} {:.2} Z",
-        o_a.0, o_a.1, o_b.0, o_b.1, o_c.0, o_c.1, o_d.0, o_d.1, i_d.0, i_d.1, i_c.0, i_c.1, i_b.0, i_b.1, i_a.0, i_a.1
+        "M {} {} Q {} {} {} {} A {} {} 0 {large_arc} 1 {} {} Q {} {} {} {} L {} {} Q {} {} {} {} A {} {} 0 {large_arc} 0 {} {} Q {} {} {} {} Z",
+        fmt_svg_num(p0.0),
+        fmt_svg_num(p0.1),
+        fmt_svg_num(p1_ctrl.0),
+        fmt_svg_num(p1_ctrl.1),
+        fmt_svg_num(p1_end.0),
+        fmt_svg_num(p1_end.1),
+        fmt_svg_num(r_out),
+        fmt_svg_num(r_out),
+        fmt_svg_num(p2_start.0),
+        fmt_svg_num(p2_start.1),
+        fmt_svg_num(p3_ctrl.0),
+        fmt_svg_num(p3_ctrl.1),
+        fmt_svg_num(p3_end.0),
+        fmt_svg_num(p3_end.1),
+        fmt_svg_num(p4.0),
+        fmt_svg_num(p4.1),
+        fmt_svg_num(p5_ctrl.0),
+        fmt_svg_num(p5_ctrl.1),
+        fmt_svg_num(p5_end.0),
+        fmt_svg_num(p5_end.1),
+        fmt_svg_num(r_in),
+        fmt_svg_num(r_in),
+        fmt_svg_num(p6_start.0),
+        fmt_svg_num(p6_start.1),
+        fmt_svg_num(p7_ctrl.0),
+        fmt_svg_num(p7_ctrl.1),
+        fmt_svg_num(p7_end.0),
+        fmt_svg_num(p7_end.1),
     )
 }
 
@@ -1113,7 +1137,21 @@ fn compute_preview_wheel(
     cwd: Option<&Path>,
 ) -> (Vec<PreviewSlot>, String, String) {
     if mode == "new" {
-        let mut slots: Vec<PreviewSlot> = built_in_kinds(false)
+        let mut kinds = built_in_kinds(false);
+        let order_rank: std::collections::HashMap<&str, usize> = prefs
+            .new_file_visible_kinds
+            .iter()
+            .enumerate()
+            .map(|(idx, id)| (id.as_str(), idx))
+            .collect();
+        kinds.sort_by_key(|k| {
+            order_rank
+                .get(k.id.as_str())
+                .copied()
+                .unwrap_or(100 + (k.page as usize))
+        });
+
+        let mut slots: Vec<PreviewSlot> = kinds
             .into_iter()
             .map(|k| PreviewSlot {
                 label: preview_new_kind_short_label(&k.id, &k.name),
@@ -1158,36 +1196,41 @@ fn compute_preview_wheel(
 
     let resolved: Vec<PathBuf> = files.iter().map(|p| resolve_cli_path(p, cwd)).collect();
     let tools = detect_tools(Some(prefs));
-    let caps = EngineCapabilities {
-        ffmpeg: tools.ffmpeg.is_some(),
-        pandoc: tools.pandoc.is_some(),
-        pages: tools.pages,
-        numbers: tools.numbers,
-        keynote: tools.keynote,
-    };
+    let caps = tools.capabilities();
 
     let compat = outputs(&resolved, &caps);
     let actions = batch_actions(&resolved);
-    let primary_ext = crate::core::policy::ext_lower(&resolved[0]);
-    let family = match primary_ext.as_str() {
-        "pdf" => Some(FormatFamily::Pdf),
-        "png" | "jpg" | "jpeg" | "webp" | "heic" | "heif" | "tiff" | "tif" | "gif" | "bmp"
-        | "svg" | "avif" | "icns" | "ico" => Some(FormatFamily::Image),
-        "mp3" | "m4a" | "wav" | "flac" | "aiff" | "aif" | "alac" | "caf" | "ogg" | "opus"
-        | "aac" | "wma" => Some(FormatFamily::Audio),
-        "mp4" | "mov" | "mkv" | "webm" | "avi" | "wmv" | "m4v" => Some(FormatFamily::Video),
-        "json" | "yaml" | "yml" | "toml" | "xml" | "csv" => Some(FormatFamily::Data),
-        "zip" => Some(FormatFamily::Archive),
-        "pages" | "numbers" | "key" => Some(FormatFamily::IWork),
-        _ => Some(FormatFamily::Document),
-    };
+    let primary_ext = ext_lower(&resolved[0]);
+    let family = family_for_ext(&primary_ext);
     let ordered_compat = order_formats(&compat, family, Some(prefs));
 
-    let mut combined = ordered_compat;
-    for act in actions {
-        if !combined.contains(&act) {
-            combined.push(act);
+    let mut combined = actions;
+    for fmt in ordered_compat {
+        if !combined.contains(&fmt) {
+            combined.push(fmt);
         }
+    }
+
+    let hub_title = if resolved.len() == 1 {
+        resolved[0]
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("File")
+            .to_string()
+    } else {
+        format!("{} files", resolved.len())
+    };
+
+    if combined.is_empty() {
+        let slots = (0..8)
+            .map(|_| PreviewSlot {
+                label: "—".to_string(),
+                subtitle: "No common output format".to_string(),
+                is_nav: false,
+                enabled: false,
+            })
+            .collect();
+        return (slots, hub_title, "No common output format".to_string());
     }
 
     let mut slots: Vec<PreviewSlot> = combined
@@ -1209,15 +1252,6 @@ fn compute_preview_wheel(
         });
     }
 
-    let hub_title = if resolved.len() == 1 {
-        resolved[0]
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("File")
-            .to_string()
-    } else {
-        format!("{} files", resolved.len())
-    };
     let hub_subtitle = format!("{} options", slots.len());
     (slots, hub_title, hub_subtitle)
 }
@@ -1922,5 +1956,60 @@ mod tests {
         assert!(new_svg.contains("NEW FILE"));
         assert!(new_svg.contains("Folder"));
         assert!(new_svg.contains("data-slot-index=\"2\" data-active=\"true\""));
+
+        // Verify sector geometry parity with wheelGeometry.ts for count=1 and count=2
+        let path_one = build_preview_sector_path(0, 1);
+        assert!(path_one.contains("A 170 170 0 1 1"), "path_one={path_one}");
+        assert!(path_one.contains("A 78 78 0 1 0"), "path_one={path_one}");
+        assert!(path_one.contains(" Q "), "path_one={path_one}");
+
+        let path_two = build_preview_sector_path(0, 2);
+        assert!(path_two.contains("A 170 170 0 0 1"), "path_two={path_two}");
+        assert!(path_two.contains("A 78 78 0 0 0"), "path_two={path_two}");
+        assert!(path_two.contains(" Q "), "path_two={path_two}");
+
+        // Multi-file preview surfaces batch actions on page 1 before conversion outputs
+        let batch_svg_out = dir.path().join("wheel-batch.svg");
+        let batch_outcome = execute_cli_command_with_ipc(
+            parse_cli_args([
+                "flip",
+                "preview",
+                "--out",
+                batch_svg_out.to_str().unwrap(),
+                "--files",
+                "a.png,b.png",
+            ])
+            .unwrap(),
+            &prefs,
+            Some(dir.path()),
+            &dir.path().join("unused.sock"),
+            Duration::from_millis(50),
+            || panic!("preview must not spawn GUI"),
+        );
+        assert_eq!(batch_outcome.exit_code, 0);
+        let batch_svg = std::fs::read_to_string(&batch_svg_out).unwrap();
+        assert!(batch_svg.contains(">ZIP<"), "batch_svg={batch_svg}");
+
+        // Custom new_file_visible_kinds puts reordered item on page 1
+        let mut custom_prefs = prefs.clone();
+        custom_prefs.new_file_visible_kinds = vec!["json".to_string(), "folder".to_string()];
+        let (_slots, _title, _sub) = compute_preview_wheel(&[], "new", &custom_prefs, None);
+        let (reordered_svg, reordered_labels) =
+            render_wheel_preview_svg(&[], "new", None, &custom_prefs, None);
+        assert_eq!(reordered_labels.first().map(String::as_str), Some("JSON"));
+        assert!(reordered_svg.contains(">JSON<"), "reordered_svg={reordered_svg}");
+
+        // Single unknown file still offers ZIP; non-iWork directory renders 8 disabled placeholder sectors + "No common output format"
+        let (_zip_svg, zip_labels) =
+            render_wheel_preview_svg(&[PathBuf::from("unknown.xyz123")], "convert", None, &prefs, None);
+        assert_eq!(zip_labels, vec!["ZIP".to_string()]);
+
+        let plain_dir = dir.path().join("plain-folder");
+        std::fs::create_dir(&plain_dir).unwrap();
+        let (empty_svg, empty_labels) =
+            render_wheel_preview_svg(&[plain_dir], "convert", None, &prefs, None);
+        assert_eq!(empty_labels.len(), 8);
+        assert!(empty_svg.contains("No common output format"), "empty_svg={empty_svg}");
+        assert!(empty_svg.contains("opacity=\"0.42\""), "empty_svg={empty_svg}");
     }
 }

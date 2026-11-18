@@ -2385,3 +2385,269 @@ fn verify() {
         "Expected MP3 conversion to fail when FLIP_DISABLE_FFMPEG=1"
     );
 }
+
+#[test]
+fn zero_pandoc_full_fb2_rst_matrix_across_docs_and_images() {
+    let dir = tempdir().unwrap();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let prefs = AppPreferences {
+        pandoc_path: Some("none".to_string()),
+        ..AppPreferences::default()
+    };
+    assert!(
+        detect_tools(Some(&prefs)).pandoc.is_none(),
+        "pandoc_path=\"none\" must disable pandoc cleanly"
+    );
+
+    let seed_md = dir.path().join("matrix_seed.md");
+    fs::write(
+        &seed_md,
+        "# Matrix Story\n\nNative pure-Rust body with **emphasis** and `snippet()`.\n",
+    )
+    .unwrap();
+    let seed_conv = convert_files(
+        std::slice::from_ref(&seed_md),
+        &["FB2".into(), "RST".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(seed_conv.iter().all(|r| r.error.is_none()));
+    let fb2_src = PathBuf::from(&seed_conv[0].outputs[0]);
+    let rst_src = PathBuf::from(&seed_conv[1].outputs[0]);
+
+    // 1) Full native FB2 -> PDF, DOCX, ODT, RTF, HTML, MD, RST, PNG, JPG, WEBP, HEIC
+    let fb2_targets = [
+        "PDF", "DOCX", "ODT", "RTF", "HTML", "MD", "RST", "PNG", "JPG", "WEBP", "HEIC",
+    ];
+    let fb2_results = convert_files(
+        std::slice::from_ref(&fb2_src),
+        &fb2_targets.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    let mut artifact_by_fmt: HashMap<String, PathBuf> = HashMap::new();
+    for res in &fb2_results {
+        assert!(
+            res.error.is_none(),
+            "FB2->{} failed: {:?}",
+            res.format,
+            res.error
+        );
+        assert!(
+            !res.outputs.is_empty(),
+            "FB2->{} produced no output files",
+            res.format
+        );
+        for out_str in &res.outputs {
+            let p = PathBuf::from(out_str);
+            assert!(
+                validate_output(&p, &res.format).is_ok(),
+                "validate_output failed for FB2->{} at {}",
+                res.format,
+                p.display()
+            );
+        }
+        artifact_by_fmt.insert(res.format.clone(), PathBuf::from(&res.outputs[0]));
+    }
+
+    // 2) Full native RST -> FB2, DOCX, ODT, RTF, EPUB, MD, TXT, PNG
+    let rst_targets = ["FB2", "DOCX", "ODT", "RTF", "EPUB", "MD", "TXT", "PNG"];
+    let rst_results = convert_files(
+        std::slice::from_ref(&rst_src),
+        &rst_targets.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    for res in &rst_results {
+        assert!(
+            res.error.is_none(),
+            "RST->{} failed: {:?}",
+            res.format,
+            res.error
+        );
+        assert!(
+            !res.outputs.is_empty(),
+            "RST->{} produced no output files",
+            res.format
+        );
+        for out_str in &res.outputs {
+            let p = PathBuf::from(out_str);
+            assert!(
+                validate_output(&p, &res.format).is_ok(),
+                "validate_output failed for RST->{} at {}",
+                res.format,
+                p.display()
+            );
+        }
+    }
+
+    // 3) DOCX / RTF / ODT / HTML / EPUB -> FB2 & RST
+    let epub_seed = convert_files(
+        std::slice::from_ref(&seed_md),
+        &["EPUB".into()],
+        &prefs,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    let epub_path = PathBuf::from(&epub_seed[0].outputs[0]);
+    let doc_inputs = [
+        artifact_by_fmt.get("DOCX").unwrap().clone(),
+        artifact_by_fmt.get("RTF").unwrap().clone(),
+        artifact_by_fmt.get("ODT").unwrap().clone(),
+        artifact_by_fmt.get("HTML").unwrap().clone(),
+        epub_path,
+    ];
+    for doc_in in &doc_inputs {
+        let out_dir = tempdir().unwrap();
+        let staged_in = out_dir.path().join(doc_in.file_name().unwrap());
+        fs::copy(doc_in, &staged_in).unwrap();
+        let res = convert_files(
+            std::slice::from_ref(&staged_in),
+            &["FB2".into(), "RST".into()],
+            &prefs,
+            &cancel,
+            None,
+        )
+        .unwrap();
+        for item in &res {
+            assert!(
+                item.error.is_none(),
+                "{} -> {} failed: {:?}",
+                doc_in.display(),
+                item.format,
+                item.error
+            );
+            let out_p = PathBuf::from(&item.outputs[0]);
+            assert!(validate_output(&out_p, &item.format).is_ok());
+            let content = fs::read_to_string(&out_p).unwrap();
+            assert!(
+                content.contains("Matrix Story") || content.contains("pure-Rust"),
+                "Missing expected prose in {} -> {}: {}",
+                doc_in.display(),
+                item.format,
+                content
+            );
+        }
+    }
+}
+
+#[test]
+fn pandoc_preference_fallback_and_cancel_propagation() {
+    let dir = tempdir().unwrap();
+    let src_md = dir.path().join("mock_src.md");
+    fs::write(&src_md, "# Mock Title\n\nNative fallback body.\n").unwrap();
+
+    // 1) Mock Pandoc succeeding -> preferred over native Rust
+    let ok_script = dir.path().join("mock-pandoc-ok.sh");
+    fs::write(
+        &ok_script,
+        r#"#!/bin/sh
+OUT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o|--output) OUT="$2"; shift 2 ;;
+    --output=*) OUT="${1#--output=}"; shift ;;
+    *) shift ;;
+  esac
+done
+cat > "$OUT" << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0">
+  <body><section><p>MOCK_PANDOC_USED</p></section></body>
+</FictionBook>
+EOF
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&ok_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let prefs_ok = AppPreferences {
+        pandoc_path: Some(ok_script.to_string_lossy().into_owned()),
+        ..AppPreferences::default()
+    };
+    let tools_ok = detect_tools(Some(&prefs_ok));
+    assert!(tools_ok.pandoc.is_some());
+
+    let res_ok = convert_files(
+        std::slice::from_ref(&src_md),
+        &["FB2".into()],
+        &prefs_ok,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    assert!(res_ok[0].error.is_none());
+    let out_ok = fs::read_to_string(&res_ok[0].outputs[0]).unwrap();
+    assert!(out_ok.contains("MOCK_PANDOC_USED"), "out_ok={out_ok}");
+
+    // 2) Mock Pandoc failing -> falls back cleanly to native Rust writer
+    let fail_script = dir.path().join("mock-pandoc-fail.sh");
+    fs::write(&fail_script, "#!/bin/sh\necho 'mock pandoc boom' >&2\nexit 1\n").unwrap();
+    fs::set_permissions(&fail_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let fail_dir = tempdir().unwrap();
+    let fail_src_md = fail_dir.path().join("mock_src.md");
+    fs::copy(&src_md, &fail_src_md).unwrap();
+    let prefs_fail = AppPreferences {
+        pandoc_path: Some(fail_script.to_string_lossy().into_owned()),
+        ..AppPreferences::default()
+    };
+    let res_fail = convert_files(
+        std::slice::from_ref(&fail_src_md),
+        &["FB2".into(), "RST".into()],
+        &prefs_fail,
+        &cancel,
+        None,
+    )
+    .unwrap();
+    for item in &res_fail {
+        assert!(item.error.is_none(), "fallback failed: {:?}", item.error);
+        let body = fs::read_to_string(&item.outputs[0]).unwrap();
+        assert!(body.contains("Native fallback body."), "body={body}");
+    }
+
+    // 3) Cancelled while Pandoc is executing -> must propagate cancellation without falling back
+    let slow_script = dir.path().join("mock-pandoc-slow.sh");
+    fs::write(&slow_script, "#!/bin/sh\nsleep 2\nexit 0\n").unwrap();
+    fs::set_permissions(&slow_script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let cancel_dir = tempdir().unwrap();
+    let cancel_src_md = cancel_dir.path().join("mock_src.md");
+    fs::copy(&src_md, &cancel_src_md).unwrap();
+    let prefs_cancel = AppPreferences {
+        pandoc_path: Some(slow_script.to_string_lossy().into_owned()),
+        ..AppPreferences::default()
+    };
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    let cancel_trigger = Arc::clone(&cancel_flag);
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(90));
+        cancel_trigger.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    let res_cancel = convert_files(
+        std::slice::from_ref(&cancel_src_md),
+        &["FB2".into()],
+        &prefs_cancel,
+        &cancel_flag,
+        None,
+    );
+    match res_cancel {
+        Err(EngineError::Cancelled) => {}
+        Ok(items) => {
+            let err_msg = items[0].error.as_deref().unwrap_or("");
+            assert!(
+                err_msg.to_ascii_lowercase().contains("cancel"),
+                "Expected cancel error, got items={items:?}"
+            );
+        }
+        Err(other) => panic!("Unexpected error on cancel: {other:?}"),
+    }
+}
