@@ -241,6 +241,17 @@ fn stress_50_cycle_trigger_wheel_escape_and_multimonitor_clamping() {
         {
             let mut wheel = state.wheel.lock().unwrap();
             if is_drag {
+                // While user actually performed a wheel action in this epoch, drag-end must NOT dismiss the wheel
+                let hide_after_action = should_hide_on_drag_end(
+                    wheel.is_open,
+                    wheel.payload.is_drag,
+                    false,
+                    wheel.open_epoch,
+                    epoch_now,
+                    epoch_now,
+                );
+                assert!(!hide_after_action);
+
                 assert!(should_hide_on_drag_end(
                     wheel.is_open,
                     wheel.payload.is_drag,
@@ -260,13 +271,21 @@ fn stress_50_cycle_trigger_wheel_escape_and_multimonitor_clamping() {
             let mut press = state.press_gate.lock().unwrap();
             let mut order = state.order_gate.lock().unwrap();
             if pattern != 2 {
-                order.mouse_up();
-                order.key_up();
-                let _ = press.process(false, false);
+                if cycle % 5 == 4 {
+                    // Escape pressed mid-hold while mouse/key are still held down -> monitor teardown calls reset()
+                    assert!(
+                        press.is_down() || order.held(),
+                        "cycle {cycle}: expected active hold before Escape reset"
+                    );
+                    press.reset();
+                    order.reset();
+                } else {
+                    // Natural release without calling reset() must leave zero stuck key/mouse flags
+                    order.mouse_up();
+                    order.key_up();
+                    let _ = press.process(false, false);
+                }
             }
-            // Extra safety reset mirrors monitor teardown/escape recovery
-            press.reset();
-            order.reset();
 
             assert!(!press.is_down(), "cycle {cycle}: press_gate stuck down");
             assert!(!order.held(), "cycle {cycle}: order_gate stuck held");
@@ -368,7 +387,10 @@ fn stress_20_plus_10_staging_cleanup_policy_latency_and_cli_startup_perf() {
         );
     }
 
-    // 2) 10 intentionally failing / cancelled conversions (bad JSON, zip-slip, cancelled, missing, unsupported, mid-job Drop)
+    // 2) 10 intentionally failing / cancelled conversions that each enter JobStaging::create
+    //    (2 mid-flight cancellations triggered after JobStaging::create, 2 corrupt JSON,
+    //     2 zip-slip / truncated PK-zip UNZIP, 2 corrupt PNG, 1 corrupt PDF OPTIMIZE_PDF,
+    //     1 blank transparent PNG REMOVE_BG), plus 2 read-only JobStaging Drop aborts
     let bad_json = dir.path().join("corrupt.json");
     fs::write(&bad_json, "{not valid json").unwrap();
 
@@ -381,30 +403,67 @@ fn stress_20_plus_10_staging_cleanup_policy_latency_and_cli_startup_perf() {
         zw.finish().unwrap();
     }
 
-    let missing_file = dir.path().join("does-not-exist.png");
-    let pre_cancelled = Arc::new(AtomicBool::new(true));
+    let truncated_zip = dir.path().join("truncated.zip");
+    fs::write(&truncated_zip, b"PK\x03\x04\x14\x00\x00\x00truncated-central-dir").unwrap();
 
-    // 2a-b: 2 pre-cancelled conversions
-    for src in [&json_src, &md_src] {
-        let err = convert_files(std::slice::from_ref(src), &["YAML".into()], &prefs, &pre_cancelled, None);
-        assert!(matches!(err, Err(EngineError::Cancelled)));
+    let corrupt_png = dir.path().join("corrupt_body.png");
+    fs::write(&corrupt_png, b"\x89PNG\r\n\x1a\nnot-a-valid-ihdr-chunk").unwrap();
+
+    let corrupt_pdf = dir.path().join("corrupt_body.pdf");
+    fs::write(&corrupt_pdf, b"%PDF-1.4\n%corrupt-missing-trailer\n").unwrap();
+
+    let blank_png = dir.path().join("blank_transparent.png");
+    {
+        let img = image::RgbaImage::from_pixel(32, 32, image::Rgba([0, 0, 0, 0]));
+        img.save_with_format(&blank_png, image::ImageFormat::Png).unwrap();
+    }
+
+    // 2a-b: 2 mid-flight cancellations triggered inside progress callback AFTER JobStaging::create
+    for (src, fmt) in [(&png_src, "JPG"), (&json_src, "YAML")] {
+        let cancel_mid = Arc::new(AtomicBool::new(false));
+        let cancel_ref = Arc::clone(&cancel_mid);
+        let saw_staging_progress = Arc::new(AtomicBool::new(false));
+        let saw_ref = Arc::clone(&saw_staging_progress);
+        let cb = move |pct: u8, _msg: &str| {
+            // base_pct is 2; pct >= 20 only fires from unit_progress inside convert_single_unit after JobStaging::create
+            if pct >= 20 {
+                saw_ref.store(true, Ordering::Relaxed);
+                cancel_ref.store(true, Ordering::Relaxed);
+            }
+        };
+        let err = convert_files(
+            std::slice::from_ref(src),
+            &[fmt.to_string()],
+            &prefs,
+            &cancel_mid,
+            Some(&cb),
+        );
+        assert!(saw_staging_progress.load(Ordering::Relaxed), "expected mid-flight progress after JobStaging::create for {fmt}");
+        assert!(matches!(err, Err(EngineError::Cancelled)), "expected mid-flight Cancelled for {fmt}, got {err:?}");
     }
     // 2c-d: 2 corrupt JSON conversions (returns unit error inside ConversionResult)
     for fmt in ["YAML", "TOML"] {
         let res = convert_files(std::slice::from_ref(&bad_json), &[fmt.into()], &prefs, &cancel, None).unwrap();
         assert!(res[0].error.is_some() && res[0].outputs.is_empty());
     }
-    // 2e-f: 2 zip-slip / invalid UNZIP & double-ZIP errors
-    let unzip_err = convert_files(std::slice::from_ref(&slip_zip), &["UNZIP".into()], &prefs, &cancel, None).unwrap();
-    assert!(unzip_err[0].error.is_some());
-    let rezip_err = convert_files(&[slip_zip], &["ZIP".into()], &prefs, &cancel, None).unwrap();
-    assert!(rezip_err[0].error.is_some());
-    // 2g-h: 2 unsupported format / missing input failures
-    let missing_err = convert_files(&[missing_file], &["JPG".into()], &prefs, &cancel, None);
-    assert!(missing_err.is_err());
-    let unsupp_err = convert_files(std::slice::from_ref(&txt_src), &["MP4".into()], &prefs, &cancel, None).unwrap();
-    assert!(unsupp_err[0].error.is_some());
-    // 2i-j: 2 simulated mid-job staging aborts (Drop cleanup without commit)
+    // 2e-f: 2 zip-slip & truncated PK-zip UNZIP errors
+    for bad_zip in [&slip_zip, &truncated_zip] {
+        let unzip_err = convert_files(std::slice::from_ref(bad_zip), &["UNZIP".into()], &prefs, &cancel, None).unwrap();
+        assert!(unzip_err[0].error.is_some() && unzip_err[0].outputs.is_empty());
+    }
+    // 2g-h: 2 corrupt PNG image decode failures
+    for fmt in ["JPG", "WEBP"] {
+        let img_err = convert_files(std::slice::from_ref(&corrupt_png), &[fmt.into()], &prefs, &cancel, None).unwrap();
+        assert!(img_err[0].error.is_some() && img_err[0].outputs.is_empty());
+    }
+    // 2i: 1 corrupt PDF OPTIMIZE_PDF failure
+    let pdf_err = convert_files(std::slice::from_ref(&corrupt_pdf), &["OPTIMIZE_PDF".into()], &prefs, &cancel, None).unwrap();
+    assert!(pdf_err[0].error.is_some() && pdf_err[0].outputs.is_empty());
+    // 2j: 1 blank transparent PNG Vision REMOVE_BG failure
+    let bg_err = convert_files(std::slice::from_ref(&blank_png), &["REMOVE_BG".into()], &prefs, &cancel, None).unwrap();
+    assert!(bg_err[0].error.is_some() && bg_err[0].outputs.is_empty());
+
+    // Extra: 2 simulated read-only mid-job staging aborts (Drop cleanup without commit)
     for i in 0..2 {
         let staging = JobStaging::create(dir.path()).unwrap();
         let staged_file = staging.staged_path(&format!("aborted_{i}.tmp"));

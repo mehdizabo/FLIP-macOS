@@ -15,7 +15,7 @@ Verified host hardware & OS:
   - Rust / Cargo: `rustc 1.100.0` / `cargo 1.100.0`, `tauri-cli 2.12.4`
   - Node.js: `v26.11.1`, `npm 11.16.0`, Bun: `1.4.4`
 - **Optional External Engines on Test Host**:
-  - `FFmpeg`: Present (`/opt/homebrew/bin/ffmpeg` `8.1.1`) — note: zero-FFmpeg audio paths (`CAF`/`FLAC`/`M4A`/`WAV`/`AIFF`/`ALAC`) and zero-FFmpeg release CLI tests were explicitly verified with FFmpeg capability off and under `PATH=/usr/bin:/bin`
+  - `FFmpeg`: Present (`/opt/homebrew/bin/ffmpeg` `8.1.1`) — note: because `detect_tools` checks `/opt/homebrew/bin/ffmpeg` before `PATH`, zero-FFmpeg audio paths (`CAF`/`FLAC`/`M4A`/`WAV`/`AIFF`/`ALAC`, including `ALAC -> M4A`) were explicitly verified with `EngineCapabilities`/`DetectedTools { ffmpeg: None, .. }` in `engines_integration.rs` and via direct `flip-macos-bridge convert-av` + `/usr/bin/afconvert` invocations
   - `Pandoc`: Not installed on host (built-in EPUB 3 runs completely Pandoc-free; Pandoc is only required for `FB2`/`RST`)
   - `Pages.app` / `Numbers.app` / `Keynote.app`: Not installed in `/Applications` on host
 
@@ -32,17 +32,17 @@ Verified host hardware & OS:
 
 ### 2.1 Native Swift/AppKit Bridge (`./native-bridge/build.sh`)
 - **Result**: Passed (`exit 0`)
-- **Artifact**: `native-bridge/bin/flip-macos-bridge` (`467,376` bytes before bundle re-sign; `464,816` bytes inside signed `FLIP.app/Contents/Resources/flip-macos-bridge`, `arm64`, `-rwxr-xr-x@`)
+- **Artifact**: `native-bridge/bin/flip-macos-bridge` (`484,128` bytes before bundle re-sign; `481,472` bytes inside signed `FLIP.app/Contents/Resources/flip-macos-bridge`, `arm64`, `-rwxr-xr-x@`)
 - Compiled via `/usr/bin/swiftc -O -target arm64-apple-macosx15.0` using Command Line Tools only (zero `Xcode.app` required).
 
 ### 2.2 TypeScript, Vite Production Build, and Bun Unit Tests
 Command: `npx tsc --noEmit && npm run build && bun test`
 - **TypeScript (`tsc --noEmit`)**: 0 errors
-- **Vite Production Build (`npm run build`)**: 21 modules transformed (`dist/index.html` 0.39 kB, `dist/assets/index-vTEYyANX.css` 25.06 kB, `dist/assets/index-ByTp273z.js` 194.95 kB in 226–236 ms)
-- **Bun Test Suite (`bun test`)**: **34 passed, 0 failed** across 3 files (`1,597` `expect()` assertions):
+- **Vite Production Build (`npm run build`)**: 21 modules transformed (`dist/index.html` 0.39 kB, `dist/assets/index-vTEYyANX.css` 25.06 kB, `dist/assets/index-CE--PlCN.js` 199.18 kB in 230–243 ms)
+- **Bun Test Suite (`bun test`)**: **35 passed, 0 failed** across 3 files (`1,711` `expect()` assertions):
   - `src/ipc.test.ts`: **4/4 passed** (Rust `AppPreferences` schema alignment including `language` & format lists, mock IPC commands & events including `"sound"`/`"tick"`/`"none"` feedback test & language updates, native Pandoc-free `EPUB 3`, and zero-FFmpeg `CAF`/`FLAC` audio capability policy)
   - `src/wheelGeometry.test.ts`: **26/26 passed** (wheel format ordering, `reorderFormatList` / `moveFormatToIndex` clamping, SVG chamfered sector geometry for 1–8 sectors, 3° angular hysteresis + 0°/360° wraparound, progress arc geometry, pagination, hash routing, `inspectFilesLocally` coverage including `ZIP`/`UNZIP`/`REMOVE_BG`/`OPTIMIZE_PDF`, HTML escaping, Option-modified key token mapping, non-ASCII thumbnail btoa fallback, batch handoff, and VoiceOver live announcement formatters)
-  - `src/i18n.test.ts`: **4/4 passed** (`EN`/`IT` full key parity, non-empty dictionary validation, consistent placeholder tokens, clean interpolation without double substitution, safe fallback to English on invalid/empty inputs)
+  - `src/i18n.test.ts`: **5/5 passed** (`EN`/`IT` full key parity, non-empty dictionary validation, consistent placeholder tokens, clean interpolation without double substitution, safe fallback to English on invalid/empty inputs, and localization of built-in New File kind names, disabled reasons, clipboard kinds, categories, and availability messages)
 
 ### 2.3 Rust Clippy, Unit, Engine/IPC Integration & Stress/Perf Suite (`cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test`)
 - **Clippy (`cargo clippy --all-targets -- -D warnings`)**: **Passed with 0 warnings**
@@ -53,37 +53,37 @@ Command: `npx tsc --noEmit && npm run build && bun test`
     - Covers `zip_and_unzip_roundtrip_dedup_collisions_and_safety_rejections` (Zip-Slip, >256 MiB / >4,096 entries, collisions, stem deduplication)
     - Covers `vision_remove_bg_cuts_subject_and_rejects_blank_image` (transparent PNG cutout + blank-canvas rejection)
     - Covers `optimize_pdf_shrinks_heavy_pdf_preserves_text_and_rejects_over_200_pages`
-    - Covers `native_zero_ffmpeg_audio_caf_and_flac_roundtrips` (`WAV <-> CAF`, `WAV <-> FLAC`, `CAF -> FLAC`, `FLAC -> CAF`, `FLAC -> M4A`, `CAF -> M4A`, `FLAC -> ALAC`, `ALAC -> FLAC`, zero FFmpeg binary)
+    - Covers `native_zero_ffmpeg_audio_caf_and_flac_roundtrips` (`WAV <-> CAF`, `WAV <-> FLAC`, `CAF -> FLAC`, `FLAC -> CAF`, `FLAC -> M4A`, `CAF -> M4A`, `FLAC -> ALAC`, `ALAC -> FLAC`, `ALAC -> M4A -> WAV`, zero FFmpeg binary)
     - Plus native `EPUB 3`, PDF multi-page rasterization + Vision OCR + merge, image matrix + EXIF/GPS, >40 MP / HTML LFI safety, FFmpeg/AVFoundation video + mid-flight cancellation, read-only fallback, OOXML + templates.
   - **`tests/host_ipc_integration.rs`**: **8/8 passed**
     - Verifies exact command & camelCase alignment across all **27** Tauri commands and all **11** host-emitted events between Rust and `src/ipc.ts`
     - Verifies `unix_socket_ipc_roundtrips_permissions_and_stale_recovery` (`0600` owner-only socket, live command roundtrips, stale socket cleanup/recovery)
     - Verifies bridge & WAV resource resolution in dev and relocated `.app` layouts, `Info.plist` `plutil -lint`, screen clamping, and Tauri capabilities consistency.
-  - **`tests/stress_and_perf.rs`**: **2/2 passed** (`2.05 s`)
-    - **`stress_50_cycle_trigger_wheel_escape_and_multimonitor_clamping`**: Drives 50 rapid trigger -> wheel open -> pointer drag -> global Escape / drag-end -> gate reset cycles across 4 simulated multi-monitor layouts (Retina + 1x left + top-notch + ultrawide side-Dock) with 0 stuck `press_gate` / `order_gate` flags, 0 orphaned wheel `is_open` / `is_drag` states, and 100% bounded screen coordinates.
+  - **`tests/stress_and_perf.rs`**: **2/2 passed** (`2.28 s`)
+    - **`stress_50_cycle_trigger_wheel_escape_and_multimonitor_clamping`**: Drives 50 rapid trigger -> wheel open -> pointer drag -> natural release / global Escape teardown cycles across 4 simulated multi-monitor layouts (Retina + 1x left + top-notch + ultrawide side-Dock), verifying `!press.is_down()` / `!order.held()` BEFORE any `reset()` on normal release cycles, mid-hold Escape teardown `reset()` on `cycle % 5 == 4`, `acted_epoch` drag-end retention, 0 orphaned wheel `is_open` / `is_drag` states, and 100% bounded screen coordinates.
     - **`stress_20_plus_10_staging_cleanup_policy_latency_and_cli_startup_perf`**:
-      - Executes **20 sequential successful conversions** (`Data`, `Document`/`EPUB`, `Image`, `ZIP`) + **10 intentionally failing/cancelled/mid-job `Drop` conversions** (pre-cancelled, corrupt JSON, Zip-Slip, missing source, unsupported target, read-only aborted `JobStaging`) in an isolated `TempDir`: **0 leftover `.flip-job-*` or `.flip-probe-*` directories**.
-      - `policy::outputs` latency: **9.71 µs** single file, **1.31 ms** max 128-file batch, **21.15 µs** avg over 500 mixed lookups (target `< 5 ms`).
-      - Compiled CLI `flip --version` startup (`target/debug/flip`): **6.50 ms – 9.23 ms** across 5 warm runs after macOS one-time `1.086 s` first-exec AMFI/syspolicyd cache scan on newly linked binary (target `< 300 ms`).
+      - Executes **20 sequential successful conversions** (`Data`, `Document`/`EPUB`, `Image`, `ZIP`) + **10 intentionally failing/mid-flight cancelled `convert_files` jobs that each enter `JobStaging::create`** (2 mid-flight cancellations triggered in progress callback at `pct >= 20`, 2 corrupt JSON, 2 zip-slip/truncated PK-zip `UNZIP`, 2 corrupt PNG, 1 corrupt PDF `OPTIMIZE_PDF`, 1 blank transparent PNG `REMOVE_BG`) + 2 read-only `JobStaging::create` `Drop` aborts in an isolated `TempDir`: **0 leftover `.flip-job-*` or `.flip-probe-*` directories**.
+      - `policy::outputs` latency: **16.83 µs** single file, **1.21 ms** max 128-file batch, **21.81 µs** avg over 500 mixed lookups (target `< 5 ms`).
+      - Compiled CLI `flip --version` startup (`target/debug/flip`): **7.24 ms – 9.74 ms** across 5 warm runs after macOS one-time `1.046 s` first-exec AMFI/syspolicyd cache scan on newly linked binary (target `< 300 ms`).
 
 ---
 
 ## 3. Release Bundle, Signing, DMG Packaging & Bundled CLI Verification
 
 1. **Release `.app` Build (`./scripts/build-macos.sh --dmg`)**:
-   - Built `src-tauri/target/release/bundle/macos/FLIP.app` (`22.29 MiB`, main `flip` Mach-O executable `20,493,328` bytes), embedded signed `Contents/Resources/flip-macos-bridge` (`464,816` bytes, `-rwxr-xr-x@`) and `Contents/Resources/resources/flip-tick.wav`.
+   - Built `src-tauri/target/release/bundle/macos/FLIP.app` (`22.23 MiB` / `23,309,300` bytes total files; main `flip` Mach-O executable `20,530,624` bytes), embedded signed `Contents/Resources/flip-macos-bridge` (`481,472` bytes, `-rwxr-xr-x@`) and `Contents/Resources/resources/flip-tick.wav`.
 2. **Code Signing (`codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/FLIP.app`)**:
    - **Passed**: `valid on disk`, `satisfies its Designated Requirement` (ad-hoc local signature).
-3. **DMG Packager & Mount Verification (`src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg`, `8,917,516` bytes / `8.5 MiB`)**:
+3. **DMG Packager & Mount Verification (`src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg`, `8,931,632` bytes / `8.5 MiB`)**:
    - `codesign --verify --deep --strict --verbose=2` on `.dmg`: **Passed** (`valid on disk`, `satisfies its Designated Requirement`).
    - Mounted with `hdiutil attach -nobrowse -readonly -mountpoint ...`: verified `FLIP.app` and `Applications -> /Applications` symlink inside mounted volume, verified `codesign --verify --deep --strict --verbose=2` on mounted `FLIP.app`, and ejected cleanly with `hdiutil detach`.
-4. **Live Bundled Release CLI Smoke Tests (`FLIP.app/Contents/MacOS/flip`)**:
-   - **`--version` startup latency**: `flip 0.1.0`, **6.18 ms – 8.07 ms** across 5 runs.
-   - **`ZIP` -> `UNZIP` roundtrip**: `convert hello.txt note.md --to ZIP` -> `hello.zip` (`255` B) -> `convert hello.zip --to UNZIP` -> extracted `hello/` matching byte-for-byte via `diff -u`.
-   - **Zero-FFmpeg Audio (`WAV -> FLAC -> WAV` & `WAV -> CAF`)**: Both with default `PATH` and stripped `PATH=/usr/bin:/bin` (no Homebrew FFmpeg visible), `tick.wav` (`3.5K`) converted cleanly to `tick.flac` (`9.8K`), `tick.caf` (`7.0K`), and back from `tick.flac` to `tick 2.wav` (`7.0K`).
-   - **Native `EPUB 3` (`MD -> EPUB -> TXT`)**: `book.md` -> `book.epub` -> `book.txt` cleanly with no Pandoc installed.
-   - **`OPTIMIZE_PDF`**: `cover.png` (`1.8M`) -> `cover.pdf` (`2.9M`) -> `cover 2.pdf` (`174K`, `-94%` reduction cleanly).
-   - **Apple Vision `REMOVE_BG`**: `cover.png` (`1.8M`) -> `cover 2.png` (`1.3M`, transparent cutout PNG cleanly).
+4. **Live Bundled Release CLI & Bridge Smoke Tests (`FLIP.app/Contents/MacOS/flip` & `Contents/Resources/flip-macos-bridge`)**:
+   - **`--version` startup latency**: `flip 0.1.0`, **6.36 ms** warm.
+   - **`ZIP` -> `UNZIP` roundtrip**: `convert hello.txt notes.md --to ZIP` -> `hello.zip` (`244` B) -> `convert hello.zip --to UNZIP` -> extracted `hello/` with identical file contents verified.
+   - **Audio (`WAV -> FLAC -> WAV`, `WAV -> CAF`, `WAV -> ALAC -> M4A`) & Zero-FFmpeg Direct Bridge**: Bundled CLI converted 1 s 44.1 kHz `tone.wav` to `tone.flac` (`21,230` B) -> `tone 2.wav` (`176,478` B), `tone.caf` (`176,530` B), and `tone.alac` (`25,912` B) -> `tone 2.m4a` (`18,451` B); direct `flip-macos-bridge convert-av` (no FFmpeg) also converted `tone.alac -> direct_alac.m4a` (`8,728` B) and short 1,764-frame `src-tauri/resources/flip-tick.wav -> direct_tick.flac` (`1,836` B).
+   - **Native `EPUB 3` (`MD -> EPUB -> TXT`)**: `notes.md` -> `notes.epub` (`2,132` B) -> `notes 2.txt` (`13` B) cleanly with no Pandoc installed.
+   - **`OPTIMIZE_PDF`**: 800×600 PNG-backed `big.pdf` (`479,328` B) -> `big 2.pdf` (`383,743` B, `-20%` reduction cleanly).
+   - **Apple Vision `REMOVE_BG`**: `subject.png` (rendered from `src-tauri/icons/icon.icns`) -> `subject 2.png` (`rc=0`, transparent cutout PNG cleanly).
 
 ---
 
