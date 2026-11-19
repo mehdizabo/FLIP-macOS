@@ -12,9 +12,9 @@ This review evaluates the current source repository, local Apple Silicon (`arm64
 | Area | Evidence & Scope | Status |
 |---|---|---|
 | **Native Swift Bridge (`flip-macos-bridge`)** | Compiled cleanly via `/usr/bin/swiftc -O -target arm64-apple-macosx15.0` with Command Line Tools only | **PASS** |
-| **Frontend TypeScript, Vite & Bun Suite** | `npx tsc --noEmit` (0 errors), `npm run build`, `bun test` (unit + contract + i18n + in-memory DOM E2E across all 4 views) | **PASS** |
-| **Rust Linting & Test Suite** | `cargo clippy --all-targets -- -D warnings` (0 warnings), `cargo test` offline suite (`flip_lib`, `engines_integration`, `host_ipc_integration`, `stress_and_perf`; 1 `#[ignore]` live GitHub network test) | **PASS** |
-| **Bundle, Codesign & DMG Packaging** | `./scripts/build-macos.sh --dmg` + `./scripts/package-dmg.sh --update-cask`, `codesign --verify --deep --strict` on `.app` & `.dmg`, `hdiutil attach` mount & `/Applications` symlink check | **PASS (Ad-Hoc Signed)** |
+| **Frontend TypeScript, Vite & Bun Suite** | `npx tsc --noEmit` (0 errors), `npm run build` (21 modules), `bun test` (**42/42 passed**, 1,914 assertions: unit + contract + i18n + in-memory DOM E2E across all 4 views) | **PASS** |
+| **Rust Linting & Test Suite** | `cargo clippy --all-targets -- -D warnings` (0 warnings), `cargo test` offline suite (**99/99 passed**, 1 `#[ignore]` live GitHub test: 68 unit + 20 integration + 9 IPC + 2 stress/perf) | **PASS** |
+| **Bundle, Codesign & DMG Packaging** | `./scripts/build-macos.sh --dmg` (`22.68 MiB` `FLIP.app`) + `./scripts/package-dmg.sh --update-cask` (`8.7 MiB` `.dmg`, SHA-256 `1ba78ab86fefb291078c3df6702d6b343a60d847ad926c7ff3fb1f67dd24b7ae`), `codesign --verify --deep --strict` on `.app` & `.dmg`, `hdiutil attach` mount & `/Applications` symlink check | **PASS (Ad-Hoc Signed)** |
 | **Local Installer & Uninstaller** | Isolated `HOME` / `--dest` dry-run, install, Quick Actions `plutil -lint`, CLI symlink, fail-fast refusal on regular file collision, and `--uninstall` cleanup | **PASS (Isolated Sandbox)** |
 | **Homebrew Cask** | `ruby -c packaging/homebrew/flip.rb` and `brew style packaging/homebrew/flip.rb` (with `brew developer off` afterward) | **PASS** |
 | **Bundled Release CLI Smokes** | Live `FLIP.app/Contents/MacOS/flip` CLI checks across `CSV <-> XLSX <-> JSON`, `new yaml/pdf`, `FB2`/`RST`/`EPUB`, `SVG -> ICO`, `ANIMATE_GIF`, `ZIP`/`UNZIP`, `WAV -> FLAC/CAF`, `OPTIMIZE_PDF`, `REMOVE_BG`, and `flip preview` | **PASS** |

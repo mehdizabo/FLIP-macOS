@@ -35,7 +35,7 @@ Wheel navigation also supports arrow keys, number keys `1`–`8`, `Enter`/`Space
 
 macOS Finder has no built-in "New File" menu. FLIP adds instant creation in the frontmost Finder folder (falling back to `~/Desktop` or a custom folder in Settings), selects the item in Finder, and **immediately triggers inline rename (`Return`)** so you can type the final name right away:
 
-- **Built-in Kinds**: Folder (`untitled folder`), Plain Text (`.txt`), Markdown (`.md`), Rich Text (`.rtf`), Word Document (`.docx`), Spreadsheet (`.xlsx`), Presentation (`.pptx`), HTML (`.html`), JSON (`.json`), CSV (`.csv`), executable Shell Script (`.sh`, `chmod +x`), Python (`.py`), Swift (`.swift`).
+- **Built-in Kinds**: Folder (`untitled folder`), Plain Text (`.txt`), Markdown (`.md`), Rich Text (`.rtf`), Word Document (`.docx`), Spreadsheet (`.xlsx`), Presentation (`.pptx`), Blank PDF A4 (`.pdf`), HTML (`.html`), JSON (`.json`), CSV (`.csv`), YAML Config (`.yaml`), TOML Config (`.toml`), XML Document (`.xml`), executable Shell Script (`.sh`, `chmod +x`), Python (`.py`), Swift (`.swift`).
 - **From Clipboard**: Inspects `NSPasteboard.general` and creates `.png`, `.pdf`, `.rtf`, `.webloc` URL bookmark, or `.txt` as `Clipboard <timestamp>.<ext>`.
 - **Apple iWork**: Blank `.pages`, `.numbers`, and `.key` files when Pages, Numbers, or Keynote are installed.
 - **Custom User Templates**: Drop any file into `~/Library/Application Support/FLIP/Templates` (subfolders become groups). Plain-text templates automatically expand `{{date}}`, `{{time}}`, `{{user}}`, and `{{folder}}`.
@@ -50,7 +50,7 @@ macOS Finder has no built-in "New File" menu. FLIP adds instant creation in the 
 | **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (with **Apple Vision** OCR for scanned pages), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (native EPUB 3), `FB2`, `RST` (native zero-Pandoc or Pandoc), `OPTIMIZE_PDF` (text-preserving PDF compression), `ZIP`, `Merge PDFs` | Native `PDFKit` / Quartz + `Vision` (`VNRecognizeTextRequest`) + pure-Rust EPUB 3 / FB2 / RST writers |
 | **Documents** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB`, `FB2`, `RST` | `PDF` (A4/Letter paginated), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (native EPUB 3), `FB2`, `RST` (native zero-Pandoc or Pandoc), `PNG`, `JPG`, `WEBP`, `HEIC`, `ZIP` | Native `NSAttributedString` / CoreText + `pulldown-cmark` + pure-Rust EPUB 3 / FB2 / RST + optional `Pandoc` |
 | **Apple iWork** | `.pages`, `.numbers`, `.key` | `PDF`, `ZIP` (+ `DOCX`/`RTF`/`TXT`/`EPUB` for Pages, `XLSX`/`CSV` for Numbers, `PPTX` for Keynote) | QuickLook preview + AppleScript app automation |
-| **Structured Data** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (nested dot-flattening), `TXT`, `MD`, `HTML`, `PDF`, `ZIP` | Native Rust parsers + CoreText PDF |
+| **Structured Data** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV`, `XLSX` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (nested dot-flattening), `XLSX` (native OOXML), `TXT`, `MD`, `HTML`, `PDF`, `ZIP` | Native Rust parsers + pure-Rust `XLSX` OOXML reader/writer + CoreText PDF |
 | **Audio** | `MP3`, `WAV`, `M4A`, `AAC`, `AIFF`, `ALAC`, `CAF`, `FLAC`, `OGG`, `OPUS`, `WMA` | **Native (zero FFmpeg)**: `M4A`, `WAV`, `FLAC`, `AIFF`, `ALAC`, `CAF` · With FFmpeg: + `MP3`, `OGG`, `OPUS`, `AAC`, plus `ZIP` | Native `AVFoundation` + CoreAudio `ExtAudioFile` + `/usr/bin/afconvert` + optional `FFmpeg` |
 | **Video** | `MP4`, `MOV`, `M4V`, `MKV`, `WEBM`, `AVI`, `WMV` | Native: `MP4`, `MOV`, `M4V`, `M4A`, `WAV`, animated `GIF`, `ZIP` · With FFmpeg: + `MKV`, `WEBM`, `AVI`, `MP3` | Native `AVFoundation` + optional `FFmpeg` (real-time progress & `Esc` cancel) |
 | **Archives** | `ZIP` (and any single/multi-file selection) | `UNZIP` (safe subfolder extraction) · `ZIP` (collision-safe archive creation) | Pure-Rust `zip` engine (`archive.rs` with Zip-Slip & >256 MiB / 4,096-entry guards) |
@@ -120,14 +120,21 @@ src-tauri/target/release/bundle/macos/FLIP.app
 src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg
 ```
 
-You can also install a built `FLIP.app` locally (copies to `/Applications` or `~/Applications`, clears `com.apple.quarantine`, installs Finder Quick Actions, and links `~/.local/bin/flip`), package/update the Homebrew Cask SHA-256 (`packaging/homebrew/flip.rb`), or re-sign with `./scripts/sign-local.sh`:
+You can also install or uninstall `FLIP.app` locally (copies to `/Applications` or `~/Applications`, clears `com.apple.quarantine`, installs/removes Finder Quick Actions, and manages `~/.local/bin/flip`), package/update the Homebrew Cask SHA-256 (`packaging/homebrew/flip.rb`), audit repository privacy, export a clean source archive, or re-sign with `./scripts/sign-local.sh`:
 
 ```bash
 # Install built FLIP.app + Quick Actions + ~/.local/bin/flip symlink
 ./scripts/install-local.sh
 
+# Cleanly uninstall FLIP.app + Quick Actions + ~/.local/bin/flip symlink
+./scripts/install-local.sh --uninstall
+
 # Repackage DMG and sync SHA-256 into packaging/homebrew/flip.rb
 ./scripts/package-dmg.sh --update-cask
+
+# Audit tracked/untracked files for secrets/personal paths and export source-only ZIP
+./scripts/audit-repository.sh
+./scripts/export-source.sh
 
 # Default ad-hoc signature (no Apple Developer account required)
 ./scripts/sign-local.sh
@@ -157,8 +164,10 @@ See [`TEST_RESULTS.md`](TEST_RESULTS.md) for verified unit, integration, 50-cycl
 - `native-bridge/` — Swift CLI & daemon helper (`flip-macos-bridge`, compiled via `/usr/bin/swiftc`) handling real-time `NSPasteboard(name: .drag)` monitoring, `CGEventTap`/`NSEvent` triggers, Finder Apple Events, `QuickLookThumbnailing`, `PDFKit` & Quartz `OPTIMIZE_PDF`, `Vision` (`VNRecognizeTextRequest` OCR & `VNGenerateForegroundInstanceMaskRequest` `REMOVE_BG`), `NSAttributedString` A4/Letter PDF pagination, `AVFoundation` / CoreAudio `ExtAudioFile` + `/usr/bin/afconvert` zero-FFmpeg `CAF`/`FLAC`, `NSSound`, and `NSHapticFeedbackManager`.
 - `src-tauri/` — Rust core policies (`policy.rs`), preferences (`en`/`it`), atomic `.flip-job-<uuid>` staging, conversion engines (`archive.rs` `ZIP`/`UNZIP`, `document.rs` native EPUB 3 / FB2 / RST, `image.rs` incl. `ICO` & `ANIMATE_GIF`, `data.rs`, `media.rs`), single-instance `flock` + Unix domain socket IPC (`ipc_socket.rs`), `tauri::tray::TrayIconBuilder` accessory host, multi-monitor clamping, Tauri v2 IPC commands, `flip preview` SVG generator (`cli.rs`), and `tests/stress_and_perf.rs`.
 - `src/` — Vite + TypeScript Liquid Glass radial wheel (`#wheel` with VoiceOver live announcer), bilingual `src/i18n.ts` (`EN` / `IT`), Settings & Shortcut/Format Order/Feedback Test editor (`#settings`), Batch & Multi-Format converter (`#batch`), Onboarding wizard (`#onboarding`), and automated DOM E2E suite (`src/views.e2e.test.ts`).
+- `integrations/raycast/` — Ready-to-use Raycast Script Commands (`flip-convert.sh`, `flip-new-file.sh`, `flip-wheel.sh`) driving `flip` CLI & Unix socket IPC.
 - `packaging/homebrew/flip.rb` — Homebrew Cask manifest for `FLIP-<version>-macOS-arm64.dmg` synced via `scripts/package-dmg.sh --update-cask`.
-- `CHANGELOG.md` — Release notes for FLIP for macOS (`v0.1.0`).
+- `scripts/audit-repository.sh` & `scripts/export-source.sh` — Pre-release privacy/secret/path scanner and clean `git archive` source ZIP exporter.
+- `ARCHITECTURE.md`, `CONTRIBUTING.md`, `ROADMAP.md`, `PUBLIC_RELEASE_REVIEW.md`, `CHANGELOG.md` — Root governance, architecture, roadmap, and pre-release readiness docs.
 - `docs/PORTING-NOTES.md` — Module-by-module mapping from `FLIP-windows/src/Flip/*.cs` and macOS deltas.
 - `ACCEPTANCE.md` — Physical desktop GUI QA checklist for macOS releases.
 - `TEST_RESULTS.md` — Recorded toolchain versions, stress/latency metrics, and `.app`/`.dmg`/CLI verification results.

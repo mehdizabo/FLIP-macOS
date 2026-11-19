@@ -1,7 +1,7 @@
 # Test & Compatibility Results (`FLIP-macOS-port` v0.1.0)
 
-Date: 2026-11-18  
-Commit Scope: Steps A–L complete (`ZIP`/`UNZIP` archive engine, Apple Vision `REMOVE_BG`, Quartz `OPTIMIZE_PDF`, zero-FFmpeg CoreAudio/`afconvert` `CAF`/`FLAC`, single-instance Unix socket IPC + CLI control commands, `EN`/`IT` localization + `"Test Wheel Sound & Haptics"` button, native zero-Pandoc `FB2`/`RST` engines + `FLIP_DISABLE_FFMPEG`/`FLIP_DISABLE_PANDOC` overrides, `flip preview --out` SVG generator, automated DOM E2E suite `views.e2e.test.ts`, offline-sanitized `SVG` input + `ICO` output + multi-image `ANIMATE_GIF`, `install-local.sh`, Homebrew Cask `packaging/homebrew/flip.rb`, `CHANGELOG.md`, 50-cycle & 20+10 stress/performance test suite, `.app` & `.dmg` release verification)
+Date: 2026-11-19 (`01:14 CET`)  
+Commit Scope: Steps A–P complete (native `ZIP`/`UNZIP`, Apple Vision `REMOVE_BG`, Quartz `OPTIMIZE_PDF`, zero-FFmpeg CoreAudio/`afconvert` `CAF`/`FLAC`, single-instance Unix socket IPC + CLI control commands, `EN`/`IT` localization + `"Test Wheel Sound & Haptics"`, native zero-Pandoc `FB2`/`RST`/`EPUB 3`, `FLIP_DISABLE_FFMPEG`/`FLIP_DISABLE_PANDOC` overrides, `flip preview --out`, automated DOM E2E suite `views.e2e.test.ts`, offline-sanitized `SVG` input + `ICO` output + multi-image `ANIMATE_GIF`, native bidirectional `XLSX` spreadsheet engine, `YAML`/`TOML`/`XML`/Blank A4 `PDF` Create New generators, Quick Actions & `install-local.sh --uninstall`, Raycast script commands `integrations/raycast/`, repository privacy audit & clean source exporter `audit-repository.sh` / `export-source.sh`, root governance docs, `install-local.sh`, Homebrew Cask `packaging/homebrew/flip.rb`, `CHANGELOG.md`, 50-cycle & 20+10 stress/performance suite, and final signed `.app` & `.dmg` release verification)
 
 ---
 
@@ -32,67 +32,77 @@ Verified host hardware & OS:
 
 ### 2.1 Native Swift/AppKit Bridge (`./native-bridge/build.sh`)
 - **Result**: Passed (`exit 0`)
-- **Artifact**: `native-bridge/bin/flip-macos-bridge` (`489,104` bytes before bundle re-sign; `486,416` bytes inside signed `FLIP.app/Contents/Resources/flip-macos-bridge`, `arm64`, `-rwxr-xr-x@`)
+- **Artifact**: `native-bridge/bin/flip-macos-bridge` (`486,416` bytes inside signed `FLIP.app/Contents/Resources/flip-macos-bridge`, `arm64`, `-rwxr-xr-x@`)
 - Compiled via `/usr/bin/swiftc -O -target arm64-apple-macosx15.0` using Command Line Tools only (zero `Xcode.app` required).
 
 ### 2.2 TypeScript, Vite Production Build, and Bun Unit + DOM E2E Tests
 Command: `npx tsc --noEmit && npm run build && bun test`
 - **TypeScript (`tsc --noEmit`)**: 0 errors
-- **Vite Production Build (`npm run build`)**: 21 modules transformed (`dist/index.html` 0.39 kB, `dist/assets/index-vTEYyANX.css` 25.06 kB, `dist/assets/index-CGhqwAa3.js` 199.61 kB in 234–244 ms)
-- **Bun Test Suite (`bun test`)**: **41 passed, 0 failed** across 4 files (`1,864` `expect()` assertions in `4.58 s`):
+- **Vite Production Build (`npm run build`)**: 21 modules transformed (`dist/index.html` 0.39 kB, `dist/assets/index-vTEYyANX.css` 25.06 kB, `dist/assets/index-Cvpz1t6W.js` 201.45 kB in `294 ms`)
+- **Bun Test Suite (`bun test`)**: **42 passed, 0 failed** across 4 files (`1,914` `expect()` assertions in `4.68 s`):
   - `src/views.e2e.test.ts`: **5/5 passed** (lightweight in-memory DOM + SVG shim E2E suite covering all 4 views: `WheelView` Convert & New File sectors + click/keyboard nav + `More`/`Back` focus restoration + VoiceOver live announcer + Error Hub `Copy Diagnostics` / Batch Details; `SettingsView` all 6 tabs + live `EN`/`IT` switch + shortcut recording & `Escape` cancel + format reordering with focus retention + serialized feedback test after `saveQueue`; `BatchView` file loading, `Select All`/`Clear`, `ICO`/`REMOVE_BG`/`COMBINE_PDF`/`ANIMATE_GIF`/`ZIP` selection & result rows; `OnboardingView` steps 1 -> 2 -> 3 + permission probes + completion key)
-  - `src/ipc.test.ts`: **5/5 passed** (Rust `AppPreferences` schema alignment including `language` & format lists, mock IPC commands & events including `"sound"`/`"tick"`/`"none"` feedback test & language updates, native Pandoc-free `EPUB 3`/`FB2`/`RST`, zero-FFmpeg `CAF`/`FLAC` audio capability policy, and `SVG` input / `ICO` output / `ANIMATE_GIF` policy alignment)
+  - `src/ipc.test.ts`: **6/6 passed** (Rust `AppPreferences` schema alignment including `language` & format lists, mock IPC commands & events including `"sound"`/`"tick"`/`"none"` feedback test & language updates, native Pandoc-free `EPUB 3`/`FB2`/`RST`, zero-FFmpeg `CAF`/`FLAC` audio capability policy, `SVG` input / `ICO` output / `ANIMATE_GIF` policy alignment, and bidirectional `XLSX` structured data policy alignment)
   - `src/wheelGeometry.test.ts`: **26/26 passed** (wheel format ordering, `reorderFormatList` / `moveFormatToIndex` clamping, SVG chamfered sector geometry for 1–8 sectors, 3° angular hysteresis + 0°/360° wraparound, progress arc geometry, pagination, hash routing, `inspectFilesLocally` coverage including `ZIP`/`UNZIP`/`REMOVE_BG`/`OPTIMIZE_PDF`/`ICO`/`SVG`/`ANIMATE_GIF`, HTML escaping, Option-modified key token mapping, non-ASCII thumbnail `btoa` fallback, batch handoff, and VoiceOver live announcement formatters)
   - `src/i18n.test.ts`: **5/5 passed** (`EN`/`IT` full key parity, non-empty dictionary validation, consistent placeholder tokens, clean interpolation without double substitution, safe fallback to English on invalid/empty inputs, and localization of built-in New File kind names, disabled reasons, clipboard kinds, categories, and availability messages)
 
 ### 2.3 Rust Clippy, Unit, Engine/IPC Integration & Stress/Perf Suite (`cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test`)
 - **Clippy (`cargo clippy --all-targets -- -D warnings`)**: **Passed with 0 warnings**
-- **Cargo Test Suite (`cargo test` offline default suite)**: **97 passed, 0 failed, 1 ignored** (`live_github_update_check_and_tags_fallback`, hits live `github.com`):
-  - **`flip_lib` unit tests**: **67/67 passed** (+ 1 `#[ignore]`)
-    - Covers `core::policy` (incl. `FB2`/`RST`, `SVG` input, `ICO` output, `ANIMATE_GIF`), `core::preferences` (incl. `language` `"en"`/`"it"` & `ICO` default backfill), `core::input_gate`, `core::naming`, `core::staging`, `core::startup`, `core::quick_actions`, `core::logging`, `core::updater`, `cli` (incl. `flip wheel`/`settings`/`batch`/`preview`/`quit` parser & execution), `engines::data`, `engines::document` (native `EPUB 3`, `FB2`, `RST` readers & writers + security guards), `engines` (`FLIP_DISABLE_FFMPEG`/`FLIP_DISABLE_PANDOC` overrides), `host::commands`, `host::monitor`, `host::tray`.
-  - **`tests/engines_integration.rs`**: **19/19 passed** (`49.48 s`)
+- **Cargo Test Suite (`cargo test` offline default suite)**: **99 passed, 0 failed, 1 ignored** (`live_github_update_check_and_tags_fallback`, hits live `github.com`):
+  - **`flip_lib` unit tests**: **68/68 passed** (+ 1 `#[ignore]`)
+    - Covers `core::policy` (incl. `XLSX`, `FB2`/`RST`, `SVG` input, `ICO` output, `ANIMATE_GIF`), `core::preferences` (incl. `language` `"en"`/`"it"` & `ICO` default backfill), `core::input_gate`, `core::naming`, `core::staging`, `core::startup`, `core::quick_actions`, `core::logging`, `core::updater`, `cli` (incl. `flip wheel`/`settings`/`batch`/`preview`/`quit` parser & execution), `engines::data` (incl. `XLSX` coordinates/shared strings/formulas), `engines::document` (native `EPUB 3`, `FB2`, `RST` readers & writers + security guards), `engines` (`FLIP_DISABLE_FFMPEG`/`FLIP_DISABLE_PANDOC` overrides), `host::commands`, `host::monitor`, `host::tray`.
+  - **`tests/engines_integration.rs`**: **20/20 passed** (`47.96 s`)
+    - Covers `xlsx_bidirectional_spreadsheet_sparse_cells_and_container_bomb` (`CSV`/`JSON`/`YAML`/`TOML`/`XML` <-> `XLSX`, sparse cells, shared strings, formulas, container-bomb rejection)
     - Covers `zip_and_unzip_roundtrip_dedup_collisions_and_safety_rejections` (Zip-Slip, >256 MiB / >4,096 entries, collisions, stem deduplication)
     - Covers `vision_remove_bg_cuts_subject_and_rejects_blank_image` (transparent PNG cutout + blank-canvas rejection)
     - Covers `optimize_pdf_shrinks_heavy_pdf_preserves_text_and_rejects_over_200_pages`
     - Covers `native_zero_ffmpeg_audio_caf_and_flac_roundtrips` (`WAV <-> CAF`, `WAV <-> FLAC`, `CAF -> FLAC`, `FLAC -> CAF`, `FLAC -> M4A`, `CAF -> M4A`, `FLAC -> ALAC`, `ALAC -> FLAC`, `ALAC -> M4A -> WAV`, zero FFmpeg binary)
     - Covers `native_zero_pandoc_fb2_and_rst_matrix_and_tool_disable_overrides` and `zero_pandoc_full_fb2_rst_matrix_across_docs_and_images`
     - Covers `svg_input_rasterization_ico_output_and_animate_gif_batch` (incl. offline SVG LFI sanitization, hardened ICO/WEBP decoding, and multi-image `ANIMATE_GIF`)
-    - Plus native `EPUB 3`, PDF multi-page rasterization + Vision OCR + merge, image matrix + EXIF/GPS, >40 MP / HTML LFI safety, FFmpeg/AVFoundation video + mid-flight cancellation, read-only fallback, OOXML + templates.
-  - **`tests/host_ipc_integration.rs`**: **9/9 passed** (`0.47 s`)
-    - Verifies exact command & camelCase alignment across all **27** Tauri commands and all **11** host-emitted events between Rust and `src/ipc.ts`
+    - Plus native `EPUB 3`, PDF multi-page rasterization + Vision OCR + merge, image matrix + EXIF/GPS, >40 MP / HTML LFI safety, FFmpeg/AVFoundation video + mid-flight cancellation, read-only fallback, OOXML + `YAML`/`TOML`/`XML`/Blank A4 `PDF` creation + templates.
+  - **`tests/host_ipc_integration.rs`**: **9/9 passed** (`0.42 s`)
+    - Verifies exact command & camelCase alignment across all **28** Tauri commands (`uninstall_quick_actions` included) and all **11** host-emitted events between Rust and `src/ipc.ts`
     - Verifies `unix_socket_ipc_roundtrips_permissions_and_stale_recovery` (`0600` owner-only socket, live command roundtrips, stale socket cleanup/recovery)
     - Verifies `cli_preview_binary_generates_valid_svg_and_sectors`
     - Verifies bridge & WAV resource resolution in dev and relocated `.app` layouts, `Info.plist` `plutil -lint`, screen clamping, and Tauri capabilities consistency.
-  - **`tests/stress_and_perf.rs`**: **2/2 passed** (`3.31 s` with `--nocapture`, `1.50 s` in full suite)
+  - **`tests/stress_and_perf.rs`**: **2/2 passed** (`2.45 s` with `--nocapture`, `1.83 s` in full suite)
     - **`stress_50_cycle_trigger_wheel_escape_and_multimonitor_clamping`**: Drives 50 rapid trigger -> wheel open -> pointer drag -> natural release / global Escape teardown cycles across 4 simulated multi-monitor layouts (Retina + 1x left + top-notch + ultrawide side-Dock), verifying `!press.is_down()` / `!order.held()` BEFORE any `reset()` on normal release cycles, mid-hold Escape teardown `reset()` on `cycle % 5 == 4`, `acted_epoch` drag-end retention, 0 orphaned wheel `is_open` / `is_drag` states, and 100% bounded screen coordinates.
     - **`stress_20_plus_10_staging_cleanup_policy_latency_and_cli_startup_perf`**:
       - Executes **20 sequential successful conversions** (`Data`, `Document`/`EPUB`, `Image`, `ZIP`) + **10 intentionally failing/mid-flight cancelled `convert_files` jobs that each enter `JobStaging::create`** + 2 read-only `JobStaging::create` `Drop` aborts in an isolated `TempDir`: **0 leftover `.flip-job-*` or `.flip-probe-*` directories**.
-      - `policy::outputs` latency: **21.791 µs** single file, **1.6415 ms** max 128-file batch, **54.525 µs** avg over 500 mixed lookups (target `< 5 ms`).
-      - Compiled CLI `flip --version` startup (`target/debug/flip`): **8.26 ms – 19.97 ms** warm across 5 runs after macOS one-time `1.222 s` cold first-exec AMFI/syspolicyd cache scan on newly linked binary (target `< 300 ms`).
+      - `policy::outputs` latency: **23.625 µs** single file, **1.666 ms** max 128-file batch, **23.503 µs** avg over 500 mixed lookups (target `< 5 ms`).
+      - Compiled CLI `flip --version` startup (`target/debug/flip`): **7.16 ms – 8.09 ms** warm across 5 runs after macOS one-time `999.10 ms` cold first-exec AMFI/syspolicyd cache scan on newly linked binary (target `< 300 ms`).
 
 ---
 
-## 3. Release Bundle, Signing, DMG Packaging, Installer & Bundled CLI Verification
+## 3. Release Bundle, Signing, DMG Packaging, Installer, Privacy Audit & Bundled CLI Verification
 
 1. **Release `.app` Build (`./scripts/build-macos.sh --dmg`)**:
-   - Built `src-tauri/target/release/bundle/macos/FLIP.app` (`22.65 MiB` / `23,632,612` bytes total files; main `flip` Mach-O executable `20,848,992` bytes), embedded signed `Contents/Resources/flip-macos-bridge` (`486,416` bytes, `-rwxr-xr-x@`) and `Contents/Resources/resources/flip-tick.wav`.
+   - Built `src-tauri/target/release/bundle/macos/FLIP.app` (`22.68 MiB`; main `flip` Mach-O executable `20,878,992` bytes), embedded signed `Contents/Resources/flip-macos-bridge` (`486,416` bytes, `-rwxr-xr-x@`) and `Contents/Resources/resources/flip-tick.wav`.
 2. **Code Signing (`codesign --verify --deep --strict --verbose=2 src-tauri/target/release/bundle/macos/FLIP.app`)**:
    - **Passed**: `valid on disk`, `satisfies its Designated Requirement` (ad-hoc local signature).
 3. **DMG Packager, SHA-256 & Homebrew Cask Sync (`./scripts/package-dmg.sh --update-cask`)**:
-   - Built `src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg` (`9,066,485` bytes / `8.6 MiB`).
-   - **SHA-256**: `e4de6fc1c0f140ff7ecdec2c360cee09230dcfd4db0d660f66083ec82f77b029` — verified synced into `packaging/homebrew/flip.rb` (`ruby -c packaging/homebrew/flip.rb` -> `Syntax OK`; `brew style packaging/homebrew/flip.rb` -> `1 file inspected, no offenses detected`).
+   - Built `src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg` (`9,080,967` bytes / `8.7 MiB`).
+   - **SHA-256**: `1ba78ab86fefb291078c3df6702d6b343a60d847ad926c7ff3fb1f67dd24b7ae` — verified synced into `packaging/homebrew/flip.rb` (`ruby -c packaging/homebrew/flip.rb` -> `Syntax OK`; `brew style packaging/homebrew/flip.rb` -> `1 file inspected, no offenses detected`, followed by `brew developer off`).
    - `codesign --verify --deep --strict --verbose=2` on `.dmg`: **Passed** (`valid on disk`, `satisfies its Designated Requirement`).
    - Mounted with `hdiutil attach -nobrowse -readonly -mountpoint ...`: verified `FLIP.app` and `Applications -> /Applications` symlink inside mounted volume, verified `codesign --verify --deep --strict --verbose=2` on mounted `FLIP.app`, and ejected cleanly with `hdiutil detach`.
-4. **Local Installer (`scripts/install-local.sh`)**:
-   - `./scripts/install-local.sh --dest <tempdir> --no-quick-actions --no-cli --dry-run`: validated source bundle & printed planned actions with zero filesystem mutations (`test ! -e <tempdir>/FLIP.app`).
-   - `./scripts/install-local.sh --dest <tempdir> --no-quick-actions --no-cli`: copied `FLIP.app`, cleared `com.apple.quarantine`, and passed `codesign --verify --deep --strict --verbose=2` on `<tempdir>/FLIP.app`.
-   - `HOME=<tempdir> ./scripts/install-local.sh --dest <tempdir>/apps`: installed `FLIP.app`, registered `Convert with FLIP.workflow` & `New File with FLIP.workflow` (with `APP_HINT`/`BIN_HINT` pointing to `<tempdir>/apps/FLIP.app`, validated via `plutil -lint`), linked `<tempdir>/.local/bin/flip` (`flip --version` -> `flip 0.1.0`), and verified fail-fast refusal before mutating destination/Services when `~/.local/bin/flip` is a non-symlink file.
-5. **Live Bundled Release CLI Smoke Tests (`<tempdir>/FLIP.app/Contents/MacOS/flip`)**:
+4. **Local Installer & Uninstaller (`scripts/install-local.sh`)**:
+   - `HOME=<tempdir> ./scripts/install-local.sh --dest <tempdir>/Apps --dry-run`: validated source bundle & printed planned actions with zero filesystem mutations (`test ! -e <tempdir>/Apps/FLIP.app`).
+   - `HOME=<tempdir> ./scripts/install-local.sh --dest <tempdir>/Apps`: installed `FLIP.app`, cleared `com.apple.quarantine`, verified `codesign --verify --deep --strict`, registered `Convert with FLIP.workflow` & `New File with FLIP.workflow` (`plutil -lint` OK), and linked `<tempdir>/.local/bin/flip` (`flip --version` -> `flip 0.1.0`).
+   - `HOME=<tempdir> ./scripts/install-local.sh --uninstall --dest <tempdir>/Apps` (after `--dry-run`): cleanly removed `FLIP.app`, both Finder Quick Actions workflows, and `~/.local/bin/flip` symlink.
+5. **Privacy Audit & Clean Source Export (`scripts/audit-repository.sh`, `scripts/export-source.sh`)**:
+   - `./scripts/audit-repository.sh`: **Passed** (`0` forbidden artifacts, `0` secret tokens, `0` personal local user paths across tracked & untracked non-ignored files).
+   - `./scripts/export-source.sh --out /tmp/flip-export-verify.zip`: exported clean `4.9 MiB` (`150` files) `git archive` ZIP verified via `unzip -l` (zero `.git/`, `node_modules/`, `src-tauri/target/`, `_local/`, or `.cde/`), then removed temp zip.
+6. **Live Bundled Release CLI Smoke Tests (`FLIP.app/Contents/MacOS/flip`)**:
    - **`--version`**: `flip 0.1.0` (`exit 0`).
-   - **Zero-Pandoc `FB2` & `RST`**: `FLIP_DISABLE_PANDOC=1 flip convert doc.md --to FB2,RST` -> `doc.fb2` (`529` B) and `doc.rst` (`40` B), `success: true`.
-   - **`SVG -> ICO`**: `flip convert badge.svg --to ICO` -> `badge.ico` (`6.3` KB), `success: true`.
-   - **Multi-Image `ANIMATE_GIF`**: `flip convert img1.png img2.png --to ANIMATE_GIF` -> `img1.gif` (`153` B), `success: true`.
-   - **CLI SVG Wheel Preview**: `flip preview --out wheel.svg --files img1.png --hover 0` -> `wheel.svg` (`9.4` KB, valid `<svg>` with 8 sectors: `JPG`, `WEBP`, `HEIC`, `PDF`, `No BG`, `TIFF`, `GIF`, `More ▸`), `success: true`.
+   - **Bidirectional `XLSX`**: `flip convert scores.csv --to XLSX` (`scores.xlsx`, `2.0 KB`) -> `flip convert scores.xlsx --to JSON` (`scores.json`, `135 B`, verified `"Alice"` roundtrip), `success: true`.
+   - **Expanded Create New**: `flip new yaml --in <dir> --no-rename` (`Untitled.yaml`, `26 B`) and `flip new pdf --in <dir> --no-rename` (`Untitled.pdf`, `437 B`, `%PDF-1.4` header), `exit 0`.
+   - **Zero-Pandoc `FB2`, `RST`, `EPUB`**: `FLIP_DISABLE_PANDOC=1 flip convert note.md --to FB2,RST,EPUB` -> `note.fb2` (`540 B`), `note.rst` (`52 B`), `note.epub` (`2.1 KB`), `success: true`.
+   - **`SVG -> ICO`**: `flip convert badge.svg --to ICO` -> `badge.ico` (`10 KB`), `success: true`.
+   - **Multi-Image `ANIMATE_GIF`**: `flip convert frame1.png frame2.png --to ANIMATE_GIF` -> `frame1.gif` (`711 B`), `success: true`.
+   - **Vision `REMOVE_BG`**: `flip convert subject.png --to REMOVE_BG` -> `subject 2.png` (`5.9 KB`), `success: true`.
+   - **`ZIP` & `UNZIP`**: `flip convert note.md scores.csv --to ZIP` -> `note.zip` (`306 B`) -> `flip convert note.zip --to UNZIP` -> extracted `note/note.md` & `note/scores.csv`, `success: true`.
+   - **Zero-FFmpeg Audio (`FLAC` & `CAF`)**: `FLIP_DISABLE_FFMPEG=1 flip convert tone.wav --to FLAC,CAF` -> `tone.flac` (`1.9 KB`) and `tone.caf` (`13 KB`), `success: true`.
+   - **`OPTIMIZE_PDF`**: `flip convert frame1.png --to PDF` (`frame1.pdf`, `7.8 KB`) -> `flip convert frame1.pdf --to OPTIMIZE_PDF` -> `frame1 2.pdf` (`9.3 KB`), `success: true`.
+   - **CLI SVG Wheel Preview**: `flip preview --out wheel-preview.svg --files frame1.png --hover 0` -> `wheel-preview.svg` (`9.4 KB`, valid `<svg>` with 8 sectors: `JPG`, `WEBP`, `HEIC`, `PDF`, `No BG`, `TIFF`, `GIF`, `More ▸`), `success: true`.
 
 ---
 

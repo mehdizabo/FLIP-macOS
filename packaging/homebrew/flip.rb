@@ -3,7 +3,7 @@
 
 cask "flip" do
   version "0.1.0"
-  sha256 "e4de6fc1c0f140ff7ecdec2c360cee09230dcfd4db0d660f66083ec82f77b029"
+  sha256 "1ba78ab86fefb291078c3df6702d6b343a60d847ad926c7ff3fb1f67dd24b7ae"
 
   url "https://github.com/thetinyfoundry/FLIP/releases/download/v#{version}/FLIP-#{version}-macOS-arm64.dmg"
   name "FLIP"

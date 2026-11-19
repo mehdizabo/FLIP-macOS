@@ -35,7 +35,7 @@ La ruota supporta anche frecce direzionali, tasti numerici `1`–`8`, `Invio`/`S
 
 FLIP aggiunge la creazione immediata di nuovi file nella cartella del Finder in primo piano (con fallback su `~/Desktop` o cartella personalizzata nelle Impostazioni), seleziona il file nel Finder e **avvia subito la rinomina inline (`Invio`)**:
 
-- **Tipi predefiniti**: Cartella (`untitled folder`), Plain Text (`.txt`), Markdown (`.md`), Rich Text (`.rtf`), Word (`.docx`), Foglio di calcolo (`.xlsx`), Presentazione (`.pptx`), HTML (`.html`), JSON (`.json`), CSV (`.csv`), Shell Script eseguibile (`.sh`, `chmod +x`), Python (`.py`), Swift (`.swift`).
+- **Tipi predefiniti**: Cartella (`untitled folder`), Plain Text (`.txt`), Markdown (`.md`), Rich Text (`.rtf`), Word (`.docx`), Foglio di calcolo (`.xlsx`), Presentazione (`.pptx`), PDF vuoto A4 (`.pdf`), HTML (`.html`), JSON (`.json`), CSV (`.csv`), Configurazione YAML (`.yaml`), Configurazione TOML (`.toml`), Documento XML (`.xml`), Shell Script eseguibile (`.sh`, `chmod +x`), Python (`.py`), Swift (`.swift`).
 - **From Clipboard**: ispeziona `NSPasteboard.general` e salva immagini (`.png`), PDF, RTF, segnalibri web (`.webloc`) o testo (`.txt`) come `Clipboard <timestamp>.<ext>`.
 - **Apple iWork**: crea nuovi `.pages`, `.numbers` e `.key` se Pages, Numbers o Keynote sono installati.
 - **Template utente**: inserisci qualsiasi file in `~/Library/Application Support/FLIP/Templates` (le sottocartelle diventano gruppi). I template testuali espandono automaticamente `{{date}}`, `{{time}}`, `{{user}}` e `{{folder}}`.
@@ -50,7 +50,7 @@ FLIP aggiunge la creazione immediata di nuovi file nella cartella del Finder in 
 | **PDF** | `PDF` | `PNG`, `JPG`, `WEBP`, `HEIC`, `TIFF` (144/200/300 DPI), `TXT` (con **Apple Vision** OCR per PDF scansionati), `DOCX`, `MD`, `HTML`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `FB2`, `RST` (nativi zero-Pandoc o Pandoc), `OPTIMIZE_PDF` (compressione PDF preservando testo selezionabile), `ZIP`, `Merge PDFs` | `PDFKit` / Quartz nativo + `Vision` (`VNRecognizeTextRequest`) + writer EPUB 3 / FB2 / RST in Rust |
 | **Documenti** | `TXT`, `MD`, `HTML`, `RTF`, `DOC`, `DOCX`, `ODT`, `EPUB`, `FB2`, `RST` | `PDF` (A4/Letter impaginato), `DOCX`, `MD`, `HTML`, `TXT`, `RTF`, `ODT`, `EPUB` (EPUB 3 nativo), `FB2`, `RST` (nativi zero-Pandoc o Pandoc), `PNG`, `JPG`, `WEBP`, `HEIC`, `ZIP` | `NSAttributedString` / CoreText nativo + `pulldown-cmark` + EPUB 3 / FB2 / RST nativi + `Pandoc` opzionale |
 | **Apple iWork** | `.pages`, `.numbers`, `.key` | `PDF`, `ZIP` (+ `DOCX`/`RTF`/`TXT`/`EPUB` per Pages, `XLSX`/`CSV` per Numbers, `PPTX` per Keynote) | Anteprima QuickLook + AppleScript verso app Apple |
-| **Dati strutturati** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (appiattimento chiavi con punto), `TXT`, `MD`, `HTML`, `PDF`, `ZIP` | Parser Rust nativi + CoreText PDF |
+| **Dati strutturati** | `JSON`, `YAML/YML`, `TOML`, `XML`, `CSV`, `XLSX` | `JSON`, `YAML`, `TOML`, `XML`, `CSV` (appiattimento chiavi con punto), `XLSX` (OOXML nativo), `TXT`, `MD`, `HTML`, `PDF`, `ZIP` | Parser Rust nativi + reader/writer `XLSX` puro Rust + CoreText PDF |
 | **Audio** | `MP3`, `WAV`, `M4A`, `AAC`, `AIFF`, `ALAC`, `CAF`, `FLAC`, `OGG`, `OPUS`, `WMA` | **Nativi (zero FFmpeg)**: `M4A`, `WAV`, `FLAC`, `AIFF`, `ALAC`, `CAF` · Con FFmpeg: + `MP3`, `OGG`, `OPUS`, `AAC`, più `ZIP` | `AVFoundation` nativo + CoreAudio `ExtAudioFile` + `/usr/bin/afconvert` + `FFmpeg` opzionale |
 | **Video** | `MP4`, `MOV`, `M4V`, `MKV`, `WEBM`, `AVI`, `WMV` | Nativi: `MP4`, `MOV`, `M4V`, `M4A`, `WAV`, `GIF` animata, `ZIP` · Con FFmpeg: + `MKV`, `WEBM`, `AVI`, `MP3` | `AVFoundation` nativo + `FFmpeg` opzionale (progresso in tempo reale & `Esc`) |
 | **Archivi** | `ZIP` (e qualsiasi selezione di file) | `UNZIP` (estrazione sicura in sottocartella) · `ZIP` (creazione archivio senza sovrascritture) | Motore Rust `zip` (`archive.rs` con blocchi Zip-Slip e >256 MiB / 4.096 entry) |
@@ -120,14 +120,21 @@ src-tauri/target/release/bundle/macos/FLIP.app
 src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg
 ```
 
-Per installare localmente `FLIP.app` (copia in `/Applications` o `~/Applications`, rimozione `com.apple.quarantine`, installazione Azioni Rapide e symlink `~/.local/bin/flip`), aggiornare lo SHA-256 della Homebrew Cask (`packaging/homebrew/flip.rb`) o firmare nuovamente:
+Per installare o disinstallare localmente `FLIP.app` (copia in `/Applications` o `~/Applications`, rimozione `com.apple.quarantine`, installazione/rimozione Azioni Rapide e symlink `~/.local/bin/flip`), aggiornare lo SHA-256 della Homebrew Cask (`packaging/homebrew/flip.rb`), eseguire l'audit privacy o esportare i sorgenti:
 
 ```bash
 # Installazione locale completa (app + Azioni Rapide + CLI ~/.local/bin/flip)
 ./scripts/install-local.sh
 
+# Disinstallazione pulita (app + Azioni Rapide + symlink ~/.local/bin/flip)
+./scripts/install-local.sh --uninstall
+
 # Rigenera DMG e aggiorna SHA-256 in packaging/homebrew/flip.rb
 ./scripts/package-dmg.sh --update-cask
+
+# Audit privacy del repository ed esportazione archivio sorgenti pulito
+./scripts/audit-repository.sh
+./scripts/export-source.sh
 
 # Firma ad-hoc locale (nessun certificato a pagamento richiesto)
 ./scripts/sign-local.sh
@@ -148,7 +155,7 @@ bun test
 cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
-I risultati completi di test unitari, integrazione, stress a 50 cicli, benchmark di latenza e verifica `.app`/`.dmg` sono documentati in [`TEST_RESULTS.md`](TEST_RESULTS.md).
+I risultati completi di test unitari, integrazione, stress a 50 cicli, benchmark di latenza e verifica `.app`/`.dmg` sono documentati in [`TEST_RESULTS.md`](TEST_RESULTS.md). Vedi anche [`ARCHITECTURE.md`](ARCHITECTURE.md), [`PUBLIC_RELEASE_REVIEW.md`](PUBLIC_RELEASE_REVIEW.md), [`ROADMAP.md`](ROADMAP.md) e gli script Raycast in `integrations/raycast/`.
 
 ---
 
