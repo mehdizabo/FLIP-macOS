@@ -1779,6 +1779,103 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     });
   });
 
+  test("WheelView: single pointer stream prevents hover flickering, preserves #hub-multi-btn identity in place, and clears hover over controls/outer padding", async () => {
+    await withDomEnv(async ({ doc, win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    const stageEl = root.querySelector(".wheel-stage") as unknown as ShimElement;
+    const svgEl = root.querySelector("#wheel-svg") as unknown as ShimElement;
+    const rawBtn = root.querySelector("#wheel-raw-toggle") as unknown as ShimElement;
+    const initialMultiBtn = root.querySelector("#hub-multi-btn");
+    const initialSubtitleEl = root.querySelector(".wheel-hub-subtitle");
+    expect(initialMultiBtn).not.toBeNull();
+    expect(initialSubtitleEl).not.toBeNull();
+
+    // 1. Backend wheel:pointer-move inside .wheel-top-bar band (before any DOM pointermove) must NOT activate sector 0
+    harness.emitEvent("wheel:pointer-move", { localX: 220, localY: 20 });
+    await flushMicrotasks();
+    expect(root.querySelector(".wheel-sector-group.is-active")).toBeNull();
+
+    // 2. Hover inside visible ring (r = 120 at 12 o'clock -> sector 0) via svgEl pointermove
+    svgEl.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 100 }),
+    );
+    await flushMicrotasks();
+    const sectorsAfterS0 = Array.from(root.querySelectorAll(".wheel-sector-group"));
+    expect(sectorsAfterS0[0].classList.contains("is-active")).toBe(true);
+    expect(root.querySelector("#hub-multi-btn")).toBe(initialMultiBtn);
+    expect(root.querySelector(".wheel-hub-subtitle")).toBe(initialSubtitleEl);
+    const subtitleS0 = initialSubtitleEl!.textContent;
+
+    // 3. Hover across to sector 2 (r = 120 at 3 o'clock -> x=340, y=220) via stageEl pointermove
+    stageEl.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 340, clientY: 220 }),
+    );
+    await flushMicrotasks();
+    const sectorsAfterS2 = Array.from(root.querySelectorAll(".wheel-sector-group"));
+    expect(sectorsAfterS0[0].classList.contains("is-active")).toBe(false);
+    expect(sectorsAfterS2[2].classList.contains("is-active")).toBe(true);
+    expect(root.querySelector("#hub-multi-btn")).toBe(initialMultiBtn);
+    expect(root.querySelector(".wheel-hub-subtitle")).toBe(initialSubtitleEl);
+    expect(initialSubtitleEl!.textContent).not.toBe(subtitleS0);
+
+    // 4. Stale/competing backend wheel:pointer-move emitted right after DOM pointermove in idle mode is ignored
+    harness.emitEvent("wheel:pointer-move", { localX: 220, localY: 100 });
+    await flushMicrotasks();
+    expect(sectorsAfterS2[2].classList.contains("is-active")).toBe(true);
+    expect(sectorsAfterS2[0].classList.contains("is-active")).toBe(false);
+
+    // 5. Moving cursor over #wheel-raw-toggle / .wheel-top-bar clears activeIndex
+    rawBtn.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 280, clientY: 20 }),
+    );
+    await flushMicrotasks();
+    expect(root.querySelector(".wheel-sector-group.is-active")).toBeNull();
+    expect(root.querySelector("#hub-multi-btn")).toBe(initialMultiBtn);
+
+    // Re-activate sector 0 inside ring (r = 120)
+    svgEl.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 100 }),
+    );
+    await flushMicrotasks();
+    expect(root.querySelectorAll(".wheel-sector-group")[0].classList.contains("is-active")).toBe(true);
+
+    // 6. Moving cursor into outer transparent padding (r = 190 at 3 o'clock -> x=410, y=220) in idle non-drag mode clears activeIndex
+    svgEl.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 410, clientY: 220 }),
+    );
+    await flushMicrotasks();
+    expect(root.querySelector(".wheel-sector-group.is-active")).toBeNull();
+    expect(root.querySelector("#hub-multi-btn")).toBe(initialMultiBtn);
+
+    // 7. Pointer-triggered focusin after pointerdown does not hijack activeIndex away from cursor
+    svgEl.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 340, clientY: 220 }),
+    );
+    svgEl.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: 340, clientY: 220 }));
+    (root.querySelectorAll(".wheel-sector-group")[0] as unknown as ShimElement).focus();
+    await flushMicrotasks();
+    expect(root.querySelectorAll(".wheel-sector-group")[2].classList.contains("is-active")).toBe(true);
+    expect(root.querySelectorAll(".wheel-sector-group")[0].classList.contains("is-active")).toBe(false);
+
+    // 8. In New File mode, hovering across sectors also updates hub subtitle in place without recreating hub DOM
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    await flushMicrotasks();
+    const newHubTitle = root.querySelector(".wheel-hub-title");
+    const newHubSub = root.querySelector(".wheel-hub-subtitle");
+    svgEl.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 100 }),
+    );
+    await flushMicrotasks();
+    expect(root.querySelector(".wheel-hub-title")).toBe(newHubTitle);
+    expect(root.querySelector(".wheel-hub-subtitle")).toBe(newHubSub);
+    expect(doc.activeElement).not.toBeNull();
+    });
+  });
+
   // -----------------------------------------------------------------------
   // 2. SettingsView E2E
   // -----------------------------------------------------------------------

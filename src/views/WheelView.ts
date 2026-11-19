@@ -56,6 +56,8 @@ import {
   sectorSvgPath,
   WHEEL_CANVAS_SIZE,
   WHEEL_CENTER,
+  WHEEL_OUTER_MAX_RADIUS,
+  WHEEL_OUTER_RADIUS,
   WHEEL_PROGRESS_RADIUS,
   type PaginatedSlot,
 } from "../wheelGeometry";
@@ -139,6 +141,11 @@ export function mountWheelView(root: HTMLElement): () => void {
   let activeTargetFormat = "";
   let currentItemsCount = 0;
   let rawMode = false;
+  let lastDomPointerMoveAt = 0;
+  let lastSvgPointerDownAt = 0;
+  let isHoveringControl = false;
+  let renderedHubKey = "";
+  const handledPointerEvents = new WeakSet<Event>();
 
   // Static shell DOM
   root.innerHTML = `
@@ -168,18 +175,18 @@ export function mountWheelView(root: HTMLElement): () => void {
         <svg class="wheel-svg" id="wheel-svg" viewBox="0 0 ${WHEEL_CANVAS_SIZE} ${WHEEL_CANVAS_SIZE}" width="${WHEEL_CANVAS_SIZE}" height="${WHEEL_CANVAS_SIZE}">
           <defs>
             <linearGradient id="flip-sector-rest-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="rgba(255,255,255,0.16)" />
-              <stop offset="50%" stop-color="rgba(148,163,184,0.08)" />
-              <stop offset="100%" stop-color="rgba(15,23,42,0.28)" />
+              <stop offset="0%" stop-color="rgba(255,255,255,0.09)" />
+              <stop offset="55%" stop-color="rgba(148,163,184,0.05)" />
+              <stop offset="100%" stop-color="rgba(15,23,42,0.22)" />
             </linearGradient>
             <linearGradient id="flip-sector-nav-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="rgba(56,189,248,0.18)" />
-              <stop offset="100%" stop-color="rgba(99,102,241,0.16)" />
+              <stop offset="0%" stop-color="rgba(56,189,248,0.14)" />
+              <stop offset="100%" stop-color="rgba(37,99,235,0.12)" />
             </linearGradient>
             <linearGradient id="flip-sector-active-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="rgba(56,189,248,0.68)" />
-              <stop offset="55%" stop-color="rgba(14,165,233,0.52)" />
-              <stop offset="100%" stop-color="rgba(99,102,241,0.62)" />
+              <stop offset="0%" stop-color="rgba(56,189,248,0.42)" />
+              <stop offset="55%" stop-color="rgba(14,165,233,0.45)" />
+              <stop offset="100%" stop-color="rgba(37,99,235,0.48)" />
             </linearGradient>
             <linearGradient id="flip-progress-grad" x1="0%" y1="0%" x2="100%" y2="100%">
               <stop offset="0%" stop-color="#38bdf8" />
@@ -224,6 +231,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   const progressTipEl = root.querySelector<SVGCircleElement>("#wheel-progress-tip")!;
   const hubEl = root.querySelector<HTMLElement>("#wheel-hub")!;
   const pageDotsEl = root.querySelector<HTMLElement>("#wheel-page-dots")!;
+  const topBarEl = root.querySelector<HTMLElement>(".wheel-top-bar");
   const modeButtons = Array.from(root.querySelectorAll<HTMLButtonElement>(".wheel-mode-btn"));
   const rawToggleBtn = root.querySelector<HTMLButtonElement>("#wheel-raw-toggle")!;
   const rawToggleLabelEl = root.querySelector<HTMLElement>("#wheel-raw-toggle-label")!;
@@ -544,6 +552,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           : t(l, "wheel.filesCount", { count: fileCount });
 
     if (phase === "converting") {
+      renderedHubKey = "";
       const shownPct = Math.max(1, Math.min(99, Math.round(displayedPercent)));
       hubEl.innerHTML = `
         <div class="wheel-hub-pct" id="wheel-hub-pct">${shownPct}%</div>
@@ -561,6 +570,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
 
     if (phase === "success") {
+      renderedHubKey = "";
       hubEl.innerHTML = `
         <svg class="wheel-check-svg" viewBox="0 0 36 36" aria-hidden="true">
           <circle class="wheel-check-circle" cx="18" cy="18" r="16" />
@@ -573,6 +583,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
 
     if (phase === "error") {
+      renderedHubKey = "";
       const failTitle =
         state.mode === "new" ? t(l, "wheel.creationFailed") : t(l, "wheel.conversionFailed");
       const canOpenBatch = state.mode === "convert" && state.files.length > 0;
@@ -676,24 +687,48 @@ export function mountWheelView(root: HTMLElement): () => void {
           subClass = "";
         }
       }
+      const nextHubKey = `idle:new:${l}:${state.targetFolder}`;
+      const existingTitle = hubEl.querySelector<HTMLElement>(".wheel-hub-title");
+      const existingSubtitle = hubEl.querySelector<HTMLElement>(".wheel-hub-subtitle");
+      if (renderedHubKey === nextHubKey && existingTitle && existingSubtitle) {
+        existingTitle.textContent = folderLabel;
+        existingTitle.title = state.targetFolder;
+        existingSubtitle.textContent = subtitle;
+        existingSubtitle.title = subtitle;
+        existingSubtitle.className = subClass ? `wheel-hub-subtitle ${subClass}` : "wheel-hub-subtitle";
+        return;
+      }
+      renderedHubKey = nextHubKey;
       hubEl.innerHTML = `
         <div class="wheel-hub-thumb-wrap">
           <div class="wheel-hub-thumb-fallback">${UI_ICONS.folder}</div>
         </div>
         <div class="wheel-hub-title" title="${escapeHtml(state.targetFolder)}">${escapeHtml(folderLabel)}</div>
-        <div class="wheel-hub-subtitle ${subClass}">${escapeHtml(subtitle)}</div>
+        <div class="wheel-hub-subtitle ${subClass}" title="${escapeHtml(subtitle)}">${escapeHtml(subtitle)}</div>
       `;
       return;
     }
 
     // Convert mode hub
     if (fileCount === 0) {
+      const emptyTitle = t(l, "wheel.dropFilesHere");
+      const emptySub = t(l, "wheel.escToCancel");
+      const nextHubKey = `idle:empty:${l}`;
+      const existingTitle = hubEl.querySelector<HTMLElement>(".wheel-hub-title");
+      const existingSubtitle = hubEl.querySelector<HTMLElement>(".wheel-hub-subtitle");
+      if (renderedHubKey === nextHubKey && existingTitle && existingSubtitle) {
+        existingTitle.textContent = emptyTitle;
+        existingSubtitle.textContent = emptySub;
+        existingSubtitle.className = "wheel-hub-subtitle is-muted";
+        return;
+      }
+      renderedHubKey = nextHubKey;
       hubEl.innerHTML = `
         <div class="wheel-hub-thumb-wrap">
           <div class="wheel-hub-thumb-fallback">${UI_ICONS.drop}</div>
         </div>
-        <div class="wheel-hub-title">${escapeHtml(t(l, "wheel.dropFilesHere"))}</div>
-        <div class="wheel-hub-subtitle is-muted">${escapeHtml(t(l, "wheel.escToCancel"))}</div>
+        <div class="wheel-hub-title">${escapeHtml(emptyTitle)}</div>
+        <div class="wheel-hub-subtitle is-muted">${escapeHtml(emptySub)}</div>
       `;
       return;
     }
@@ -739,6 +774,19 @@ export function mountWheelView(root: HTMLElement): () => void {
 
     const showMultiBtn =
       state.compatibleFormats.length > 0 || state.batchActions.length > 0;
+
+    const nextHubKey = `idle:convert:${l}:${fileCount}:${state.files[0] ?? ""}:${thumbnailDataUrl ?? ""}:${showMultiBtn ? 1 : 0}`;
+    const existingTitle = hubEl.querySelector<HTMLElement>(".wheel-hub-title");
+    const existingSubtitle = hubEl.querySelector<HTMLElement>(".wheel-hub-subtitle");
+    if (renderedHubKey === nextHubKey && existingTitle && existingSubtitle) {
+      existingTitle.textContent = primaryName;
+      existingTitle.title = state.files.join("\n");
+      existingSubtitle.textContent = subtitle;
+      existingSubtitle.title = subtitleTitle || subtitle;
+      existingSubtitle.className = subClass ? `wheel-hub-subtitle ${subClass}` : "wheel-hub-subtitle";
+      return;
+    }
+    renderedHubKey = nextHubKey;
 
     hubEl.innerHTML = `
       <div class="wheel-hub-thumb-wrap">
@@ -1087,6 +1135,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     closing = true;
     conversionInFlight = false;
     isDragHovering = false;
+    isHoveringControl = false;
+    lastDomPointerMoveAt = 0;
     latchedDwellSlot = -1;
     clearDwell();
     clearAutoClose();
@@ -1138,6 +1188,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearDismissTimer();
     shellEl.classList.remove("is-closing", "is-error-shake");
     if (wasClosing) {
+      isHoveringControl = false;
+      lastDomPointerMoveAt = 0;
       shellEl.classList.add("is-reopening");
       void shellEl.offsetWidth;
       shellEl.classList.remove("is-reopening");
@@ -1289,24 +1341,56 @@ export function mountWheelView(root: HTMLElement): () => void {
     });
   }
 
-  // Pointer hover & click on SVG ring (covers full r=68..210 polar hit region including 2px gaps & outer glow)
+  // Single authoritative pointer stream: stageEl captures all wheel hover + controls,
+  // with WeakSet dedup so dispatching directly on svgEl or stageEl behaves identically.
   const onPointerMove = (ev: PointerEvent) => {
-    if (phase !== "idle" || slots.length === 0) return;
+    if (handledPointerEvents.has(ev)) return;
+    handledPointerEvents.add(ev);
+    lastDomPointerMoveAt = performance.now();
+    if (phase !== "idle") return;
+    const target = ev.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        ".wheel-top-bar, .wheel-page-dots, .wheel-preview-dock, #wheel-hub, .wheel-hub-pill-btn",
+      )
+    ) {
+      isHoveringControl = true;
+      setActiveIndex(-1);
+      return;
+    }
+    isHoveringControl = false;
+    if (slots.length === 0) return;
     const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
+    const isDragging = state.isDrag || isDragHovering;
     const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
       previousIndex: activeIndex,
+      innerDeadZoneRadius: 72,
+      outerMaxRadius: isDragging ? WHEEL_OUTER_MAX_RADIUS : WHEEL_OUTER_RADIUS + 6,
     });
     setActiveIndex(hit);
   };
 
-  const onPointerLeave = () => {
+  const onStagePointerLeave = () => {
+    isHoveringControl = false;
     if (phase === "idle") {
       setActiveIndex(-1);
     }
   };
 
+  const onSvgPointerLeave = () => {
+    if (phase === "idle") {
+      setActiveIndex(-1);
+    }
+  };
+
+  const onSvgPointerDown = () => {
+    lastSvgPointerDownAt = performance.now();
+  };
+
   const onSectorFocusIn = (ev: FocusEvent) => {
     if (phase !== "idle" || slots.length === 0) return;
+    if (performance.now() - lastSvgPointerDownAt < 250) return;
     const targetEl = ev.target instanceof Element ? ev.target : null;
     const group = targetEl?.closest<SVGGElement>(".wheel-sector-group[data-slot-index]");
     if (!group) return;
@@ -1327,18 +1411,32 @@ export function mountWheelView(root: HTMLElement): () => void {
       if (Number.isInteger(idxAttr)) hit = idxAttr;
     } else {
       const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
+      const isDragging = state.isDrag || isDragHovering;
+      const maxRadius = isDragging ? WHEEL_OUTER_MAX_RADIUS : WHEEL_OUTER_RADIUS + 6;
       hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
         previousIndex: activeIndex,
+        innerDeadZoneRadius: 72,
+        outerMaxRadius: maxRadius,
       });
       if (hit < 0 && sectorGroupEl) {
-        const idxAttr = Number(sectorGroupEl.dataset.slotIndex ?? "-1");
-        if (Number.isInteger(idxAttr)) hit = idxAttr;
+        const dist = Math.hypot(pt.x - WHEEL_CENTER, pt.y - WHEEL_CENTER);
+        if (dist >= 72 && dist <= maxRadius) {
+          const idxAttr = Number(sectorGroupEl.dataset.slotIndex ?? "-1");
+          if (Number.isInteger(idxAttr)) hit = idxAttr;
+        }
       }
     }
     if (hit < 0) return;
     const slot = slots[hit];
     if (!slot) return;
     ev.stopPropagation();
+    if (
+      !isSyntheticOrZeroCoord &&
+      document.activeElement instanceof Element &&
+      sectorsLayer.contains(document.activeElement)
+    ) {
+      (document.activeElement as unknown as { blur?: () => void }).blur?.();
+    }
     if (
       state.mode === "convert" &&
       slot.kind === "item" &&
@@ -1354,8 +1452,12 @@ export function mountWheelView(root: HTMLElement): () => void {
     activateSlot(hit, { forceRaw: ev.altKey });
   };
 
+  stageEl.addEventListener("pointermove", onPointerMove);
+  stageEl.addEventListener("pointerleave", onStagePointerLeave);
   svgEl.addEventListener("pointermove", onPointerMove);
-  svgEl.addEventListener("pointerleave", onPointerLeave);
+  svgEl.addEventListener("pointerleave", onSvgPointerLeave);
+  svgEl.addEventListener("pointerdown", onSvgPointerDown);
+  svgEl.addEventListener("mousedown", onSvgPointerDown);
   svgEl.addEventListener("focusin", onSectorFocusIn);
   svgEl.addEventListener("click", onSvgClick);
 
@@ -1582,9 +1684,23 @@ export function mountWheelView(root: HTMLElement): () => void {
       }),
       events.onWheelPointerMove((payload) => {
         if (disposed || phase !== "idle" || slots.length === 0) return;
+        if (isHoveringControl) {
+          setActiveIndex(-1);
+          return;
+        }
+        const isDragging = state.isDrag || isDragHovering;
+        if (!isDragging && performance.now() - lastDomPointerMoveAt < 350) {
+          return;
+        }
         const pt = windowLogicalToCanvasPoint(payload.localX, payload.localY);
+        if (!isDragging && topBarEl && pt.y <= 44 && pt.x >= 90 && pt.x <= 350) {
+          setActiveIndex(-1);
+          return;
+        }
         const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
           previousIndex: activeIndex,
+          innerDeadZoneRadius: 72,
+          outerMaxRadius: isDragging ? WHEEL_OUTER_MAX_RADIUS : WHEEL_OUTER_RADIUS + 6,
         });
         setActiveIndex(hit);
       }),
@@ -1746,8 +1862,12 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearDiagResetTimer();
     stopProgressLoop();
     document.body.classList.remove("wheel-browser-preview");
+    stageEl.removeEventListener("pointermove", onPointerMove);
+    stageEl.removeEventListener("pointerleave", onStagePointerLeave);
     svgEl.removeEventListener("pointermove", onPointerMove);
-    svgEl.removeEventListener("pointerleave", onPointerLeave);
+    svgEl.removeEventListener("pointerleave", onSvgPointerLeave);
+    svgEl.removeEventListener("pointerdown", onSvgPointerDown);
+    svgEl.removeEventListener("mousedown", onSvgPointerDown);
     svgEl.removeEventListener("focusin", onSectorFocusIn);
     svgEl.removeEventListener("click", onSvgClick);
     stageEl.removeEventListener("click", onBackdropClick);

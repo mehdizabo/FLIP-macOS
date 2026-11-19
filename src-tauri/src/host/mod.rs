@@ -58,7 +58,7 @@ pub fn configure_wheel_overlay(win: &WebviewWindow, cfg: WheelOverlayConfig) {
     {
         let _ = win.with_webview(move |webview| {
             use objc2_app_kit::{
-                NSApplication, NSPopUpMenuWindowLevel, NSScreen, NSWindow,
+                NSApplication, NSColor, NSPopUpMenuWindowLevel, NSScreen, NSWindow,
                 NSWindowAnimationBehavior, NSWindowCollectionBehavior,
             };
             use objc2_foundation::{MainThreadMarker, NSPoint, NSSize};
@@ -69,6 +69,9 @@ pub fn configure_wheel_overlay(win: &WebviewWindow, cfg: WheelOverlayConfig) {
             // SAFETY: `with_webview` runs on the macOS main thread with a live NSWindow handle.
             unsafe {
                 let ns_win = &*ptr;
+                ns_win.setOpaque(false);
+                ns_win.setBackgroundColor(Some(&NSColor::clearColor()));
+                ns_win.setHasShadow(false);
                 let mut behavior = NSWindowCollectionBehavior::empty();
                 if cfg.can_join_all_spaces {
                     behavior |= NSWindowCollectionBehavior::CanJoinAllSpaces;
