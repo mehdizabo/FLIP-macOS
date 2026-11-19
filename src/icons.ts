@@ -8,7 +8,7 @@ export interface FormatMeta {
 }
 
 const STROKE_ATTRS =
-  'fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"';
+  'fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"';
 
 function svg(body: string, size = 20): string {
   return `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true">${body}</svg>`;
@@ -156,49 +156,49 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
       return {
         shortLabel: "No BG",
         title: t(lang, "wheel.actionRemoveBg"),
-        accent: "#ec4899",
+        accent: "#FF375F",
         iconSvg: UI_ICONS.removeBg,
       };
     case "OPTIMIZE_PDF":
       return {
         shortLabel: "Opt PDF",
         title: t(lang, "wheel.actionOptimizePdf"),
-        accent: "#f59e0b",
+        accent: "#FF9F0A",
         iconSvg: UI_ICONS.optimizePdf,
       };
     case "ZIP":
       return {
         shortLabel: "ZIP",
         title: t(lang, "wheel.actionZip"),
-        accent: "#eab308",
+        accent: "#FFD60A",
         iconSvg: UI_ICONS.zip,
       };
     case "UNZIP":
       return {
         shortLabel: "UNZIP",
         title: t(lang, "wheel.actionUnzip"),
-        accent: "#14b8a6",
+        accent: "#40C8E0",
         iconSvg: UI_ICONS.unzip,
       };
     case "COMBINE_PDF":
       return {
         shortLabel: "PDF+",
         title: t(lang, "wheel.actionCombinePdf"),
-        accent: "#ff6b4a",
+        accent: "#FF9F0A",
         iconSvg: UI_ICONS.combinePdf,
       };
     case "ANIMATE_GIF":
       return {
         shortLabel: "GIF+",
         title: t(lang, "wheel.actionAnimateGif"),
-        accent: "#c084fc",
+        accent: "#BF5AF2",
         iconSvg: UI_ICONS.animateGif,
       };
     case "MERGE_PDF":
       return {
         shortLabel: "MERGE",
         title: t(lang, "wheel.actionMergePdf"),
-        accent: "#ff5c5c",
+        accent: "#FF453A",
         iconSvg: UI_ICONS.combinePdf,
       };
     case "PNG":
@@ -214,28 +214,28 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
       return {
         shortLabel: key,
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
-        accent: "#38bdf8",
+        accent: "#64D2FF",
         iconSvg: UI_ICONS.image,
       };
     case "PDF":
       return {
         shortLabel: "PDF",
         title: t(lang, "wheel.convertToSubtitle", { fmt: "PDF" }),
-        accent: "#fb7185",
+        accent: "#FF453A",
         iconSvg: UI_ICONS.pdf,
       };
     case "MD":
       return {
         shortLabel: "MD",
         title: t(lang, "wheel.convertToSubtitle", { fmt: "Markdown" }),
-        accent: "#a78bfa",
+        accent: "#5E5CE6",
         iconSvg: UI_ICONS.markdown,
       };
     case "HTML":
       return {
         shortLabel: "HTML",
         title: t(lang, "wheel.convertToSubtitle", { fmt: "HTML" }),
-        accent: "#f97316",
+        accent: "#FF9F0A",
         iconSvg: UI_ICONS.code,
       };
     case "EPUB":
@@ -243,7 +243,7 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
       return {
         shortLabel: key,
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
-        accent: "#c084fc",
+        accent: "#BF5AF2",
         iconSvg: UI_ICONS.book,
       };
     case "DOCX":
@@ -254,7 +254,7 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
       return {
         shortLabel: key,
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
-        accent: "#60a5fa",
+        accent: "#0A84FF",
         iconSvg: UI_ICONS.document,
       };
     case "XLSX":
@@ -262,14 +262,14 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
       return {
         shortLabel: key,
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
-        accent: "#34d399",
+        accent: "#30D158",
         iconSvg: UI_ICONS.spreadsheet,
       };
     case "PPTX":
       return {
         shortLabel: "PPTX",
         title: t(lang, "wheel.convertToSubtitle", { fmt: "PPTX" }),
-        accent: "#fb923c",
+        accent: "#FF9F0A",
         iconSvg: UI_ICONS.presentation,
       };
     case "JSON":
@@ -279,7 +279,7 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
       return {
         shortLabel: key,
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
-        accent: "#2dd4bf",
+        accent: "#63E6E2",
         iconSvg: UI_ICONS.data,
       };
     case "MP3":
@@ -295,7 +295,7 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
       return {
         shortLabel: key,
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
-        accent: "#f472b6",
+        accent: "#FF375F",
         iconSvg: UI_ICONS.audio,
       };
     case "MP4":
@@ -307,14 +307,14 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
       return {
         shortLabel: key,
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
-        accent: "#818cf8",
+        accent: "#5E5CE6",
         iconSvg: UI_ICONS.video,
       };
     default:
       return {
         shortLabel: key.slice(0, 6),
         title: t(lang, "wheel.convertToSubtitle", { fmt: key }),
-        accent: "#38bdf8",
+        accent: "#98989D",
         iconSvg: UI_ICONS.document,
       };
   }
@@ -330,7 +330,7 @@ export function getNewKindMeta(
     const ext = extension ? `.${extension.toUpperCase()}` : name.slice(0, 6).toUpperCase();
     return {
       shortLabel: ext.slice(0, 6),
-      accent: "#fbbf24",
+      accent: "#FFD60A",
       iconSvg: UI_ICONS.template,
     };
   }
@@ -339,53 +339,53 @@ export function getNewKindMeta(
     case "folder":
       return {
         shortLabel: t(lang, "newkind.folderShort"),
-        accent: "#38bdf8",
+        accent: "#0A84FF",
         iconSvg: UI_ICONS.folder,
       };
     case "txt":
-      return { shortLabel: "TXT", accent: "#93c5fd", iconSvg: UI_ICONS.document };
+      return { shortLabel: "TXT", accent: "#98989D", iconSvg: UI_ICONS.document };
     case "md":
-      return { shortLabel: "MD", accent: "#c4b5fd", iconSvg: UI_ICONS.markdown };
+      return { shortLabel: "MD", accent: "#5E5CE6", iconSvg: UI_ICONS.markdown };
     case "rtf":
-      return { shortLabel: "RTF", accent: "#60a5fa", iconSvg: UI_ICONS.document };
+      return { shortLabel: "RTF", accent: "#64D2FF", iconSvg: UI_ICONS.document };
     case "docx":
-      return { shortLabel: "DOCX", accent: "#3b82f6", iconSvg: UI_ICONS.document };
+      return { shortLabel: "DOCX", accent: "#0A84FF", iconSvg: UI_ICONS.document };
     case "xlsx":
-      return { shortLabel: "XLSX", accent: "#34d399", iconSvg: UI_ICONS.spreadsheet };
+      return { shortLabel: "XLSX", accent: "#30D158", iconSvg: UI_ICONS.spreadsheet };
     case "pptx":
-      return { shortLabel: "PPTX", accent: "#fb923c", iconSvg: UI_ICONS.presentation };
+      return { shortLabel: "PPTX", accent: "#FF9F0A", iconSvg: UI_ICONS.presentation };
     case "html":
-      return { shortLabel: "HTML", accent: "#f97316", iconSvg: UI_ICONS.code };
+      return { shortLabel: "HTML", accent: "#FF9F0A", iconSvg: UI_ICONS.code };
     case "clipboard":
-      return { shortLabel: "Clip", accent: "#f472b6", iconSvg: UI_ICONS.clipboard };
+      return { shortLabel: "Clip", accent: "#FF375F", iconSvg: UI_ICONS.clipboard };
     case "json":
-      return { shortLabel: "JSON", accent: "#2dd4bf", iconSvg: UI_ICONS.data };
+      return { shortLabel: "JSON", accent: "#63E6E2", iconSvg: UI_ICONS.data };
     case "csv":
-      return { shortLabel: "CSV", accent: "#4ade80", iconSvg: UI_ICONS.spreadsheet };
+      return { shortLabel: "CSV", accent: "#30D158", iconSvg: UI_ICONS.spreadsheet };
     case "yaml":
-      return { shortLabel: "YAML", accent: "#2dd4bf", iconSvg: UI_ICONS.data };
+      return { shortLabel: "YAML", accent: "#63E6E2", iconSvg: UI_ICONS.data };
     case "toml":
-      return { shortLabel: "TOML", accent: "#2dd4bf", iconSvg: UI_ICONS.data };
+      return { shortLabel: "TOML", accent: "#63E6E2", iconSvg: UI_ICONS.data };
     case "xml":
-      return { shortLabel: "XML", accent: "#2dd4bf", iconSvg: UI_ICONS.data };
+      return { shortLabel: "XML", accent: "#63E6E2", iconSvg: UI_ICONS.data };
     case "pdf":
-      return { shortLabel: "PDF", accent: "#fb7185", iconSvg: UI_ICONS.pdf };
+      return { shortLabel: "PDF", accent: "#FF453A", iconSvg: UI_ICONS.pdf };
     case "sh":
-      return { shortLabel: "SH", accent: "#a3e635", iconSvg: UI_ICONS.code };
+      return { shortLabel: "SH", accent: "#30D158", iconSvg: UI_ICONS.code };
     case "py":
-      return { shortLabel: "PY", accent: "#facc15", iconSvg: UI_ICONS.code };
+      return { shortLabel: "PY", accent: "#FFD60A", iconSvg: UI_ICONS.code };
     case "swift":
-      return { shortLabel: "Swift", accent: "#fb7185", iconSvg: UI_ICONS.code };
+      return { shortLabel: "Swift", accent: "#FF453A", iconSvg: UI_ICONS.code };
     case "pages":
-      return { shortLabel: "Pages", accent: "#fb923c", iconSvg: UI_ICONS.document };
+      return { shortLabel: "Pages", accent: "#FF9F0A", iconSvg: UI_ICONS.document };
     case "numbers":
-      return { shortLabel: "Numbers", accent: "#4ade80", iconSvg: UI_ICONS.spreadsheet };
+      return { shortLabel: "Numbers", accent: "#30D158", iconSvg: UI_ICONS.spreadsheet };
     case "keynote":
-      return { shortLabel: "Keynote", accent: "#38bdf8", iconSvg: UI_ICONS.presentation };
+      return { shortLabel: "Keynote", accent: "#64D2FF", iconSvg: UI_ICONS.presentation };
     default:
       return {
         shortLabel: (extension ?? name).slice(0, 6),
-        accent: "#60a5fa",
+        accent: "#98989D",
         iconSvg: UI_ICONS.document,
       };
   }

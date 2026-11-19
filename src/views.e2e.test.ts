@@ -1890,10 +1890,37 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
 
   test("WheelView: Logi Options+ circular pucks react to cursor proximity and keep Finder drag tracking locked to cursor without jumping to top-left", async () => {
     await withDomEnv(async ({ win, root, cleanups }) => {
+    const scheduledRafIds: number[] = [];
+    const canceledRafIds: number[] = [];
+    const pendingRafIds = new Set<number>();
+    const origRaf = win.requestAnimationFrame;
+    const origCaf = win.cancelAnimationFrame;
+    win.requestAnimationFrame = (cb: (t: number) => void) => {
+      const id = origRaf((ts: number) => {
+        pendingRafIds.delete(id);
+        cb(ts);
+      });
+      scheduledRafIds.push(id);
+      pendingRafIds.add(id);
+      return id;
+    };
+    win.cancelAnimationFrame = (id: number) => {
+      canceledRafIds.push(id);
+      pendingRafIds.delete(id);
+      origCaf(id);
+    };
+
     const harness = installTauriHarness(win);
     const dispose = mountWheelView(root);
     cleanups.push(dispose);
     await flushMicrotasks();
+
+    const shellEl = root.querySelector<HTMLElement>("#wheel-shell")!;
+    const hubTetherEl = root.querySelector<HTMLElement>("#wheel-hub-tether")!;
+    expect(shellEl).not.toBeNull();
+    expect(hubTetherEl).not.toBeNull();
+    expect(shellEl.classList.contains("is-drag-mode")).toBe(false);
+    expect(Number(hubTetherEl.style.opacity || "0")).toBe(0);
 
     // Open in drag mode centered under cursor (220, 220)
     harness.emitEvent("wheel:state", {
@@ -1910,12 +1937,14 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     });
     await flushMicrotasks();
 
+    expect(shellEl.classList.contains("is-drag-mode")).toBe(true);
+
     // Renders floating circular bubbles (.wheel-bubble-disc) + synced Liquid Glass pucks + Logi outer ear on More slot
     expect(root.querySelectorAll(".wheel-bubble-disc").length).toBe(8);
     expect(root.querySelectorAll("#wheel-glass-layer .wheel-glass-puck").length).toBe(8);
     expect(root.querySelectorAll(".wheel-bubble-ear").length).toBe(1);
 
-    // Move pointer to sector 2 (3 o'clock -> 344, 220) via authoritative monitor stream
+    // Move pointer to sector 2 center (3 o'clock -> 344, 220) via authoritative monitor stream
     harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
     await flushMicrotasks();
     const groups = Array.from(root.querySelectorAll<HTMLElement>(".wheel-sector-group"));
@@ -1924,10 +1953,40 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     expect(groups[7].classList.contains("is-active")).toBe(false);
     expect(pucks[2].classList.contains("is-active")).toBe(true);
     expect(pucks[7].classList.contains("is-active")).toBe(false);
-    expect(Number(groups[2].style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
-    expect(Number(pucks[2].style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+    for (const el of [groups[2], pucks[2]]) {
+      expect(Number(el.style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+      expect(Number(el.style.getPropertyValue("--bubble-scale"))).toBeGreaterThan(1.0);
+      expect(el.style.getPropertyValue("--bubble-tx")).toMatch(/^-?\d+(\.\d+)?px$/);
+      expect(el.style.getPropertyValue("--bubble-ty")).toMatch(/^-?\d+(\.\d+)?px$/);
+      expect(el.style.getPropertyValue("--light-x")).toMatch(/^-?\d+(\.\d+)?%$/);
+      expect(el.style.getPropertyValue("--light-y")).toMatch(/^-?\d+(\.\d+)?%$/);
+    }
     expect(Number(groups[6].style.getPropertyValue("--bubble-prox"))).toBe(0);
     expect(Number(pucks[6].style.getPropertyValue("--bubble-prox"))).toBe(0);
+    expect(Number(hubTetherEl.style.opacity)).toBeGreaterThan(0);
+    expect(hubTetherEl.style.getPropertyValue("--tether-angle")).toBe("90.00deg");
+
+    // Move slightly off-center inside slot 2 (330, 212) to verify magnetic translation pull toward cursor
+    harness.emitEvent("wheel:pointer-move", { localX: 330, localY: 212 });
+    await flushMicrotasks();
+    for (const el of [groups[2], pucks[2]]) {
+      expect(Number(el.style.getPropertyValue("--bubble-scale"))).toBeGreaterThan(1.0);
+      expect(Number(el.style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+      const txRaw = el.style.getPropertyValue("--bubble-tx");
+      const tyRaw = el.style.getPropertyValue("--bubble-ty");
+      expect(txRaw).toMatch(/^-?\d+(\.\d+)?px$/);
+      expect(tyRaw).toMatch(/^-?\d+(\.\d+)?px$/);
+      expect(Number.isFinite(Number.parseFloat(txRaw))).toBe(true);
+      expect(Number.isFinite(Number.parseFloat(tyRaw))).toBe(true);
+      expect(Number.parseFloat(txRaw)).toBeLessThan(0);
+      expect(Number.parseFloat(tyRaw)).toBeLessThan(0);
+      expect(el.style.getPropertyValue("--light-x")).toMatch(/^-?\d+(\.\d+)?%$/);
+      expect(el.style.getPropertyValue("--light-y")).toMatch(/^-?\d+(\.\d+)?%$/);
+    }
+
+    // Return to sector 2 center (344, 220) before drag interference & release checks
+    harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
+    await flushMicrotasks();
 
     // Simulate competing macOS WebKit native drag-over/enter/leave events while dragging
     for (let i = 0; i < 6; i++) {
@@ -1964,6 +2023,39 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     const execCalls = harness.calls.filter((c) => c.cmd === "execute_conversion");
     expect(execCalls.length).toBe(1);
     expect(execCalls[0].args.formats).toEqual([slot2Label]);
+    expect(Number(hubTetherEl.style.opacity || "0")).toBe(0);
+
+    // Re-emitting wheel:state with isDrag: false removes is-drag-mode and resets hub tether
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/spec.pdf"],
+      isDrag: false,
+      compatibleFormats: ["PNG", "JPG", "WEBP", "HEIC", "TIFF", "TXT", "MD", "HTML", "RTF"],
+      batchActions: [],
+      availabilityMessage: "",
+      family: "pdf",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    expect(shellEl.classList.contains("is-drag-mode")).toBe(false);
+    expect(Number(hubTetherEl.style.opacity || "0")).toBe(0);
+
+    // Trigger a live physics rAF handle and verify dispose() cancels it via cancelAnimationFrame without throwing
+    harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
+    expect(scheduledRafIds.length).toBeGreaterThan(0);
+    expect(pendingRafIds.size).toBeGreaterThan(0);
+    let disposeError: unknown = null;
+    try {
+      dispose();
+    } catch (err) {
+      disposeError = err;
+    }
+    expect(disposeError).toBeNull();
+    expect(canceledRafIds.length).toBeGreaterThan(0);
+    expect(pendingRafIds.size).toBe(0);
+    expect(Number(hubTetherEl.style.opacity || "0")).toBe(0);
     });
   });
 

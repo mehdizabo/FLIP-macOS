@@ -62,6 +62,11 @@ import {
   WHEEL_PROGRESS_RADIUS,
   type PaginatedSlot,
 } from "../wheelGeometry";
+import {
+  createWheelSpringField,
+  type WheelSpringField,
+  type WheelSpringStepResult,
+} from "../wheelPhysics";
 
 interface WheelActionItem {
   id: string;
@@ -207,6 +212,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           </g>
         </svg>
 
+        <div class="wheel-hub-tether" id="wheel-hub-tether" aria-hidden="true"></div>
         <div class="wheel-hub" id="wheel-hub"></div>
         <div class="wheel-page-dots" id="wheel-page-dots" style="display:none"></div>
       </div>
@@ -235,6 +241,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   const progressArcEl = root.querySelector<SVGPathElement>("#wheel-progress-arc")!;
   const progressRayEl = root.querySelector<SVGLineElement>("#wheel-progress-ray")!;
   const progressTipEl = root.querySelector<SVGCircleElement>("#wheel-progress-tip")!;
+  const hubTetherEl = root.querySelector<HTMLElement>("#wheel-hub-tether")!;
   const hubEl = root.querySelector<HTMLElement>("#wheel-hub")!;
   const pageDotsEl = root.querySelector<HTMLElement>("#wheel-page-dots")!;
   const topBarEl = root.querySelector<HTMLElement>(".wheel-top-bar");
@@ -244,6 +251,13 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   let sectorGroups: SVGGElement[] = [];
   let glassPucks: HTMLElement[] = [];
+  let springField: WheelSpringField = createWheelSpringField([]);
+  let physicsRaf: number | null = null;
+  let physicsLastTs = 0;
+  let currentPointerCanvas: { x: number; y: number } | null = null;
+  const prefersReducedMotion = () =>
+    typeof window.matchMedia === "function" &&
+    Boolean(window.matchMedia("(prefers-reduced-motion: reduce)")?.matches);
 
   function clearDwell(): void {
     if (dwellTimer !== null) {
@@ -376,6 +390,7 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   function updateModePillUI(): void {
     const l = lang();
+    shellEl.classList.toggle("is-drag-mode", Boolean(state.isDrag));
     stageEl.setAttribute("aria-label", t(l, "wheel.ariaLabel"));
     root.querySelector(".wheel-mode-pill")?.setAttribute("aria-label", t(l, "wheel.modeListLabel"));
     const convertLabelEl = root.querySelector<HTMLElement>('[data-mode-label="convert"]');
@@ -432,43 +447,92 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
   }
 
-  function updateCursorProximity(canvasX: number | null, canvasY: number | null): void {
-    lastCanvasPointerPos =
-      canvasX !== null && canvasY !== null ? { x: canvasX, y: canvasY } : null;
+  function stopPhysicsLoop(): void {
+    if (physicsRaf !== null) {
+      window.cancelAnimationFrame(physicsRaf);
+      physicsRaf = null;
+    }
+    physicsLastTs = 0;
+  }
+
+  function applySpringFrame(frame: WheelSpringStepResult): void {
     sectorGroups.forEach((group, idx) => {
+      const b = frame.bubbles[idx];
+      if (!b) return;
       const puck = glassPucks[idx];
-      if (canvasX === null || canvasY === null || phase !== "idle") {
-        setCssVar(group, "--bubble-prox", "0");
-        setCssVar(group, "--bubble-tx", "0px");
-        setCssVar(group, "--bubble-ty", "0px");
-        if (puck) {
-          setCssVar(puck, "--bubble-prox", "0");
-          setCssVar(puck, "--bubble-tx", "0px");
-          setCssVar(puck, "--bubble-ty", "0px");
-        }
-        return;
-      }
-      const cx = Number(group.dataset.cx ?? WHEEL_CENTER);
-      const cy = Number(group.dataset.cy ?? WHEEL_CENTER);
-      const dx = canvasX - cx;
-      const dy = canvasY - cy;
-      const dist = Math.hypot(dx, dy);
-      const tNorm = Math.max(0, Math.min(1, 1 - dist / 118));
-      const prox = tNorm * tNorm * (3 - 2 * tNorm);
-      const tx = dist > 1 ? (dx / dist) * prox * 3.2 : 0;
-      const ty = dist > 1 ? (dy / dist) * prox * 3.2 : 0;
-      const proxStr = prox.toFixed(3);
-      const txStr = `${tx.toFixed(2)}px`;
-      const tyStr = `${ty.toFixed(2)}px`;
-      setCssVar(group, "--bubble-prox", proxStr);
-      setCssVar(group, "--bubble-tx", txStr);
-      setCssVar(group, "--bubble-ty", tyStr);
-      if (puck) {
-        setCssVar(puck, "--bubble-prox", proxStr);
-        setCssVar(puck, "--bubble-tx", txStr);
-        setCssVar(puck, "--bubble-ty", tyStr);
+      const tx = `${b.tx.toFixed(2)}px`;
+      const ty = `${b.ty.toFixed(2)}px`;
+      const scale = b.scale.toFixed(4);
+      const prox = b.prox.toFixed(3);
+      const lightX = `${b.lightX.toFixed(1)}%`;
+      const lightY = `${b.lightY.toFixed(1)}%`;
+      const targets: Element[] = puck ? [group, puck] : [group];
+      for (const el of targets) {
+        setCssVar(el, "--bubble-tx", tx);
+        setCssVar(el, "--bubble-ty", ty);
+        setCssVar(el, "--bubble-scale", scale);
+        setCssVar(el, "--bubble-prox", prox);
+        setCssVar(el, "--light-x", lightX);
+        setCssVar(el, "--light-y", lightY);
       }
     });
+    setCssVar(hubTetherEl, "--tether-angle", `${frame.tether.angleDeg.toFixed(2)}deg`);
+    hubTetherEl.style.opacity = phase === "idle" ? frame.tether.opacity.toFixed(3) : "0";
+  }
+
+  function physicsTick(now: number): void {
+    if (disposed || closing || phase !== "idle") {
+      stopPhysicsLoop();
+      return;
+    }
+    const dtSec = physicsLastTs > 0 ? (now - physicsLastTs) / 1000 : 0.016;
+    physicsLastTs = now;
+    const res = springField.step(dtSec);
+    applySpringFrame(res);
+    if (res.settled) {
+      stopPhysicsLoop();
+    } else {
+      physicsRaf = window.requestAnimationFrame(physicsTick);
+    }
+  }
+
+  function schedulePhysicsLoop(): void {
+    if (physicsRaf === null && !disposed && !closing && phase === "idle") {
+      physicsLastTs = 0;
+      physicsRaf = window.requestAnimationFrame(physicsTick);
+    }
+  }
+
+  function stepPhysicsImmediate(): void {
+    if (prefersReducedMotion()) {
+      let res = springField.step(0.032);
+      for (let k = 0; k < 20 && !res.settled; k++) {
+        res = springField.step(0.032);
+      }
+      applySpringFrame(res);
+      stopPhysicsLoop();
+      return;
+    }
+    const initial = springField.step(0.016);
+    applySpringFrame(initial);
+    if (!initial.settled && physicsRaf === null && !disposed && !closing && phase === "idle") {
+      schedulePhysicsLoop();
+    }
+  }
+
+  function updateCursorProximity(canvasX: number | null, canvasY: number | null): void {
+    const nextPos =
+      canvasX !== null && canvasY !== null ? { x: canvasX, y: canvasY } : null;
+    lastCanvasPointerPos = nextPos;
+    currentPointerCanvas = nextPos;
+    if (phase !== "idle") {
+      springField.setPointer(null, null, -1);
+      stopPhysicsLoop();
+      hubTetherEl.style.opacity = "0";
+      return;
+    }
+    springField.setPointer(canvasX, canvasY, activeIndex);
+    stepPhysicsImmediate();
   }
 
   function renderGlassPuck(opts: {
@@ -583,6 +647,9 @@ export function mountWheelView(root: HTMLElement): () => void {
         )
         .join("");
       sectorGroups = [];
+      springField = createWheelSpringField([]);
+      stopPhysicsLoop();
+      hubTetherEl.style.opacity = "0";
       return;
     }
 
@@ -659,8 +726,19 @@ export function mountWheelView(root: HTMLElement): () => void {
     glassLayerEl.innerHTML = puckMarkups.join("");
     glassPucks = Array.from(glassLayerEl.querySelectorAll<HTMLElement>(".wheel-glass-puck"));
     sectorGroups = Array.from(sectorsLayer.querySelectorAll<SVGGElement>(".wheel-sector-group"));
+    const centers = slots.map((_, i) => {
+      const pos = getSectorCenter(i, count, 124);
+      return { cx: pos.x, cy: pos.y };
+    });
+    springField = createWheelSpringField(centers);
     if (phase === "idle" && lastCanvasPointerPos) {
       updateCursorProximity(lastCanvasPointerPos.x, lastCanvasPointerPos.y);
+    } else if (phase === "idle" && activeIndex >= 0) {
+      springField.setPointer(null, null, activeIndex);
+      stepPhysicsImmediate();
+    } else {
+      stopPhysicsLoop();
+      hubTetherEl.style.opacity = "0";
     }
   }
 
@@ -989,6 +1067,12 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (bounded === activeIndex) return;
 
     activeIndex = bounded;
+    springField.setPointer(
+      currentPointerCanvas?.x ?? null,
+      currentPointerCanvas?.y ?? null,
+      activeIndex,
+    );
+    stepPhysicsImmediate();
 
     if (bounded !== latchedDwellSlot) {
       latchedDwellSlot = -1;
@@ -1043,6 +1127,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearDwell();
     clearAutoClose();
     stopProgressLoop();
+    stopPhysicsLoop();
+    springField.snapToRest();
+    hubTetherEl.style.opacity = "0";
     phase = "converting";
     activeActionLabel = formatLabel;
     activeTargetFormat = formatLabel;
@@ -1182,6 +1269,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearDwell();
     clearAutoClose();
     stopProgressLoop();
+    stopPhysicsLoop();
+    springField.snapToRest();
+    hubTetherEl.style.opacity = "0";
     conversionInFlight = false;
     void playWheelFeedback("generic");
     activeActionLabel = kind.label;
@@ -1304,6 +1394,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     lastDragCoords = null;
     latchedDwellSlot = -1;
     updateCursorProximity(null, null);
+    stopPhysicsLoop();
+    springField.snapToRest();
+    hubTetherEl.style.opacity = "0";
     clearDwell();
     clearAutoClose();
     clearDismissTimer();
@@ -1328,6 +1421,9 @@ export function mountWheelView(root: HTMLElement): () => void {
   }
 
   function windowLogicalToCanvasPoint(localX: number, localY: number): { x: number; y: number } {
+    if (isTauriRuntime()) {
+      return { x: localX, y: localY };
+    }
     const rect = svgEl.getBoundingClientRect();
     const scaleX = rect.width > 0 ? WHEEL_CANVAS_SIZE / rect.width : 1;
     const scaleY = rect.height > 0 ? WHEEL_CANVAS_SIZE / rect.height : 1;
@@ -1380,6 +1476,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     const modeOrFilesChanged = next.mode !== state.mode || filesChanged;
 
     state = next;
+    shellEl.classList.toggle("is-drag-mode", Boolean(state.isDrag));
     lastMonitorPointerPos = { x: next.originX, y: next.originY };
     lastMonitorPointerMoveAt = next.isDrag ? performance.now() : 0;
     if (wasClosing || filesChanged) {
@@ -2086,6 +2183,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearDismissTimer();
     clearDiagResetTimer();
     stopProgressLoop();
+    stopPhysicsLoop();
+    hubTetherEl.style.opacity = "0";
     document.body.classList.remove("wheel-browser-preview");
     stageEl.removeEventListener("pointermove", onPointerMove);
     stageEl.removeEventListener("pointerleave", onStagePointerLeave);
