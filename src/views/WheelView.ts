@@ -177,6 +177,7 @@ export function mountWheelView(root: HTMLElement): () => void {
 
         <div class="wheel-glass-ring" aria-hidden="true"></div>
         <div class="wheel-chromatic-rim" aria-hidden="true"></div>
+        <div class="wheel-glass-layer" id="wheel-glass-layer" aria-hidden="true"></div>
 
         <svg class="wheel-svg" id="wheel-svg" viewBox="0 0 ${WHEEL_CANVAS_SIZE} ${WHEEL_CANVAS_SIZE}" width="${WHEEL_CANVAS_SIZE}" height="${WHEEL_CANVAS_SIZE}">
           <defs>
@@ -227,6 +228,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   const stageEl = root.querySelector<HTMLElement>(".wheel-stage")!;
   const announcerEl = root.querySelector<HTMLElement>("#wheel-live-announcer")!;
   const shellEl = root.querySelector<HTMLElement>("#wheel-shell")!;
+  const glassLayerEl = root.querySelector<HTMLElement>("#wheel-glass-layer")!;
   const svgEl = root.querySelector<SVGSVGElement>("#wheel-svg")!;
   const sectorsLayer = root.querySelector<SVGGElement>("#wheel-sectors-layer")!;
   const progressLayer = root.querySelector<SVGGElement>("#wheel-progress-layer")!;
@@ -241,6 +243,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   const rawToggleLabelEl = root.querySelector<HTMLElement>("#wheel-raw-toggle-label")!;
 
   let sectorGroups: SVGGElement[] = [];
+  let glassPucks: HTMLElement[] = [];
 
   function clearDwell(): void {
     if (dwellTimer !== null) {
@@ -432,12 +435,18 @@ export function mountWheelView(root: HTMLElement): () => void {
   function updateCursorProximity(canvasX: number | null, canvasY: number | null): void {
     lastCanvasPointerPos =
       canvasX !== null && canvasY !== null ? { x: canvasX, y: canvasY } : null;
-    for (const group of sectorGroups) {
+    sectorGroups.forEach((group, idx) => {
+      const puck = glassPucks[idx];
       if (canvasX === null || canvasY === null || phase !== "idle") {
         setCssVar(group, "--bubble-prox", "0");
         setCssVar(group, "--bubble-tx", "0px");
         setCssVar(group, "--bubble-ty", "0px");
-        continue;
+        if (puck) {
+          setCssVar(puck, "--bubble-prox", "0");
+          setCssVar(puck, "--bubble-tx", "0px");
+          setCssVar(puck, "--bubble-ty", "0px");
+        }
+        return;
       }
       const cx = Number(group.dataset.cx ?? WHEEL_CENTER);
       const cy = Number(group.dataset.cy ?? WHEEL_CENTER);
@@ -448,10 +457,29 @@ export function mountWheelView(root: HTMLElement): () => void {
       const prox = tNorm * tNorm * (3 - 2 * tNorm);
       const tx = dist > 1 ? (dx / dist) * prox * 3.2 : 0;
       const ty = dist > 1 ? (dy / dist) * prox * 3.2 : 0;
-      setCssVar(group, "--bubble-prox", prox.toFixed(3));
-      setCssVar(group, "--bubble-tx", `${tx.toFixed(2)}px`);
-      setCssVar(group, "--bubble-ty", `${ty.toFixed(2)}px`);
-    }
+      const proxStr = prox.toFixed(3);
+      const txStr = `${tx.toFixed(2)}px`;
+      const tyStr = `${ty.toFixed(2)}px`;
+      setCssVar(group, "--bubble-prox", proxStr);
+      setCssVar(group, "--bubble-tx", txStr);
+      setCssVar(group, "--bubble-ty", tyStr);
+      if (puck) {
+        setCssVar(puck, "--bubble-prox", proxStr);
+        setCssVar(puck, "--bubble-tx", txStr);
+        setCssVar(puck, "--bubble-ty", tyStr);
+      }
+    });
+  }
+
+  function renderGlassPuck(opts: {
+    index: number;
+    count: number;
+    classes: string;
+    accent?: string;
+  }): string {
+    const pos = getSectorCenter(opts.index, opts.count, 124);
+    const accentAttr = opts.accent ? `;--sector-accent:${escapeHtml(opts.accent)}` : "";
+    return `<div class="${opts.classes}" data-slot-index="${opts.index}" style="left:${pos.x.toFixed(2)}px;top:${pos.y.toFixed(2)}px${accentAttr}"></div>`;
   }
 
   function renderBubbleSlot(opts: {
@@ -473,7 +501,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     const midDeg = (opts.index * 360) / opts.count;
     const earMarkup = opts.earKind
       ? `<g class="wheel-bubble-ear-wrap" transform="translate(${cx}, ${cy}) rotate(${(midDeg - 90).toFixed(2)})">
-           <path class="wheel-bubble-ear" d="M 27 -12.5 C 38 -10.5 42.5 -4.5 42.5 0 C 42.5 4.5 38 10.5 27 12.5 Z" />
+           <path class="wheel-bubble-ear" d="M 30.54 -12.5 C 39 -10 43 -4.5 43 0 C 43 4.5 39 10 30.54 12.5 A 33 33 0 0 0 30.54 -12.5 Z" />
            <path class="wheel-bubble-ear-chevron" d="${opts.earKind === "back" ? "M 38.2 -3 L 35 0 L 38.2 3" : "M 35 -3 L 38.2 0 L 35 3"}" />
          </g>`
       : "";
@@ -529,6 +557,16 @@ export function mountWheelView(root: HTMLElement): () => void {
     // Empty Convert placeholder ring when 0 files or incompatible
     if (slots.length === 0) {
       const placeholders = ["DOCX", "PDF", "MD", "HTML", "PNG", "JPG", "WEBP", "MP3"];
+      glassLayerEl.innerHTML = placeholders
+        .map((_, i) =>
+          renderGlassPuck({
+            index: i,
+            count: placeholders.length,
+            classes: "wheel-glass-puck is-disabled",
+          }),
+        )
+        .join("");
+      glassPucks = [];
       sectorsLayer.innerHTML = placeholders
         .map((label, i) =>
           renderBubbleSlot({
@@ -549,6 +587,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
 
     const count = slots.length;
+    const puckMarkups: string[] = [];
     sectorsLayer.innerHTML = slots
       .map((slot, i) => {
         const isNav = slot.kind === "more" || slot.kind === "back";
@@ -571,16 +610,36 @@ export function mountWheelView(root: HTMLElement): () => void {
             : slot.item.accent;
         const ariaLabel = formatSectorAriaLabel(slot, i, count, l);
         const isActive = activeIndex === i && enabled && phase === "idle";
+        const isDimmed = phase === "converting" && activeActionLabel !== label;
 
         const classes = [
           "wheel-sector-group",
           isNav ? "is-nav" : "",
           !enabled ? "is-disabled" : "",
           isActive ? "is-active" : "",
-          phase === "converting" && activeActionLabel !== label ? "is-dimmed" : "",
+          isDimmed ? "is-dimmed" : "",
         ]
           .filter(Boolean)
           .join(" ");
+
+        const puckClasses = [
+          "wheel-glass-puck",
+          isNav ? "is-nav" : "",
+          !enabled ? "is-disabled" : "",
+          isActive ? "is-active" : "",
+          isDimmed ? "is-dimmed" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+
+        puckMarkups.push(
+          renderGlassPuck({
+            index: i,
+            count,
+            classes: puckClasses,
+            accent,
+          }),
+        );
 
         return renderBubbleSlot({
           index: i,
@@ -597,6 +656,8 @@ export function mountWheelView(root: HTMLElement): () => void {
       })
       .join("");
 
+    glassLayerEl.innerHTML = puckMarkups.join("");
+    glassPucks = Array.from(glassLayerEl.querySelectorAll<HTMLElement>(".wheel-glass-puck"));
     sectorGroups = Array.from(sectorsLayer.querySelectorAll<SVGGElement>(".wheel-sector-group"));
     if (phase === "idle" && lastCanvasPointerPos) {
       updateCursorProximity(lastCanvasPointerPos.x, lastCanvasPointerPos.y);
@@ -608,9 +669,15 @@ export function mountWheelView(root: HTMLElement): () => void {
       const slot = slots[idx];
       const enabled = isSlotActionable(slot);
       const isActive = idx === activeIndex && enabled && phase === "idle";
+      const isDwelling = idx === dwellSlotIndex && dwellTimer !== null;
       group.classList.toggle("is-active", isActive);
-      group.classList.toggle("is-dwelling", idx === dwellSlotIndex && dwellTimer !== null);
+      group.classList.toggle("is-dwelling", isDwelling);
       group.setAttribute("aria-current", isActive ? "true" : "false");
+      const puck = glassPucks[idx];
+      if (puck) {
+        puck.classList.toggle("is-active", isActive);
+        puck.classList.toggle("is-dwelling", isDwelling);
+      }
     });
   }
 
@@ -1215,6 +1282,7 @@ export function mountWheelView(root: HTMLElement): () => void {
 
     const group = sectorGroups[idx];
     group?.classList.add("is-pulsing");
+    glassPucks[idx]?.classList.add("is-pulsing");
 
     if (state.mode === "new") {
       void commitCreateNew(slot.item);

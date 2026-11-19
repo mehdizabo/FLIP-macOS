@@ -1910,18 +1910,24 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     });
     await flushMicrotasks();
 
-    // Renders floating circular bubbles (.wheel-bubble-disc) + Logi outer ear on More slot
+    // Renders floating circular bubbles (.wheel-bubble-disc) + synced Liquid Glass pucks + Logi outer ear on More slot
     expect(root.querySelectorAll(".wheel-bubble-disc").length).toBe(8);
+    expect(root.querySelectorAll("#wheel-glass-layer .wheel-glass-puck").length).toBe(8);
     expect(root.querySelectorAll(".wheel-bubble-ear").length).toBe(1);
 
     // Move pointer to sector 2 (3 o'clock -> 344, 220) via authoritative monitor stream
     harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
     await flushMicrotasks();
     const groups = Array.from(root.querySelectorAll<HTMLElement>(".wheel-sector-group"));
+    const pucks = Array.from(root.querySelectorAll<HTMLElement>("#wheel-glass-layer .wheel-glass-puck"));
     expect(groups[2].classList.contains("is-active")).toBe(true);
     expect(groups[7].classList.contains("is-active")).toBe(false);
+    expect(pucks[2].classList.contains("is-active")).toBe(true);
+    expect(pucks[7].classList.contains("is-active")).toBe(false);
     expect(Number(groups[2].style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+    expect(Number(pucks[2].style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
     expect(Number(groups[6].style.getPropertyValue("--bubble-prox"))).toBe(0);
+    expect(Number(pucks[6].style.getPropertyValue("--bubble-prox"))).toBe(0);
 
     // Simulate competing macOS WebKit native drag-over/enter/leave events while dragging
     for (let i = 0; i < 6; i++) {
