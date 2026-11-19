@@ -609,7 +609,7 @@ pub fn hide_wheel(app: &AppHandle, state: &Arc<HostState>, reason: &str) {
                     .and_then(|w| w.is_visible().ok())
                     .unwrap_or(false)
             });
-            if !any_standard_visible {
+            if !any_standard_visible && reason != "create-new-completed" {
                 let _ = win.with_webview(|_| {
                     use objc2_app_kit::NSApplication;
                     use objc2_foundation::MainThreadMarker;

@@ -1939,6 +1939,54 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     });
   });
 
+  test("WheelView: Create New File with renameTriggered=true shows success hub cleanly and auto-dismisses faster", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    harness.setCommandOverride("execute_create_new", async (args) => ({
+      path: `${args.targetFolder || "/Users/demo/Desktop"}/Untitled.${args.kindId || "txt"}`,
+      kindId: args.kindId,
+      revealed: true,
+      renameTriggered: true,
+      fallbackUsed: false,
+    }));
+
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    harness.emitEvent("wheel:state", {
+      mode: "new",
+      files: [],
+      isDrag: false,
+      compatibleFormats: [],
+      batchActions: [],
+      availabilityMessage: "",
+      family: null,
+      targetFolder: "/Users/demo/Desktop",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "2" }));
+    await flushMicrotasks();
+
+    expect(root.querySelector(".wheel-check-svg")).not.toBeNull();
+    expect(root.querySelector("#wheel-shell")?.classList.contains("is-closing")).toBe(false);
+
+    // Shorter 120ms autoCloseTimer triggers closing before 420ms, then 100ms dismiss animation calls dismiss_wheel
+    await new Promise<void>((r) => globalThis.setTimeout(r, 150));
+    await flushMicrotasks();
+    expect(root.querySelector("#wheel-shell")?.classList.contains("is-closing")).toBe(true);
+
+    await new Promise<void>((r) => globalThis.setTimeout(r, 130));
+    await flushMicrotasks();
+    expect(
+      harness.calls.some((c) => c.cmd === "dismiss_wheel" && c.args.reason === "create-new-completed"),
+    ).toBe(true);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // 2. SettingsView E2E
   // -----------------------------------------------------------------------

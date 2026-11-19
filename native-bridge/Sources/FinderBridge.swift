@@ -218,35 +218,41 @@ enum FinderBridge {
         if rename && urls.count == 1 {
             if AXIsProcessTrusted() {
                 if let finderApp = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder").first {
-                    finderApp.activate(options: [])
+                    finderApp.activate()
                     let targetStd = urls[0].resolvingSymlinksInPath().standardizedFileURL.path
                     var selectionConfirmed = false
                     var automationBlocked = false
-                    for _ in 0..<10 {
+                    for _ in 0..<20 {
                         Thread.sleep(forTimeInterval: 0.04)
-                        let (sel, granted) = rawFinderSelection()
-                        if !granted {
-                            automationBlocked = true
-                            break
+                        if !selectionConfirmed && !automationBlocked {
+                            let (sel, granted) = rawFinderSelection()
+                            if !granted {
+                                automationBlocked = true
+                            } else if sel.contains(where: { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path == targetStd }) {
+                                selectionConfirmed = true
+                            }
                         }
-                        if sel.contains(where: { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path == targetStd }) {
-                            selectionConfirmed = true
+                        if !finderApp.isActive {
+                            finderApp.activate()
+                        }
+                        if (selectionConfirmed || automationBlocked) && finderApp.isActive {
                             break
                         }
                     }
-                    if automationBlocked {
-                        Thread.sleep(forTimeInterval: 0.14)
-                    }
+                    Thread.sleep(forTimeInterval: 0.18)
 
                     if selectionConfirmed || automationBlocked {
-                        let pid = finderApp.processIdentifier
-                        if let src = CGEventSource(stateID: .privateState) ?? CGEventSource(stateID: .hidSystemState),
+                        if !finderApp.isActive {
+                            finderApp.activate()
+                            Thread.sleep(forTimeInterval: 0.06)
+                        }
+                        if let src = CGEventSource(stateID: .hidSystemState) ?? CGEventSource(stateID: .privateState),
                            let keyDown = CGEvent(keyboardEventSource: src, virtualKey: 36, keyDown: true),
                            let keyUp = CGEvent(keyboardEventSource: src, virtualKey: 36, keyDown: false) {
                             keyDown.flags = []
                             keyUp.flags = []
-                            keyDown.postToPid(pid)
-                            keyUp.postToPid(pid)
+                            keyDown.post(tap: .cghidEventTap)
+                            keyUp.post(tap: .cghidEventTap)
                             renameTriggered = true
                         } else {
                             renameError = "Could not create CGEvent for Return key"

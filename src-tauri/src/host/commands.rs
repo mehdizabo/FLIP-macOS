@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -428,8 +428,12 @@ pub fn cancel_conversion(state: State<'_, Arc<HostState>>) -> Result<(), String>
 pub async fn execute_create_new(
     kind_id: String,
     target_folder: Option<String>,
+    app: AppHandle,
     state: State<'_, Arc<HostState>>,
 ) -> Result<CreateNewResult, String> {
+    if let Some(win) = app.get_webview_window("wheel") {
+        let _ = win.set_focusable(false);
+    }
     let state_arc = Arc::clone(&*state);
     let prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
 

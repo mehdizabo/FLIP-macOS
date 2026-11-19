@@ -1088,9 +1088,10 @@ export function mountWheelView(root: HTMLElement): () => void {
         { force: true },
       );
       clearAutoClose();
+      const closeDelayMs = res.renameTriggered ? 120 : 420;
       autoCloseTimer = window.setTimeout(() => {
         if (!disposed) requestDismiss("create-new-completed");
-      }, 420);
+      }, closeDelayMs);
     } catch (err) {
       if (disposed) return;
       phase = "error";
