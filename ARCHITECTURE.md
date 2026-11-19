@@ -10,7 +10,7 @@ FLIP for macOS is an Apple Silicon (`arm64`) desktop utility built with **Tauri 
   - `#settings`: Multi-tab Settings & Shortcuts recorder (`General` with live `EN`/`IT` switcher and `Test Wheel Sound & Haptics`, `Shortcuts`, `Formats & Quality` with interactive Preferred Format Order, `New File & Templates`, `Engines & Permissions`, `About & Logs`).
   - `#batch`: Multi-file & multi-format queue (`src/views/BatchView.ts`) supporting `Shift`/`Option`-click handoff and cancellation.
   - `#onboarding`: First-run permissions and workflow wizard (`src/views/OnboardingView.ts`).
-- **Multi-Monitor & Mixed-DPI Clamping**: `src-tauri/src/host/screen.rs` and Cocoa `NSScreen` queries clamp the wheel inside the active display's `visibleFrame` so it never clips under the menu bar, notch, or Dock.
+- **Multi-Monitor & Mixed-DPI Clamping**: `src-tauri/src/core/input_gate.rs` (`clamp_wheel_placement`), `src-tauri/src/host/monitor.rs`, and Cocoa `NSScreen` queries in `native-bridge/Sources/Common.swift` clamp the wheel inside the active display's `visibleFrame` so it never clips under the menu bar, notch, or Dock.
 
 ## 2. Drag, Idle & Mouse Trigger Pipeline
 

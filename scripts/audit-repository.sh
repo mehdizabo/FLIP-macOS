@@ -48,13 +48,13 @@ def run_git(args):
         raise RuntimeError(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout
 
-tracked = [line for line in run_git(["ls-files"]).splitlines() if line]
+tracked = [line for line in run_git(["ls-files", "-z"]).split("\0") if line]
 if not tracked:
     raise RuntimeError("No tracked Git source files found.")
 
 untracked = [
     line
-    for line in run_git(["ls-files", "--others", "--exclude-standard"]).splitlines()
+    for line in run_git(["ls-files", "-z", "--others", "--exclude-standard"]).split("\0")
     if line
 ]
 
@@ -87,7 +87,7 @@ secret_patterns = [
 ]
 
 user_path_re = re.compile(
-    r"(?:^|[\s\"'`=:(\\]|file://|/private)/(Users|home)/([A-Za-z0-9_.-]+|<[^>]+>|\.\.\.)(?=/|$|[^A-Za-z0-9_.-])"
+    r"(?:^|[\s\"'`=:(\\[{<,;|]|file://|/private)/(Users|home)/([A-Za-z0-9_.-]+|<[^>]+>|\.\.\.)(?=/|$|[^A-Za-z0-9_.-])"
 )
 
 allowed_fixture_users = {
@@ -123,7 +123,11 @@ for rel_path, kind in all_files:
                 findings.append(f"{rel_path}:{line_no} [{kind}] {label}")
         for m in user_path_re.finditer(line):
             username = m.group(2)
-            if username == current_user or username not in allowed_fixture_users:
+            if (
+                username == current_user
+                or username == "mimmo" + "98"
+                or username not in allowed_fixture_users
+            ):
                 findings.append(
                     f"{rel_path}:{line_no} [{kind}] local user path (/{m.group(1)}/{username})"
                 )
