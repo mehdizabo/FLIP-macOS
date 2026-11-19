@@ -1,8 +1,8 @@
 # Architectural & Product Decisions (`FLIP-macOS-port`)
 
 Date: 2026-11-17  
-Source Windows repo: `/Users/mimmo98/_MyWorkspace/_Projects/FLIP-windows` (v0.5.1)  
-Target macOS repo: `/Users/mimmo98/_MyWorkspace/_Projects/FLIP-macOS-port`
+Source Windows repo: `FLIP-windows` (v0.5.1)  
+Target macOS repo: `FLIP-macOS-port`
 
 ## 1. User Product Decisions
 

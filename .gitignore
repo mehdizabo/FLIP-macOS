@@ -7,3 +7,9 @@ native-bridge/.build/
 *.log
 .env
 _local/
+.cde/
+cde.toml
+.nook/
+nook.toml
+AGENTS.md
+

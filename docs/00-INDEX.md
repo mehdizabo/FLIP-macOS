@@ -1,6 +1,6 @@
 # FLIP for Mac: piano di porting
 
-> Sorgente: `/Users/mimmo98/_MyWorkspace/_Projects/FLIP-windows` (FLIP 0.5.1, .NET 10 WPF, circa 3.000 righe C#)
+> Sorgente: `FLIP-windows` (FLIP 0.5.1, .NET 10 WPF, circa 3.000 righe C#)
 > Obiettivo: un'app **nativa macOS**, interfaccia **in inglese**, con una ruota radiale di qualità paragonabile all'Actions Ring di Logi Options+. Mantiene tutte le funzioni di FLIP e aggiunge **"New File"**, l'equivalente di "Nuovo ▸" di Windows.
 
 ## Verdetto in una riga
