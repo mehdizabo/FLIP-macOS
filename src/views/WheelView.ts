@@ -27,6 +27,7 @@ import {
   subscribeNativeDragDrop,
   switchWheelMode,
   basename,
+  dirname,
   extLower,
 } from "../ipc";
 import type {
@@ -114,6 +115,8 @@ export function mountWheelView(root: HTMLElement): () => void {
   let targetPercent = 12;
   let activeActionLabel = "";
   let stepLabel = "";
+  let successLocationLabel = "";
+  let lastCreatedPath = "";
   let lastErrorMsg = "";
   let diagBtnState: "idle" | "copying" | "copied" | "failed" = "idle";
   let diagBtnFailReason = "";
@@ -569,13 +572,19 @@ export function mountWheelView(root: HTMLElement): () => void {
 
     if (phase === "success") {
       renderedHubKey = "";
+      const successSubtitle = successLocationLabel
+        ? `${t(l, "wheel.completed")} · ${successLocationLabel}`
+        : t(l, "wheel.completed");
+      const successTitleAttr = lastCreatedPath
+        ? ` title="${escapeHtml(lastCreatedPath)}"`
+        : "";
       hubEl.innerHTML = `
         <svg class="wheel-check-svg" viewBox="0 0 36 36" aria-hidden="true">
           <circle class="wheel-check-circle" cx="18" cy="18" r="16" />
           <path class="wheel-check-mark" d="M10.5 18.5l5 5 10-10.5" />
         </svg>
         <div class="wheel-hub-title">${escapeHtml(activeActionLabel || t(l, "wheel.done"))}</div>
-        <div class="wheel-hub-subtitle is-success">${escapeHtml(t(l, "wheel.completed"))}</div>
+        <div class="wheel-hub-subtitle is-success"${successTitleAttr}>${escapeHtml(successSubtitle)}</div>
       `;
       return;
     }
@@ -897,6 +906,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     phase = "converting";
     activeActionLabel = formatLabel;
     activeTargetFormat = formatLabel;
+    successLocationLabel = "";
+    lastCreatedPath = "";
     lastAnnouncedMilestone = 0;
     stepLabel = `→ ${formatLabel}`;
     displayedPercent = 5;
@@ -1035,6 +1046,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     void playWheelFeedback("generic");
     activeActionLabel = kind.label;
     activeTargetFormat = kind.label;
+    successLocationLabel = "";
+    lastCreatedPath = "";
     lastAnnouncedMilestone = 0;
     phase = "converting";
     stepLabel = kind.subtitle;
@@ -1054,7 +1067,15 @@ export function mountWheelView(root: HTMLElement): () => void {
       if (disposed) return;
       phase = "success";
       const createdName = basename(res.path);
+      const parentDir = dirname(res.path);
       activeActionLabel = createdName;
+      lastCreatedPath = res.path;
+      successLocationLabel =
+        parentDir && parentDir !== "/"
+          ? basename(parentDir)
+          : res.path.startsWith("/")
+            ? "/"
+            : "";
       progressArcEl.classList.remove("is-error");
       progressArcEl.classList.add("is-success");
       progressArcEl.setAttribute("d", progressArcSvgPath(99.9, WHEEL_PROGRESS_RADIUS));
@@ -1195,6 +1216,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     phase = "idle";
     activeActionLabel = "";
     activeTargetFormat = "";
+    successLocationLabel = "";
+    lastCreatedPath = "";
     lastAnnouncedMilestone = -1;
     lastErrorMsg = "";
     diagBtnState = "idle";

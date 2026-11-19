@@ -100,9 +100,17 @@ enum FinderBridge {
                 end try
                 set targetPath to ""
                 try
-                    set insLoc to (insertion location as alias)
-                    set targetPath to POSIX path of insLoc
+                    if (count of Finder windows) > 0 then
+                        set winTarget to (target of front Finder window as alias)
+                        set targetPath to POSIX path of winTarget
+                    end if
                 end try
+                if targetPath is "" then
+                    try
+                        set insLoc to (insertion location as alias)
+                        set targetPath to POSIX path of insLoc
+                    end try
+                end if
                 return {targetPath, selPaths}
             end tell
         end timeout

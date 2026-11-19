@@ -1595,7 +1595,7 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     await flushMicrotasks();
     expect(announcer.textContent).toContain("50%");
 
-    // Complete successfully -> renders checkmark SVG + completion subtitle
+    // Complete successfully -> renders checkmark SVG + completion subtitle (without location suffix for conversions)
     resolveConv({
       success: true,
       results: [{ source: "/tmp/spec.pdf", format: "PNG", outputs: ["/tmp/spec.png"], error: null }],
@@ -1603,7 +1603,7 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     });
     await flushMicrotasks();
     expect(root.querySelector(".wheel-check-svg")).not.toBeNull();
-    expect(root.querySelector(".wheel-hub-subtitle.is-success")?.textContent).toContain(
+    expect(root.querySelector(".wheel-hub-subtitle.is-success")?.textContent).toBe(
       t("en", "wheel.completed"),
     );
 
@@ -1873,6 +1873,69 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     expect(root.querySelector(".wheel-hub-title")).toBe(newHubTitle);
     expect(root.querySelector(".wheel-hub-subtitle")).toBe(newHubSub);
     expect(doc.activeElement).not.toBeNull();
+    });
+  });
+
+  test("WheelView: Create New File shows destination folder in success hub subtitle and clears it on next conversion", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    harness.setCommandOverride("execute_create_new", async (args) => ({
+      path: `${args.targetFolder || "/Users/demo/Desktop"}/Untitled.${args.kindId || "md"}`,
+      kindId: args.kindId,
+      revealed: true,
+      renameTriggered: false,
+      fallbackUsed: false,
+    }));
+
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    harness.emitEvent("wheel:state", {
+      mode: "new",
+      files: [],
+      isDrag: false,
+      compatibleFormats: [],
+      batchActions: [],
+      availabilityMessage: "",
+      family: null,
+      targetFolder: "/Users/demo/Desktop",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+
+    // Trigger slot 2 (Markdown) via key "3"
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "3" }));
+    await flushMicrotasks();
+
+    expect(root.querySelector(".wheel-check-svg")).not.toBeNull();
+    expect(root.querySelector(".wheel-hub-title")?.textContent).toBe("Untitled.md");
+    const successSub = root.querySelector(".wheel-hub-subtitle.is-success");
+    expect(successSub?.textContent).toContain(t("en", "wheel.completed"));
+    expect(successSub?.textContent).toContain("Desktop");
+    expect(successSub?.getAttribute("title")).toBe("/Users/demo/Desktop/Untitled.md");
+
+    // Reopen in Convert mode and verify successLocationLabel does not leak into conversion success hub
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/spec.pdf"],
+      isDrag: false,
+      compatibleFormats: ["PNG"],
+      batchActions: [],
+      availabilityMessage: "",
+      family: "pdf",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "1" }));
+    await flushMicrotasks();
+    expect(root.querySelector(".wheel-hub-subtitle.is-success")?.textContent).toBe(
+      t("en", "wheel.completed"),
+    );
     });
   });
 

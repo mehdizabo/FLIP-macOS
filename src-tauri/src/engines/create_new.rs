@@ -9,6 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
@@ -646,14 +647,11 @@ pub fn create_new_item(
         };
     }
 
-    let mut revealed = false;
-    let mut rename_triggered = false;
-    if reveal {
-        if let Ok(r) = bridge::finder_reveal(&[created_path.as_path()], prefs.auto_rename_on_create) {
-            revealed = r.ok;
-            rename_triggered = r.rename_triggered;
-        }
-    }
+    let (revealed, rename_triggered) = if reveal {
+        reveal_created_item(&created_path, prefs.auto_rename_on_create)
+    } else {
+        (false, false)
+    };
 
     log_event(
         "create_new.completed",
@@ -672,6 +670,51 @@ pub fn create_new_item(
         rename_triggered,
         fallback_used,
     })
+}
+
+fn reveal_created_item(path: &Path, rename: bool) -> (bool, bool) {
+    reveal_created_item_with(
+        path,
+        rename,
+        |p, r| bridge::finder_reveal(&[p], r),
+        |p| {
+            Command::new("/usr/bin/open")
+                .arg("-R")
+                .arg(p)
+                .status()
+                .is_ok_and(|status| status.success())
+        },
+    )
+}
+
+fn reveal_created_item_with<FBridge, FOpen>(
+    path: &Path,
+    rename: bool,
+    bridge_reveal: FBridge,
+    open_reveal: FOpen,
+) -> (bool, bool)
+where
+    FBridge: FnOnce(&Path, bool) -> Result<bridge::RevealResult, bridge::BridgeError>,
+    FOpen: FnOnce(&Path) -> bool,
+{
+    let fallback_reason = match bridge_reveal(path, rename) {
+        Ok(r) if r.ok => return (true, r.rename_triggered),
+        Ok(r) => r
+            .error
+            .unwrap_or_else(|| "finder_reveal returned ok=false".to_string()),
+        Err(err) => err.to_string(),
+    };
+
+    log_event(
+        "create_new.reveal_fallback",
+        Some(json!({
+            "path": path.to_string_lossy(),
+            "reason": fallback_reason,
+        })),
+    );
+
+    let revealed = open_reveal(path);
+    (revealed, false)
 }
 
 fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), EngineError> {
@@ -875,4 +918,80 @@ pub fn blank_pptx_bytes() -> Result<Vec<u8>, EngineError> {
         ("ppt/slideMasters/_rels/slideMaster1.xml.rels", master_rels),
         ("ppt/slideMasters/slideMaster1.xml", master1),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reveal_created_item_uses_bridge_when_ok_and_skips_fallback() {
+        let mut fallback_called = false;
+        let res = reveal_created_item_with(
+            Path::new("/tmp/Untitled.md"),
+            true,
+            |_, _| {
+                Ok(bridge::RevealResult {
+                    ok: true,
+                    rename_triggered: true,
+                    error: None,
+                })
+            },
+            |_| {
+                fallback_called = true;
+                true
+            },
+        );
+        assert_eq!(res, (true, true));
+        assert!(!fallback_called);
+    }
+
+    #[test]
+    fn reveal_created_item_falls_back_to_open_when_bridge_returns_not_ok() {
+        let mut fallback_path = None;
+        let res = reveal_created_item_with(
+            Path::new("/tmp/Untitled.md"),
+            true,
+            |_, _| {
+                Ok(bridge::RevealResult {
+                    ok: false,
+                    rename_triggered: false,
+                    error: Some("simulated reveal failure".into()),
+                })
+            },
+            |p| {
+                fallback_path = Some(p.to_path_buf());
+                true
+            },
+        );
+        assert_eq!(res, (true, false));
+        assert_eq!(fallback_path.as_deref(), Some(Path::new("/tmp/Untitled.md")));
+    }
+
+    #[test]
+    fn reveal_created_item_falls_back_to_open_when_bridge_errors() {
+        let mut fallback_called = false;
+        let res = reveal_created_item_with(
+            Path::new("/tmp/Untitled.txt"),
+            false,
+            |_, _| Err(bridge::BridgeError::CommandFailed("flip-macos-bridge".into(), "EXIT=137".into())),
+            |_| {
+                fallback_called = true;
+                true
+            },
+        );
+        assert_eq!(res, (true, false));
+        assert!(fallback_called);
+    }
+
+    #[test]
+    fn reveal_created_item_reports_false_when_both_bridge_and_fallback_fail() {
+        let res = reveal_created_item_with(
+            Path::new("/tmp/Untitled.txt"),
+            true,
+            |_, _| Err(bridge::BridgeError::BridgeNotFound),
+            |_| false,
+        );
+        assert_eq!(res, (false, false));
+    }
 }
