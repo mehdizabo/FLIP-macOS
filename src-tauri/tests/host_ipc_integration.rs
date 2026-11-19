@@ -438,6 +438,34 @@ fn bridge_and_wav_resolve_in_both_dev_and_app_bundle_layouts() {
         resolve_bridge_binary_from(Some(&fake_exe), &fake_manifest, None).unwrap(),
         sibling_bridge
     );
+
+    // 5. Non-bundle dev executable (e.g. target/debug/flip) prefers canonical native-bridge/bin binary
+    // over target/debug/flip-macos-bridge sibling
+    let dev_exe_dir = temp.path().join("src-tauri/target/debug");
+    fs::create_dir_all(&dev_exe_dir).unwrap();
+    let dev_exe = dev_exe_dir.join("flip");
+    let stale_target_bridge = dev_exe_dir.join("flip-macos-bridge");
+    fs::write(&dev_exe, b"dev-exe").unwrap();
+    fs::write(&stale_target_bridge, b"stale-target").unwrap();
+    assert_eq!(
+        resolve_bridge_binary_from(Some(&dev_exe), &manifest_dir(), None).unwrap(),
+        repo_root().join("native-bridge/bin/flip-macos-bridge")
+    );
+
+    // 6. Silent non-zero subprocess exit produces a non-empty diagnostic message instead of blank string
+    let err = flip_lib::engines::bridge::run_external_command(
+        Path::new("/usr/bin/false"),
+        &[],
+        None,
+        5,
+        None,
+    )
+    .unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("exited with status 1"),
+        "Expected exit status diagnostic, got: {err_str}"
+    );
 }
 
 #[test]

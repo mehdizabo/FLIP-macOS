@@ -103,6 +103,17 @@ fn probe_bridge_near_exe(exe: &Path) -> Option<PathBuf> {
     None
 }
 
+fn exe_is_in_app_bundle(exe: &Path) -> bool {
+    let Some(macos_dir) = exe.parent() else {
+        return false;
+    };
+    let Some(contents_dir) = macos_dir.parent() else {
+        return false;
+    };
+    macos_dir.file_name().and_then(|s| s.to_str()) == Some("MacOS")
+        && contents_dir.file_name().and_then(|s| s.to_str()) == Some("Contents")
+}
+
 pub fn resolve_bridge_binary_from(
     exe_path: Option<&Path>,
     manifest_dir: &Path,
@@ -115,28 +126,44 @@ pub fn resolve_bridge_binary_from(
         }
     }
 
+    let dev_bin = manifest_dir.parent().and_then(|repo_root| {
+        let candidate = repo_root
+            .join("native-bridge")
+            .join("bin")
+            .join("flip-macos-bridge");
+        candidate.is_file().then_some(candidate)
+    });
+
+    let canonical_exe = exe_path.and_then(|exe| {
+        std::fs::canonicalize(exe)
+            .ok()
+            .filter(|canon| canon != exe)
+    });
+    let in_bundle = exe_path.is_some_and(exe_is_in_app_bundle)
+        || canonical_exe.as_deref().is_some_and(exe_is_in_app_bundle);
+
+    // Outside an assembled `.app` bundle (`cargo tauri dev`, `cargo test`), prefer the canonical
+    // freshly-signed repo binary over `target/<profile>/flip-macos-bridge`, which Tauri builds
+    // overwrite in-place and macOS ARM64 vnode signature caching can SIGKILL (137).
+    if !in_bundle {
+        if let Some(ref dev) = dev_bin {
+            return Ok(dev.clone());
+        }
+    }
+
     if let Some(exe) = exe_path {
         if let Some(found) = probe_bridge_near_exe(exe) {
             return Ok(found);
         }
-        if let Ok(canon) = std::fs::canonicalize(exe) {
-            if canon != exe {
-                if let Some(found) = probe_bridge_near_exe(&canon) {
-                    return Ok(found);
-                }
-            }
+    }
+    if let Some(ref canon) = canonical_exe {
+        if let Some(found) = probe_bridge_near_exe(canon) {
+            return Ok(found);
         }
     }
 
-    // Development / cargo test path inside repo
-    if let Some(repo_root) = manifest_dir.parent() {
-        let dev_bin = repo_root
-            .join("native-bridge")
-            .join("bin")
-            .join("flip-macos-bridge");
-        if dev_bin.is_file() {
-            return Ok(dev_bin);
-        }
+    if let Some(dev) = dev_bin {
+        return Ok(dev);
     }
 
     Err(BridgeError::BridgeNotFound)
@@ -210,11 +237,31 @@ pub fn run_external_command(
     let stderr = err_handle.join().unwrap_or_default();
 
     if !status.success() {
-        let detail = if stderr.trim().is_empty() {
+        let mut detail = if stderr.trim().is_empty() {
             stdout.trim().to_string()
         } else {
             stderr.trim().to_string()
         };
+        if detail.is_empty() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(sig) = status.signal() {
+                    detail = format!("process terminated by signal {sig}");
+                } else if let Some(code) = status.code() {
+                    detail = format!("exited with status {code}");
+                } else {
+                    detail = "process exited unsuccessfully".to_string();
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                detail = match status.code() {
+                    Some(code) => format!("exited with status {code}"),
+                    None => "process exited unsuccessfully".to_string(),
+                };
+            }
+        }
         let snippet: String = detail.chars().take(800).collect();
         return Err(BridgeError::CommandFailed(label, snippet));
     }

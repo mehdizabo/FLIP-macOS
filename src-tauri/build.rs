@@ -1,4 +1,5 @@
 fn main() {
+    println!("cargo:rerun-if-changed=../native-bridge/bin/flip-macos-bridge");
     if let Ok(out_dir) = std::env::var("OUT_DIR") {
         let mut p = std::path::PathBuf::from(out_dir);
         // target/<profile>/build/<crate-hash>/out -> target/<profile>

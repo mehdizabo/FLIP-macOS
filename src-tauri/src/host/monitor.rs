@@ -338,13 +338,24 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
             }
         }
         "escape" => {
-            if let Ok(guard) = state.active_cancel.lock() {
-                if let Some(flag) = guard.as_ref() {
-                    flag.store(true, Ordering::Relaxed);
-                }
+            let is_open = state.wheel.lock().map(|g| g.is_open).unwrap_or(false);
+            if !is_open {
+                return;
             }
-            if let Some(win) = app.get_webview_window("wheel") {
-                let _ = win.emit("wheel:escape", json!({}));
+            if state.is_converting.load(Ordering::Relaxed) {
+                if let Ok(guard) = state.active_cancel.lock() {
+                    if let Some(flag) = guard.as_ref() {
+                        flag.store(true, Ordering::Relaxed);
+                    }
+                }
+                if let Some(win) = app.get_webview_window("wheel") {
+                    let _ = win.emit("wheel:escape", json!({}));
+                }
+            } else {
+                if let Some(win) = app.get_webview_window("wheel") {
+                    let _ = win.emit("wheel:escape", json!({}));
+                }
+                hide_wheel(app, state, "escape-key");
             }
         }
         _ => {}

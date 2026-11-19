@@ -340,7 +340,6 @@ final class MonitorController {
 
         if dragActive && (!leftDown || forceEndIfUp) {
             dragActive = false
-            wheelOpen = false
             lastEmittedX = -9999
             lastEmittedY = -9999
             let pos = currentCursorAndScreen()
@@ -466,9 +465,11 @@ final class MonitorController {
         let flags = event.flags
         let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
 
-        if type == .keyDown && keyCode == 53 && wheelOpen {
+        if type == .keyDown && keyCode == 53 {
             writeJSON(["event": "escape"])
-            return nil
+            if wheelOpen {
+                return nil
+            }
         }
 
         // 1) Idle Global Shortcut
@@ -562,7 +563,7 @@ final class MonitorController {
             return
         }
 
-        if event.type == .keyDown && event.keyCode == 53 && wheelOpen {
+        if event.type == .keyDown && event.keyCode == 53 {
             writeJSON(["event": "escape"])
             return
         }

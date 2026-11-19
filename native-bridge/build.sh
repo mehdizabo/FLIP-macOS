@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUT_DIR="$ROOT_DIR/bin"
 OUT_BIN="$OUT_DIR/flip-macos-bridge"
+TMP_OUT_BIN="$OUT_BIN.tmp.$$"
 
 mkdir -p "$OUT_DIR"
-rm -f "$OUT_BIN"
+rm -f "$TMP_OUT_BIN"
 
 SDK_PATH="$(xcrun --show-sdk-path)"
 
@@ -35,17 +36,22 @@ SDK_PATH="$(xcrun --show-sdk-path)"
   "$ROOT_DIR/Sources/MediaAndDocs.swift" \
   "$ROOT_DIR/Sources/Monitor.swift" \
   "$ROOT_DIR/Sources/main.swift" \
-  -o "$OUT_BIN"
+  -o "$TMP_OUT_BIN"
 
-chmod +x "$OUT_BIN"
-/usr/bin/codesign --force --sign - "$OUT_BIN"
+chmod +x "$TMP_OUT_BIN"
+/usr/bin/codesign --force --sign - "$TMP_OUT_BIN"
+rm -f "$OUT_BIN"
+mv -f "$TMP_OUT_BIN" "$OUT_BIN"
 
 for profile_dir in "$ROOT_DIR/../src-tauri/target/debug" "$ROOT_DIR/../src-tauri/target/release"; do
   if [ -d "$profile_dir" ]; then
+    TMP_PROFILE_BIN="$profile_dir/flip-macos-bridge.tmp.$$"
+    rm -f "$TMP_PROFILE_BIN"
+    cp "$OUT_BIN" "$TMP_PROFILE_BIN"
+    chmod +x "$TMP_PROFILE_BIN"
+    /usr/bin/codesign --force --sign - "$TMP_PROFILE_BIN"
     rm -f "$profile_dir/flip-macos-bridge"
-    cp "$OUT_BIN" "$profile_dir/flip-macos-bridge"
-    chmod +x "$profile_dir/flip-macos-bridge"
-    /usr/bin/codesign --force --sign - "$profile_dir/flip-macos-bridge"
+    mv -f "$TMP_PROFILE_BIN" "$profile_dir/flip-macos-bridge"
   fi
 done
 
