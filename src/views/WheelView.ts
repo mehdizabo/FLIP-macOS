@@ -151,11 +151,13 @@ export function mountWheelView(root: HTMLElement): () => void {
   let rawMode = false;
   let lastDomPointerMoveAt = 0;
   let lastMonitorPointerMoveAt = 0;
+  let lastReleaseHandledAt = 0;
   let lastMonitorPointerPos: { x: number; y: number } | null = null;
   let lastCanvasPointerPos: { x: number; y: number } | null = null;
   let lastSvgPointerDownAt = 0;
   let isHoveringControl = false;
   let renderedHubKey = "";
+  let renderedSlotsSignature = "";
   const handledPointerEvents = new WeakSet<Event>();
 
   // Static shell DOM
@@ -250,6 +252,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   const rawToggleLabelEl = root.querySelector<HTMLElement>("#wheel-raw-toggle-label")!;
 
   let sectorGroups: SVGGElement[] = [];
+  let sectorBodies: Array<SVGGElement | null> = [];
   let glassPucks: HTMLElement[] = [];
   let springField: WheelSpringField = createWheelSpringField([]);
   let physicsRaf: number | null = null;
@@ -460,12 +463,17 @@ export function mountWheelView(root: HTMLElement): () => void {
       const b = frame.bubbles[idx];
       if (!b) return;
       const puck = glassPucks[idx];
+      const body = sectorBodies[idx];
       const tx = `${b.tx.toFixed(2)}px`;
       const ty = `${b.ty.toFixed(2)}px`;
       const scale = b.scale.toFixed(4);
       const prox = b.prox.toFixed(3);
       const lightX = `${b.lightX.toFixed(1)}%`;
       const lightY = `${b.lightY.toFixed(1)}%`;
+      const proxRimPct = `${(b.prox * 65).toFixed(1)}%`;
+      const proxIconPct = `${(b.prox * 85).toFixed(1)}%`;
+      const proxEarPct = `${(18 + b.prox * 28).toFixed(1)}%`;
+      const proxSheenOpacity = (0.22 + b.prox * 0.78).toFixed(3);
       const targets: Element[] = puck ? [group, puck] : [group];
       for (const el of targets) {
         setCssVar(el, "--bubble-tx", tx);
@@ -474,6 +482,16 @@ export function mountWheelView(root: HTMLElement): () => void {
         setCssVar(el, "--bubble-prox", prox);
         setCssVar(el, "--light-x", lightX);
         setCssVar(el, "--light-y", lightY);
+        setCssVar(el, "--prox-rim-pct", proxRimPct);
+        setCssVar(el, "--prox-icon-pct", proxIconPct);
+        setCssVar(el, "--prox-ear-pct", proxEarPct);
+        setCssVar(el, "--prox-sheen-opacity", proxSheenOpacity);
+      }
+      if (puck && !puck.classList.contains("is-pulsing")) {
+        puck.style.transform = `translate3d(${tx}, ${ty}, 0) scale(${scale})`;
+      }
+      if (body && !group.classList.contains("is-pulsing")) {
+        body.style.transform = `translate(${tx}, ${ty}) scale(${scale})`;
       }
     });
     setCssVar(hubTetherEl, "--tether-angle", `${frame.tether.angleDeg.toFixed(2)}deg`);
@@ -498,7 +516,6 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   function schedulePhysicsLoop(): void {
     if (physicsRaf === null && !disposed && !closing && phase === "idle") {
-      physicsLastTs = 0;
       physicsRaf = window.requestAnimationFrame(physicsTick);
     }
   }
@@ -513,7 +530,11 @@ export function mountWheelView(root: HTMLElement): () => void {
       stopPhysicsLoop();
       return;
     }
-    const initial = springField.step(0.016);
+    const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+    const rawDt = physicsLastTs > 0 ? (now - physicsLastTs) / 1000 : 0.016;
+    const dt = rawDt < 0.002 ? 0.006 : Math.min(0.032, rawDt);
+    physicsLastTs = now;
+    const initial = springField.step(dt);
     applySpringFrame(initial);
     if (!initial.settled && physicsRaf === null && !disposed && !closing && phase === "idle") {
       schedulePhysicsLoop();
@@ -620,6 +641,7 @@ export function mountWheelView(root: HTMLElement): () => void {
 
     // Empty Convert placeholder ring when 0 files or incompatible
     if (slots.length === 0) {
+      renderedSlotsSignature = "";
       const placeholders = ["DOCX", "PDF", "MD", "HTML", "PNG", "JPG", "WEBP", "MP3"];
       glassLayerEl.innerHTML = placeholders
         .map((_, i) =>
@@ -647,12 +669,45 @@ export function mountWheelView(root: HTMLElement): () => void {
         )
         .join("");
       sectorGroups = [];
+      sectorBodies = [];
       springField = createWheelSpringField([]);
       stopPhysicsLoop();
       hubTetherEl.style.opacity = "0";
       return;
     }
 
+    const slotSignature = JSON.stringify({
+      mode: state.mode,
+      lang: l,
+      phase,
+      page,
+      totalPages,
+      convertingLabel: phase === "converting" ? activeActionLabel : "",
+      slots: slots.map((slot) =>
+        slot.kind === "item"
+          ? [
+              "item",
+              slot.item.id,
+              slot.item.label,
+              slot.item.enabled ? 1 : 0,
+              slot.item.accent,
+              slot.item.subtitle,
+            ]
+          : [slot.kind, slot.targetPage],
+      ),
+    });
+
+    if (
+      slotSignature === renderedSlotsSignature &&
+      sectorGroups.length === slots.length &&
+      glassPucks.length === slots.length &&
+      sectorBodies.length === slots.length
+    ) {
+      updateSectorHighlightClasses();
+      return;
+    }
+
+    renderedSlotsSignature = slotSignature;
     const count = slots.length;
     const puckMarkups: string[] = [];
     sectorsLayer.innerHTML = slots
@@ -726,6 +781,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     glassLayerEl.innerHTML = puckMarkups.join("");
     glassPucks = Array.from(glassLayerEl.querySelectorAll<HTMLElement>(".wheel-glass-puck"));
     sectorGroups = Array.from(sectorsLayer.querySelectorAll<SVGGElement>(".wheel-sector-group"));
+    sectorBodies = sectorGroups.map((g) => g.querySelector<SVGGElement>(".wheel-bubble-body"));
     const centers = slots.map((_, i) => {
       const pos = getSectorCenter(i, count, 124);
       return { cx: pos.x, cy: pos.y };
@@ -1061,18 +1117,20 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
   }
 
-  function setActiveIndex(nextIndex: number): void {
+  function setActiveIndex(nextIndex: number, options: { skipStep?: boolean } = {}): void {
     if (phase !== "idle") return;
     const bounded = nextIndex >= 0 && nextIndex < slots.length ? nextIndex : -1;
     if (bounded === activeIndex) return;
 
     activeIndex = bounded;
-    springField.setPointer(
-      currentPointerCanvas?.x ?? null,
-      currentPointerCanvas?.y ?? null,
-      activeIndex,
-    );
-    stepPhysicsImmediate();
+    if (!options.skipStep) {
+      springField.setPointer(
+        currentPointerCanvas?.x ?? null,
+        currentPointerCanvas?.y ?? null,
+        activeIndex,
+      );
+      stepPhysicsImmediate();
+    }
 
     if (bounded !== latchedDwellSlot) {
       latchedDwellSlot = -1;
@@ -1128,6 +1186,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearAutoClose();
     stopProgressLoop();
     stopPhysicsLoop();
+    lastCanvasPointerPos = null;
+    currentPointerCanvas = null;
     springField.snapToRest();
     hubTetherEl.style.opacity = "0";
     phase = "converting";
@@ -1270,6 +1330,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearAutoClose();
     stopProgressLoop();
     stopPhysicsLoop();
+    lastCanvasPointerPos = null;
+    currentPointerCanvas = null;
     springField.snapToRest();
     hubTetherEl.style.opacity = "0";
     conversionInFlight = false;
@@ -1371,8 +1433,12 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (!slot.item.enabled) return;
 
     const group = sectorGroups[idx];
+    const body = sectorBodies[idx];
+    const puck = glassPucks[idx];
+    if (body) body.style.transform = "";
+    if (puck) puck.style.transform = "";
     group?.classList.add("is-pulsing");
-    glassPucks[idx]?.classList.add("is-pulsing");
+    puck?.classList.add("is-pulsing");
 
     if (state.mode === "new") {
       void commitCreateNew(slot.item);
@@ -1381,26 +1447,50 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
   }
 
-  function requestDismiss(reason: string): void {
-    if (closing) return;
-    closing = true;
+  function resetTransientState(): void {
     conversionInFlight = false;
     isDragHovering = false;
     isHoveringControl = false;
     lastDomPointerMoveAt = 0;
     lastMonitorPointerMoveAt = 0;
+    lastReleaseHandledAt = 0;
     lastMonitorPointerPos = null;
     lastCanvasPointerPos = null;
+    currentPointerCanvas = null;
     lastDragCoords = null;
     latchedDwellSlot = -1;
-    updateCursorProximity(null, null);
-    stopPhysicsLoop();
-    springField.snapToRest();
-    hubTetherEl.style.opacity = "0";
     clearDwell();
     clearAutoClose();
     clearDismissTimer();
+    clearDiagResetTimer();
     stopProgressLoop();
+    stopPhysicsLoop();
+    springField.setPointer(null, null, -1);
+    springField.snapToRest();
+    hubTetherEl.style.opacity = "0";
+  }
+
+  function resetClosedLocally(): void {
+    closing = false;
+    phase = "idle";
+    activeIndex = -1;
+    resetTransientState();
+    shellEl.classList.remove("is-closing", "is-error-shake", "is-reopening");
+    progressLayer.style.display = "none";
+    for (const group of sectorGroups) {
+      group.classList.remove("is-pulsing");
+    }
+    for (const puck of glassPucks) {
+      puck.classList.remove("is-pulsing");
+    }
+    updateSectorHighlightClasses();
+    applySpringFrame(springField.step(0.016));
+  }
+
+  function requestDismiss(reason: string): void {
+    if (closing) return;
+    closing = true;
+    resetTransientState();
     shellEl.classList.add("is-closing");
     dismissTimer = window.setTimeout(() => {
       dismissTimer = null;
@@ -1447,11 +1537,12 @@ export function mountWheelView(root: HTMLElement): () => void {
     closing = false;
     openedAtMs = performance.now();
     conversionInFlight = false;
+    isHoveringControl = false;
+    lastDomPointerMoveAt = 0;
+    lastReleaseHandledAt = 0;
     clearDismissTimer();
     shellEl.classList.remove("is-closing", "is-error-shake");
     if (wasClosing) {
-      isHoveringControl = false;
-      lastDomPointerMoveAt = 0;
       shellEl.classList.add("is-reopening");
       void shellEl.offsetWidth;
       shellEl.classList.remove("is-reopening");
@@ -1489,6 +1580,14 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
 
     // Render immediately so stale sectors from an earlier mode/selection are cleared before async IPC fetches.
+    lastCanvasPointerPos = null;
+    currentPointerCanvas = null;
+    for (const group of sectorGroups) {
+      group.classList.remove("is-pulsing");
+    }
+    for (const puck of glassPucks) {
+      puck.classList.remove("is-pulsing");
+    }
     updateModePillUI();
     renderSectors();
     updateCursorProximity(next.originX, next.originY);
@@ -1620,39 +1719,49 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (
       target instanceof Element &&
       target.closest(
-        ".wheel-top-bar, .wheel-page-dots, .wheel-preview-dock, #wheel-hub, .wheel-hub-pill-btn",
+        ".wheel-top-bar, .wheel-page-dots, .wheel-preview-dock, .wheel-hub-pill-btn",
       )
     ) {
       isHoveringControl = true;
+      setActiveIndex(-1, { skipStep: true });
       updateCursorProximity(null, null);
-      setActiveIndex(-1);
       return;
     }
     isHoveringControl = false;
     if (slots.length === 0) return;
+    if (target instanceof Element && target.closest("#wheel-hub")) {
+      const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
+      currentPointerCanvas = pt;
+      lastCanvasPointerPos = pt;
+      setActiveIndex(-1, { skipStep: true });
+      updateCursorProximity(pt.x, pt.y);
+      return;
+    }
     const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
-    updateCursorProximity(pt.x, pt.y);
     const isDragging = state.isDrag || isDragHovering;
     const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
       previousIndex: activeIndex,
       innerDeadZoneRadius: 72,
       outerMaxRadius: isDragging ? WHEEL_OUTER_MAX_RADIUS : WHEEL_OUTER_RADIUS + 6,
     });
-    setActiveIndex(hit);
+    currentPointerCanvas = pt;
+    lastCanvasPointerPos = pt;
+    setActiveIndex(hit, { skipStep: true });
+    updateCursorProximity(pt.x, pt.y);
   };
 
   const onStagePointerLeave = () => {
     isHoveringControl = false;
     if (phase === "idle") {
+      setActiveIndex(-1, { skipStep: true });
       updateCursorProximity(null, null);
-      setActiveIndex(-1);
     }
   };
 
   const onSvgPointerLeave = () => {
     if (phase === "idle") {
+      setActiveIndex(-1, { skipStep: true });
       updateCursorProximity(null, null);
-      setActiveIndex(-1);
     }
   };
 
@@ -1875,11 +1984,13 @@ export function mountWheelView(root: HTMLElement): () => void {
     isDragHovering = true;
     if (slots.length > 0) {
       const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
-      updateCursorProximity(pt.x, pt.y);
       const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
         previousIndex: activeIndex,
       });
-      setActiveIndex(hit);
+      currentPointerCanvas = pt;
+      lastCanvasPointerPos = pt;
+      setActiveIndex(hit, { skipStep: true });
+      updateCursorProximity(pt.x, pt.y);
     }
   };
 
@@ -1887,8 +1998,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (isTauriRuntime()) return;
     if (!shellEl.contains(ev.relatedTarget as Node | null)) {
       isDragHovering = false;
+      setActiveIndex(-1, { skipStep: true });
       updateCursorProximity(null, null);
-      setActiveIndex(-1);
     }
   };
 
@@ -1963,33 +2074,46 @@ export function mountWheelView(root: HTMLElement): () => void {
       }),
       events.onWheelPointerMove((payload) => {
         if (disposed || closing || phase !== "idle" || slots.length === 0) return;
-        if (isHoveringControl) {
-          updateCursorProximity(null, null);
-          setActiveIndex(-1);
-          return;
-        }
         const isDragging = state.isDrag || isDragHovering;
-        if (!isDragging && performance.now() - lastDomPointerMoveAt < 350) {
+        const pt = windowLogicalToCanvasPoint(payload.localX, payload.localY);
+        if (!isDragging && isHoveringControl) {
+          const inTopBar = Boolean(topBarEl) && pt.y <= 44 && pt.x >= 90 && pt.x <= 350;
+          const nearCenterHubButton = Math.hypot(pt.x - WHEEL_CENTER, pt.y - WHEEL_CENTER) <= 58;
+          if (inTopBar || nearCenterHubButton) {
+            setActiveIndex(-1, { skipStep: true });
+            updateCursorProximity(null, null);
+            return;
+          }
+          isHoveringControl = false;
+        }
+        if (
+          !isDragging &&
+          lastDomPointerMoveAt > 0 &&
+          performance.now() - lastDomPointerMoveAt < 350
+        ) {
           return;
         }
         lastMonitorPointerMoveAt = performance.now();
         lastMonitorPointerPos = { x: payload.localX, y: payload.localY };
-        const pt = windowLogicalToCanvasPoint(payload.localX, payload.localY);
         if (!isDragging && topBarEl && pt.y <= 44 && pt.x >= 90 && pt.x <= 350) {
+          setActiveIndex(-1, { skipStep: true });
           updateCursorProximity(null, null);
-          setActiveIndex(-1);
           return;
         }
-        updateCursorProximity(pt.x, pt.y);
         const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
           previousIndex: activeIndex,
           innerDeadZoneRadius: 72,
           outerMaxRadius: isDragging ? WHEEL_OUTER_MAX_RADIUS : WHEEL_OUTER_RADIUS + 6,
         });
-        setActiveIndex(hit);
+        currentPointerCanvas = pt;
+        lastCanvasPointerPos = pt;
+        setActiveIndex(hit, { skipStep: true });
+        updateCursorProximity(pt.x, pt.y);
       }),
       events.onWheelPointerRelease((payload) => {
         if (disposed || closing || phase !== "idle" || conversionInFlight) return;
+        if (lastReleaseHandledAt > 0 && performance.now() - lastReleaseHandledAt < 250) return;
+        lastReleaseHandledAt = performance.now();
         isDragHovering = false;
         lastDragCoords = null;
         lastMonitorPointerPos = { x: payload.localX, y: payload.localY };
@@ -2011,10 +2135,12 @@ export function mountWheelView(root: HTMLElement): () => void {
         }
         // If inside dead-zone (r < 68) in non-drag mode, leave wheel open per UX spec
       }),
-      events.onWheelEscape(() => {
+      events.onWheelEscape((payload) => {
         if (disposed) return;
         if (phase === "converting") {
           void cancelConversion();
+        } else if (payload && payload.alreadyHidden === true) {
+          resetClosedLocally();
         } else {
           requestDismiss("escape-event");
         }
@@ -2085,11 +2211,13 @@ export function mountWheelView(root: HTMLElement): () => void {
             }
             const coords = lastDragCoords ?? { x: lx, y: ly };
             const pt = windowLogicalToCanvasPoint(coords.x, coords.y);
-            updateCursorProximity(pt.x, pt.y);
             const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
               previousIndex: activeIndex,
             });
-            setActiveIndex(hit);
+            currentPointerCanvas = pt;
+            lastCanvasPointerPos = pt;
+            setActiveIndex(hit, { skipStep: true });
+            updateCursorProximity(pt.x, pt.y);
           })();
         },
         onOver: (lx, ly) => {
@@ -2100,14 +2228,18 @@ export function mountWheelView(root: HTMLElement): () => void {
             return;
           }
           const pt = windowLogicalToCanvasPoint(lx, ly);
-          updateCursorProximity(pt.x, pt.y);
           const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
             previousIndex: activeIndex,
           });
-          setActiveIndex(hit);
+          currentPointerCanvas = pt;
+          lastCanvasPointerPos = pt;
+          setActiveIndex(hit, { skipStep: true });
+          updateCursorProximity(pt.x, pt.y);
         },
         onDrop: (paths, lx, ly) => {
           if (disposed || closing || phase !== "idle" || conversionInFlight) return;
+          if (lastReleaseHandledAt > 0 && performance.now() - lastReleaseHandledAt < 250) return;
+          lastReleaseHandledAt = performance.now();
           isDragHovering = false;
           lastDragCoords = null;
           void (async () => {
@@ -2146,8 +2278,8 @@ export function mountWheelView(root: HTMLElement): () => void {
           if (disposed || state.isDrag) return;
           isDragHovering = false;
           lastDragCoords = null;
+          setActiveIndex(-1, { skipStep: true });
           updateCursorProximity(null, null);
-          setActiveIndex(-1);
         },
       }),
     ]);

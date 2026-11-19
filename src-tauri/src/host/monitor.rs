@@ -90,6 +90,11 @@ fn parse_string_list(val: &Value, key: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn resync_monitor_wheel_state(state: &HostState) {
+    let cur_open = state.wheel.lock().map(|g| g.is_open).unwrap_or(false);
+    state.send_monitor_command(json!({ "cmd": "wheel_state", "open": cur_open }));
+}
+
 fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
     let Ok(val) = serde_json::from_str::<Value>(raw) else {
         return;
@@ -197,10 +202,12 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
         }
         "trigger_drag_wheel" => {
             if state.is_converting.load(Ordering::Relaxed) {
+                resync_monitor_wheel_state(state);
                 return;
             }
             let files = parse_string_list(&val, "files");
             if files.is_empty() {
+                resync_monitor_wheel_state(state);
                 return;
             }
             let x = val.get("x").and_then(|v| v.as_f64());
@@ -209,7 +216,7 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
             let app_h = app.clone();
             let state_arc = Arc::clone(state);
             std::thread::spawn(move || {
-                let _ = present_wheel_at(
+                if present_wheel_at(
                     &app_h,
                     &state_arc,
                     "convert",
@@ -219,7 +226,11 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
                     x,
                     y,
                     screen.as_ref(),
-                );
+                )
+                .is_err()
+                {
+                    resync_monitor_wheel_state(&state_arc);
+                }
             });
         }
         "trigger_idle_wheel" => {
@@ -349,11 +360,11 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
                     }
                 }
                 if let Some(win) = app.get_webview_window("wheel") {
-                    let _ = win.emit("wheel:escape", json!({}));
+                    let _ = win.emit("wheel:escape", json!({ "alreadyHidden": false }));
                 }
             } else {
                 if let Some(win) = app.get_webview_window("wheel") {
-                    let _ = win.emit("wheel:escape", json!({}));
+                    let _ = win.emit("wheel:escape", json!({ "alreadyHidden": true }));
                 }
                 hide_wheel(app, state, "escape-key");
             }

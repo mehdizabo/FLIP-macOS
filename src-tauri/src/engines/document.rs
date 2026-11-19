@@ -530,6 +530,24 @@ pub fn html_to_markdown(html_input: &str) -> String {
     }
 }
 
+pub fn html_to_markdown_with_fallback(html_input: &str, fallback_title: &str) -> String {
+    let md = html_to_markdown(html_input);
+    if !md.trim().is_empty() {
+        return md;
+    }
+    if html_input.trim().is_empty() {
+        return String::new();
+    }
+    let heading = resolve_html_fallback_heading(html_input, fallback_title);
+    let fence = if html_input.contains("```") { "~~~~" } else { "```" };
+    let body = html_input.trim();
+    if let Some(title) = heading {
+        format!("# {title}\n\n{fence}html\n{body}\n{fence}\n")
+    } else {
+        format!("{fence}html\n{body}\n{fence}\n")
+    }
+}
+
 pub fn convert_via_pandoc(
     input: &Path,
     from_fmt: &str,
@@ -856,6 +874,23 @@ pub fn html_to_plain_text(html_input: &str) -> String {
     }
 }
 
+pub fn html_to_plain_text_with_fallback(html_input: &str, fallback_title: &str) -> String {
+    let txt = html_to_plain_text(html_input);
+    if !txt.trim().is_empty() {
+        return txt;
+    }
+    if html_input.trim().is_empty() {
+        return String::new();
+    }
+    let heading = resolve_html_fallback_heading(html_input, fallback_title);
+    let body = html_input.trim();
+    if let Some(title) = heading {
+        format!("{title}\n\n{body}\n")
+    } else {
+        format!("{body}\n")
+    }
+}
+
 fn find_tag_range_case_insensitive(input: &str, open_prefix: &str, close_tag: &str) -> Option<(usize, usize)> {
     let lower = input.to_ascii_lowercase();
     let bytes = lower.as_bytes();
@@ -924,20 +959,118 @@ fn find_tag_range_case_insensitive(input: &str, open_prefix: &str, close_tag: &s
                 }
             }
         }
-        i += 1;
+        let ch = lower[i..].chars().next().unwrap();
+        i += ch.len_utf8();
     }
     None
 }
 
-fn extract_html_title(html: &str) -> Option<String> {
-    let (s, e) = find_tag_range_case_insensitive(html, "<title", "</title>")?;
-    let raw = decode_html_entities(&html[s..e]);
-    let trimmed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
+pub fn extract_html_title(html_input: &str) -> Option<String> {
+    let lower = html_input.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            if lower[i..].starts_with("<!--") {
+                if let Some(end_rel) = lower[i + 4..].find("-->") {
+                    i = i + 4 + end_rel + 3;
+                    continue;
+                }
+                return None;
+            }
+            if lower[i..].starts_with("<script")
+                && matches!(bytes.get(i + 7), Some(b) if *b == b'>' || b.is_ascii_whitespace())
+            {
+                if let Some(gt_rel) = lower[i + 7..].find('>') {
+                    let after_open = i + 7 + gt_rel + 1;
+                    i = find_raw_close_tag(&lower, after_open, "script").unwrap_or(bytes.len());
+                    continue;
+                }
+            }
+            if lower[i..].starts_with("<style")
+                && matches!(bytes.get(i + 6), Some(b) if *b == b'>' || b.is_ascii_whitespace())
+            {
+                if let Some(gt_rel) = lower[i + 6..].find('>') {
+                    let after_open = i + 6 + gt_rel + 1;
+                    i = find_raw_close_tag(&lower, after_open, "style").unwrap_or(bytes.len());
+                    continue;
+                }
+            }
+            if lower[i..].starts_with("<title")
+                && matches!(bytes.get(i + 6), Some(b) if *b == b'>' || b.is_ascii_whitespace())
+            {
+                let mut j = i + 6;
+                let mut quote: Option<u8> = None;
+                while j < bytes.len() {
+                    let b = bytes[j];
+                    if let Some(q) = quote {
+                        if b == q {
+                            quote = None;
+                        }
+                    } else if b == b'"' || b == b'\'' {
+                        quote = Some(b);
+                    } else if b == b'>' {
+                        break;
+                    }
+                    j += 1;
+                }
+                if j >= bytes.len() {
+                    return None;
+                }
+                let open_end = j + 1;
+                if has_xml_self_closing_slash(&html_input[i + 1..j]) {
+                    i = open_end;
+                    continue;
+                }
+                let mut close_search = open_end;
+                let mut close_start: Option<usize> = None;
+                while let Some(rel) = lower[close_search..].find("</title") {
+                    let candidate = close_search + rel;
+                    let after = candidate + "</title".len();
+                    let next_b = bytes.get(after).copied();
+                    if matches!(next_b, Some(b) if b == b'>' || b.is_ascii_whitespace()) {
+                        if lower[after..].contains('>') {
+                            close_start = Some(candidate);
+                        }
+                        break;
+                    }
+                    close_search = after;
+                }
+                let close_idx = close_start?;
+                let raw_inner = &html_input[open_end..close_idx];
+                let mut inner_text = String::with_capacity(raw_inner.len());
+                let mut rest = raw_inner;
+                while let Some(lt) = rest.find('<') {
+                    inner_text.push_str(&rest[..lt]);
+                    if let Some(gt) = rest[lt + 1..].find('>') {
+                        rest = &rest[lt + 1 + gt + 1..];
+                    } else {
+                        rest = "";
+                        break;
+                    }
+                }
+                inner_text.push_str(rest);
+                let decoded = decode_html_entities(&inner_text);
+                let cleaned = decoded.split_whitespace().collect::<Vec<_>>().join(" ");
+                return if cleaned.is_empty() {
+                    None
+                } else {
+                    Some(cleaned)
+                };
+            }
+        }
+        let ch = lower[i..].chars().next().unwrap();
+        i += ch.len_utf8();
     }
+    None
+}
+
+fn resolve_html_fallback_heading(html_input: &str, fallback_title: &str) -> Option<String> {
+    extract_html_title(html_input).or_else(|| {
+        let t = fallback_title.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    })
 }
 
 fn extract_html_body_slice(html: &str) -> &str {
@@ -5566,7 +5699,14 @@ pub fn convert(
         if tools.pandoc.is_some() && matches!(prepared_ext.as_str(), "html" | "htm" | "docx" | "odt" | "rtf") {
             let from_pd = if prepared_ext == "htm" { "html" } else { prepared_ext.as_str() };
             match convert_via_pandoc(&prepared_input, from_pd, "MD", &output, staging_dir, tools, cancel) {
-                Ok(()) => return Ok(vec![output]),
+                Ok(()) => {
+                    let has_content = fs::read_to_string(&output)
+                        .map(|s| !s.trim().is_empty())
+                        .unwrap_or(false);
+                    if has_content || !matches!(prepared_ext.as_str(), "html" | "htm") {
+                        return Ok(vec![output]);
+                    }
+                }
                 Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
                 Err(_) => {}
             }
@@ -5583,8 +5723,8 @@ pub fn convert(
             bridge::convert_doc(&prepared_input, "HTML", &tmp_html, &prefs.pdf_page_size, Some(cancel))?;
             tmp_html
         };
-        let html_raw = fs::read_to_string(&html_path)?;
-        let md = html_to_markdown(&html_raw);
+        let html_raw = read_html_file_safe(&html_path, MAX_HTML_READ_BYTES)?;
+        let md = html_to_markdown_with_fallback(&html_raw, source_title);
         fs::write(&output, md)?;
         return Ok(vec![output]);
     }
@@ -5606,6 +5746,36 @@ pub fn convert(
             fs::write(&output, plain_text_to_html(title, &txt))?;
             return Ok(vec![output]);
         }
+    }
+
+    if matches!(prepared_ext.as_str(), "html" | "htm") && fmt == "TXT" {
+        let bridge_err = match bridge::convert_doc(
+            &prepared_input,
+            &fmt,
+            &output,
+            &prefs.pdf_page_size,
+            Some(cancel),
+        ) {
+            Ok(_) => None,
+            Err(bridge::BridgeError::Cancelled) => return Err(EngineError::Cancelled),
+            Err(err) => Some(err),
+        };
+        let has_content = fs::read_to_string(&output)
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if bridge_err.is_none() && has_content {
+            return Ok(vec![output]);
+        }
+        let html_raw = read_html_file_safe(&prepared_input, MAX_HTML_READ_BYTES)?;
+        if !html_raw.trim().is_empty() {
+            let txt = html_to_plain_text_with_fallback(&html_raw, source_title);
+            fs::write(&output, txt)?;
+            return Ok(vec![output]);
+        }
+        if let Some(err) = bridge_err {
+            return Err(err.into());
+        }
+        return Ok(vec![output]);
     }
 
     bridge::convert_doc(
@@ -6124,5 +6294,98 @@ Intro before quote:
         assert!(back_html.contains("Two"), "back_html={back_html}");
         assert!(back_html.contains("<code>code()</code>"), "back_html={back_html}");
         assert!(back_html.contains("Sub"), "back_html={back_html}");
+    }
+
+    #[test]
+    fn extract_html_title_strips_inner_tags_decodes_entities_and_collapses_whitespace() {
+        let html = r#"<!DOCTYPE html>
+<html>
+<head>
+  <!-- <title>Commented Out</title> -->
+  <TITLE data-kind="demo">  3D <span>Snow</span>
+  Sphere &amp; Scene  </TITLE >
+</head>
+</html>"#;
+        assert_eq!(
+            extract_html_title(html),
+            Some("3D Snow Sphere & Scene".to_string())
+        );
+        assert_eq!(extract_html_title("<html><head><title>   </title></head></html>"), None);
+        assert_eq!(extract_html_title("<html><head><title>Unclosed"), None);
+        assert_eq!(extract_html_title("<html><body>No title</body></html>"), None);
+    }
+
+    #[test]
+    fn html_fallbacks_preserve_script_canvas_html_and_do_not_wrap_prose_html() {
+        let spa_html = r#"<!DOCTYPE html><html><head><title>3D Snow Sphere &amp; Scene</title><style>canvas{display:block;}</style></head><body><div id="canvas-container"></div><script type="module">console.log("snow");</script></body></html>"#;
+
+        let md = html_to_markdown_with_fallback(spa_html, "snow_sphere");
+        assert!(md.starts_with("# 3D Snow Sphere & Scene\n\n```html\n"), "md={md}");
+        assert!(md.contains(spa_html), "md={md}");
+        assert!(md.ends_with("\n```\n"), "md={md}");
+
+        let txt = html_to_plain_text_with_fallback(spa_html, "snow_sphere");
+        assert!(txt.starts_with("3D Snow Sphere & Scene\n\n"), "txt={txt}");
+        assert!(txt.contains(spa_html), "txt={txt}");
+
+        let backtick_html = r#"<html><body><script>const s = "```";</script></body></html>"#;
+        let fenced_md = html_to_markdown_with_fallback(backtick_html, "fallback_name");
+        assert!(fenced_md.starts_with("# fallback_name\n\n~~~~html\n"), "fenced_md={fenced_md}");
+        assert!(fenced_md.ends_with("\n~~~~\n"), "fenced_md={fenced_md}");
+
+        assert_eq!(html_to_markdown_with_fallback("   \n\t ", "empty"), "");
+        assert_eq!(html_to_plain_text_with_fallback("   \n\t ", "empty"), "");
+
+        let prose_html = "<html><head><title>Ignored</title></head><body><h1>Hello</h1><p>World</p></body></html>";
+        let prose_md = html_to_markdown_with_fallback(prose_html, "prose");
+        assert_eq!(prose_md, html_to_markdown(prose_html));
+        assert!(!prose_md.contains("```html"), "prose_md={prose_md}");
+        assert!(!prose_md.contains("Ignored"), "prose_md={prose_md}");
+
+        let prose_txt = html_to_plain_text_with_fallback(prose_html, "prose");
+        assert_eq!(prose_txt, html_to_plain_text(prose_html));
+        assert!(!prose_txt.contains("<html>"), "prose_txt={prose_txt}");
+        assert!(!prose_txt.contains("Ignored"), "prose_txt={prose_txt}");
+    }
+
+    #[test]
+    fn convert_script_only_html_to_md_and_txt_succeeds_and_passes_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("snow_sphere.html");
+        let spa_html = r#"<!DOCTYPE html><html><head><title>3D Snow Sphere &amp; Scene</title><style>canvas{display:block;}</style></head><body><div id="canvas-container"></div><script type="module">console.log("snow");</script></body></html>"#;
+        fs::write(&src_path, spa_html).unwrap();
+
+        let prefs = AppPreferences::default();
+        let tools = DetectedTools {
+            ffmpeg: None,
+            ffprobe: None,
+            pandoc: None,
+            bridge: None,
+            pages: false,
+            numbers: false,
+            keynote: false,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let md_stage = tempfile::tempdir().unwrap();
+        let md_outputs = convert(&src_path, "MD", md_stage.path(), &prefs, &tools, &cancel, &|_| {})
+            .expect("script-only HTML -> MD should succeed");
+        assert_eq!(md_outputs.len(), 1);
+        crate::engines::validate_output(&md_outputs[0], "MD")
+            .expect("MD output should pass validation");
+        let md_content = fs::read_to_string(&md_outputs[0]).unwrap();
+        assert!(md_content.contains("# 3D Snow Sphere & Scene"), "md={md_content}");
+        assert!(md_content.contains("```html"), "md={md_content}");
+        assert!(md_content.contains("console.log(\"snow\")"), "md={md_content}");
+
+        let txt_stage = tempfile::tempdir().unwrap();
+        let txt_outputs = convert(&src_path, "TXT", txt_stage.path(), &prefs, &tools, &cancel, &|_| {})
+            .expect("script-only HTML -> TXT should succeed");
+        assert_eq!(txt_outputs.len(), 1);
+        crate::engines::validate_output(&txt_outputs[0], "TXT")
+            .expect("TXT output should pass validation");
+        let txt_content = fs::read_to_string(&txt_outputs[0]).unwrap();
+        assert!(txt_content.contains("3D Snow Sphere & Scene"), "txt={txt_content}");
+        assert!(txt_content.contains("console.log(\"snow\")"), "txt={txt_content}");
     }
 }

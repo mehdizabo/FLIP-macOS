@@ -66,8 +66,12 @@ final class MonitorController {
 
     private let dragPasteboard = NSPasteboard(name: .drag)
     private var lastChangeCount: Int = -1
+    private var pendingChangeCount: Int = -1
+    private var pendingEmptyRetries: Int = 0
+    private var pendingEmptyStart: TimeInterval = 0
     private var dragActive = false
     private var dragFiles: [String] = []
+    private var dragWheelTriggeredForDrag = false
     private var dragKeyHeld = false
     private var dragKeyConsumed = false
     private var mouseTriggerHeld = false
@@ -169,6 +173,7 @@ final class MonitorController {
                         let nextOpen = (json["open"] as? Bool) ?? false
                         self.wheelOpen = nextOpen
                         if !nextOpen {
+                            self.dragWheelTriggeredForDrag = false
                             self.lastEmittedX = -9999
                             self.lastEmittedY = -9999
                         } else {
@@ -202,7 +207,8 @@ final class MonitorController {
     }
 
     private func triggerDragWheelIfNeeded(files: [String]) {
-        guard !wheelOpen, !files.isEmpty else { return }
+        guard !dragWheelTriggeredForDrag, !files.isEmpty else { return }
+        dragWheelTriggeredForDrag = true
         wheelOpen = true
         let pos = currentCursorAndScreen()
         lastEmittedX = pos.x
@@ -258,6 +264,11 @@ final class MonitorController {
             candidateURLs = urls
         } else if let names = dragPasteboard.propertyList(forType: NSPasteboard.PasteboardType("NSFilenamesPboardType")) as? [String], !names.isEmpty {
             candidateURLs = names.map { URL(fileURLWithPath: $0) }
+        } else if let items = dragPasteboard.pasteboardItems, !items.isEmpty {
+            candidateURLs = items.compactMap { item in
+                guard let str = item.string(forType: .fileURL) else { return nil }
+                return URL(string: str)
+            }
         }
 
         if candidateURLs.isEmpty || candidateURLs.count > 128 {
@@ -269,11 +280,13 @@ final class MonitorController {
         result.reserveCapacity(candidateURLs.count)
 
         for url in candidateURLs {
-            guard url.isFileURL else { continue }
-            let path = url.path
+            let nsURL = url as NSURL
+            let resolvedURL = nsURL.isFileReferenceURL() ? (nsURL.filePathURL ?? url) : url
+            guard resolvedURL.isFileURL else { continue }
+            let path = resolvedURL.path
             guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { continue }
 
-            let rv = try? url.resourceValues(forKeys: [
+            let rv = try? resolvedURL.resourceValues(forKeys: [
                 .isDirectoryKey,
                 .isPackageKey,
                 .isSymbolicLinkKey,
@@ -288,7 +301,7 @@ final class MonitorController {
             }
             let isDir = rv?.isDirectory ?? false
             let isPkg = (rv?.isPackage ?? false) || NSWorkspace.shared.isFilePackage(atPath: path)
-            let ext = url.pathExtension.lowercased()
+            let ext = resolvedURL.pathExtension.lowercased()
             if isDir && !(isPkg && ["pages", "numbers", "key"].contains(ext)) {
                 continue
             }
@@ -303,19 +316,25 @@ final class MonitorController {
         return result
     }
 
-    private func checkDragState(forceEndIfUp: Bool = false) {
+    private func checkDragState(forceEndIfUp: Bool = false, forceReadPasteboard: Bool = false) {
         let leftDown = (NSEvent.pressedMouseButtons & 1) != 0
         let count = dragPasteboard.changeCount
 
-        if count != lastChangeCount {
-            if leftDown && !forceEndIfUp {
-                lastChangeCount = count
+        if leftDown && !forceEndIfUp {
+            let shouldRead = (count != lastChangeCount) || (forceReadPasteboard && pendingChangeCount == count)
+            if shouldRead {
                 let files = readDragFileURLs()
                 if !files.isEmpty {
+                    lastChangeCount = count
+                    pendingChangeCount = -1
+                    pendingEmptyRetries = 0
+                    pendingEmptyStart = 0
+
                     let changed = !dragActive || files != dragFiles
                     dragActive = true
                     dragFiles = files
                     if changed {
+                        dragWheelTriggeredForDrag = false
                         let pos = currentCursorAndScreen()
                         writeJSON([
                             "event": "drag_start",
@@ -324,31 +343,63 @@ final class MonitorController {
                             "y": pos.y,
                             "screen": pos.screen.toDict()
                         ])
-                        if dragKeyHeld && !dragKeyConsumed && !wheelOpen {
+                        if dragKeyHeld && !dragKeyConsumed {
                             dragKeyConsumed = true
                             triggerDragWheelIfNeeded(files: files)
                         }
                     }
-                } else if dragActive {
-                    dragActive = false
-                    dragFiles = []
+                } else {
+                    if dragActive {
+                        dragActive = false
+                        dragFiles = []
+                        dragWheelTriggeredForDrag = false
+                    }
+                    // Defer committing lastChangeCount so 120Hz drag events don't lock out
+                    // Finder's ~400ms async pasteboard population window.
+                    let now = ProcessInfo.processInfo.systemUptime
+                    if pendingChangeCount != count {
+                        pendingChangeCount = count
+                        pendingEmptyRetries = 1
+                        pendingEmptyStart = now
+                    } else {
+                        pendingEmptyRetries += 1
+                    }
+                    if pendingEmptyRetries >= 25 && (now - pendingEmptyStart) >= 0.40 {
+                        lastChangeCount = count
+                        pendingChangeCount = -1
+                        pendingEmptyRetries = 0
+                        pendingEmptyStart = 0
+                    }
                 }
-            } else if !dragActive && readDragFileURLs().isEmpty {
-                lastChangeCount = count
             }
-        }
-
-        if dragActive && (!leftDown || forceEndIfUp) {
-            dragActive = false
-            lastEmittedX = -9999
-            lastEmittedY = -9999
-            let pos = currentCursorAndScreen()
-            writeJSON([
-                "event": "drag_end",
-                "x": pos.x,
-                "y": pos.y
-            ])
-            dragFiles = []
+        } else {
+            if !dragActive {
+                pendingChangeCount = -1
+                pendingEmptyRetries = 0
+                pendingEmptyStart = 0
+                if count != lastChangeCount {
+                    lastChangeCount = count
+                }
+            }
+            if dragActive && (!leftDown || forceEndIfUp) {
+                dragActive = false
+                dragWheelTriggeredForDrag = false
+                pendingChangeCount = -1
+                pendingEmptyRetries = 0
+                pendingEmptyStart = 0
+                lastEmittedX = -9999
+                lastEmittedY = -9999
+                let pos = currentCursorAndScreen()
+                writeJSON([
+                    "event": "drag_end",
+                    "x": pos.x,
+                    "y": pos.y
+                ])
+                dragFiles = []
+                if count != lastChangeCount {
+                    lastChangeCount = count
+                }
+            }
         }
     }
 
@@ -497,7 +548,7 @@ final class MonitorController {
                     }
                     dragKeyHeld = true
                     if !dragActive {
-                        checkDragState()
+                        checkDragState(forceReadPasteboard: true)
                     }
                     if dragActive {
                         dragKeyConsumed = true
@@ -520,13 +571,14 @@ final class MonitorController {
             if pressed && !dragKeyHeld {
                 dragKeyHeld = true
                 if !dragActive {
-                    checkDragState()
+                    checkDragState(forceReadPasteboard: true)
                 }
                 if dragActive {
                     triggerDragWheelIfNeeded(files: dragFiles)
                 }
             } else if !pressed {
                 dragKeyHeld = false
+                dragKeyConsumed = false
             }
         }
 
@@ -589,26 +641,28 @@ final class MonitorController {
                 }
                 dragKeyHeld = true
                 if !dragActive {
-                    checkDragState()
+                    checkDragState(forceReadPasteboard: true)
                 }
                 if dragActive {
                     triggerDragWheelIfNeeded(files: dragFiles)
                 }
             } else if event.type == .keyUp {
                 dragKeyHeld = false
+                dragKeyConsumed = false
             }
         } else if event.type == .flagsChanged, let mod = dragModifierOnly {
             let pressed = modifierActive(mod, nsFlags: event.modifierFlags)
             if pressed && !dragKeyHeld {
                 dragKeyHeld = true
                 if !dragActive {
-                    checkDragState()
+                    checkDragState(forceReadPasteboard: true)
                 }
                 if dragActive {
                     triggerDragWheelIfNeeded(files: dragFiles)
                 }
             } else if !pressed {
                 dragKeyHeld = false
+                dragKeyConsumed = false
             }
         }
     }

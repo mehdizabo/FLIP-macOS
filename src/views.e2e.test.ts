@@ -2170,6 +2170,204 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     });
   });
 
+  test("WheelView: reopen via wheel:state resets isHoveringControl and populates WKWebView CSS vars and inline transforms", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    // Hover #wheel-raw-toggle via DOM pointermove -> sets isHoveringControl = true and clears active sector
+    const rawBtn = root.querySelector("#wheel-raw-toggle") as unknown as ShimElement;
+    rawBtn.dispatchEvent(
+      new PointerEvent("pointermove", { bubbles: true, clientX: 280, clientY: 20 }),
+    );
+    await flushMicrotasks();
+    expect(root.querySelector(".wheel-sector-group.is-active")).toBeNull();
+
+    // Reopen via wheel:state in drag mode WITHOUT emitting escape or calling dismiss
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/spec.pdf"],
+      isDrag: true,
+      compatibleFormats: ["PNG", "JPG", "WEBP", "HEIC", "TIFF", "TXT", "MD", "HTML"],
+      batchActions: [],
+      availabilityMessage: "",
+      family: "pdf",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+
+    // Emit wheel:pointer-move at slot 2 center (344, 220)
+    harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
+    await flushMicrotasks();
+
+    const groups = Array.from(root.querySelectorAll<HTMLElement>(".wheel-sector-group"));
+    const pucks = Array.from(root.querySelectorAll<HTMLElement>("#wheel-glass-layer .wheel-glass-puck"));
+    const bodies = Array.from(root.querySelectorAll<HTMLElement>(".wheel-sector-group .wheel-bubble-body"));
+
+    expect(groups[2].classList.contains("is-active")).toBe(true);
+    expect(pucks[2].classList.contains("is-active")).toBe(true);
+    for (const el of [groups[2], pucks[2]]) {
+      expect(Number(el.style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+      const rimPct = el.style.getPropertyValue("--prox-rim-pct");
+      const iconPct = el.style.getPropertyValue("--prox-icon-pct");
+      expect(rimPct).toMatch(/^\d+\.\d%$/);
+      expect(iconPct).toMatch(/^\d+\.\d%$/);
+      expect(Number.parseFloat(rimPct)).toBeGreaterThan(0);
+      expect(Number.parseFloat(iconPct)).toBeGreaterThan(0);
+    }
+    expect(pucks[2].style.transform).toMatch(/^translate3d\([^)]+\)\s+scale\([^)]+\)$/);
+    expect(bodies[2].style.transform).toMatch(/^translate\([^)]+\)\s+scale\([^)]+\)$/);
+    });
+  });
+
+  test("WheelView: wheel:escape with alreadyHidden=true resets locally without calling dismiss_wheel, while plain escape still dismisses", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const pendingRafIds = new Set<number>();
+    const origRaf = win.requestAnimationFrame;
+    const origCaf = win.cancelAnimationFrame;
+    win.requestAnimationFrame = (cb: (t: number) => void) => {
+      const id = origRaf((ts: number) => {
+        pendingRafIds.delete(id);
+        cb(ts);
+      });
+      pendingRafIds.add(id);
+      return id;
+    };
+    win.cancelAnimationFrame = (id: number) => {
+      pendingRafIds.delete(id);
+      origCaf(id);
+    };
+
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    const shellEl = root.querySelector<HTMLElement>("#wheel-shell")!;
+    const hubTetherEl = root.querySelector<HTMLElement>("#wheel-hub-tether")!;
+
+    // Trigger active pointer move so tether opacity > 0 and physics rAF is scheduled
+    harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
+    expect(Number(hubTetherEl.style.opacity || "0")).toBeGreaterThan(0);
+    expect(pendingRafIds.size).toBeGreaterThan(0);
+
+    // Emit wheel:escape with alreadyHidden: true -> resets locally without scheduling dismiss_wheel
+    harness.emitEvent("wheel:escape", { alreadyHidden: true });
+    await new Promise<void>((r) => globalThis.setTimeout(r, 150));
+    await flushMicrotasks();
+
+    expect(Number(hubTetherEl.style.opacity || "0")).toBe(0);
+    expect(pendingRafIds.size).toBe(0);
+    expect(shellEl.classList.contains("is-closing")).toBe(false);
+    expect(harness.calls.filter((c) => c.cmd === "dismiss_wheel").length).toBe(0);
+
+    // Emitting wheel:escape without alreadyHidden still triggers closing + dismiss_wheel after 100ms
+    harness.emitEvent("wheel:escape", {});
+    await flushMicrotasks();
+    expect(shellEl.classList.contains("is-closing")).toBe(true);
+    await new Promise<void>((r) => globalThis.setTimeout(r, 130));
+    await flushMicrotasks();
+
+    const dismissCalls = harness.calls.filter((c) => c.cmd === "dismiss_wheel");
+    expect(dismissCalls.length).toBe(1);
+    expect(dismissCalls[0].args.reason).toBe("escape-event");
+    });
+  });
+
+  test("WheelView: async getPreferences during applyState preserves glass-puck and sector-group DOM identities and mid-hover springs when slots are unchanged", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    let resolvePrefs!: (prefs: AppPreferences) => void;
+    harness.setCommandOverride(
+      "get_preferences",
+      () => new Promise<AppPreferences>((resolve) => { resolvePrefs = resolve; }),
+    );
+
+    // Emit wheel:state with unchanged slots while get_preferences stays pending
+    harness.emitEvent("wheel:state", {
+      ...harness.wheelState,
+      originX: 220,
+      originY: 220,
+    });
+
+    const pucksBefore = Array.from(root.querySelectorAll<HTMLElement>("#wheel-glass-layer .wheel-glass-puck"));
+    const groupsBefore = Array.from(root.querySelectorAll<HTMLElement>(".wheel-sector-group"));
+    expect(pucksBefore.length).toBe(8);
+    expect(groupsBefore.length).toBe(8);
+
+    // Hover slot 2 before deferred get_preferences resolves
+    harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
+    expect(groupsBefore[2].classList.contains("is-active")).toBe(true);
+    expect(Number(groupsBefore[2].style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+
+    // Resolve deferred get_preferences and flush microtasks
+    resolvePrefs(harness.prefs);
+    await flushMicrotasks();
+
+    const pucksAfter = Array.from(root.querySelectorAll<HTMLElement>("#wheel-glass-layer .wheel-glass-puck"));
+    const groupsAfter = Array.from(root.querySelectorAll<HTMLElement>(".wheel-sector-group"));
+    expect(pucksAfter.length).toBe(pucksBefore.length);
+    expect(groupsAfter.length).toBe(groupsBefore.length);
+    for (let i = 0; i < pucksBefore.length; i++) {
+      expect(pucksAfter[i]).toBe(pucksBefore[i]);
+      expect(groupsAfter[i]).toBe(groupsBefore[i]);
+    }
+    expect(groupsAfter[2].classList.contains("is-active")).toBe(true);
+    expect(pucksAfter[2].classList.contains("is-active")).toBe(true);
+    expect(Number(groupsAfter[2].style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+    expect(Number(pucksAfter[2].style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+    expect(Number(groupsAfter[2].style.getPropertyValue("--bubble-scale"))).toBeGreaterThan(1.0);
+    });
+  });
+
+  test("WheelView: back-to-back wheel:pointer-release and tauri://drag-drop on More flips page once without triggering conversion", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/spec.pdf"],
+      isDrag: true,
+      compatibleFormats: ["PNG", "JPG", "WEBP", "HEIC", "TIFF", "TXT", "MD", "HTML", "RTF", "DOCX"],
+      batchActions: [],
+      availabilityMessage: "",
+      family: "pdf",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+
+    expect(root.querySelector("#wheel-page-dots")?.textContent).toContain("1/2");
+    expect(root.querySelectorAll(".wheel-sector-group")[7]?.textContent).toContain(t("en", "wheel.moreSlot"));
+
+    // Move to center of slot 7 (315 deg -> ~132.3, 132.3), then emit back-to-back pointer-release + native drag-drop
+    harness.emitEvent("wheel:pointer-move", { localX: 132.3, localY: 132.3 });
+    harness.emitEvent("wheel:pointer-release", { button: 0, localX: 132.3, localY: 132.3 });
+    harness.emitEvent("tauri://drag-drop", {
+      paths: ["/tmp/spec.pdf"],
+      position: { x: 132.3, y: 132.3 },
+    });
+    await flushMicrotasks();
+
+    expect(root.querySelector("#wheel-page-dots")?.textContent).toContain("2/2");
+    const page2Groups = Array.from(root.querySelectorAll(".wheel-sector-group"));
+    expect(page2Groups.some((el) => el.textContent.includes(t("en", "wheel.backSlot")))).toBe(true);
+    expect(harness.calls.filter((c) => c.cmd === "execute_conversion").length).toBe(0);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // 2. SettingsView E2E
   // -----------------------------------------------------------------------

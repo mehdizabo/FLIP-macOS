@@ -51,6 +51,15 @@ pub fn wheel_overlay_config(is_drag: bool, order_front: bool) -> WheelOverlayCon
 }
 
 pub fn configure_wheel_overlay(win: &WebviewWindow, cfg: WheelOverlayConfig) {
+    configure_wheel_overlay_with_sync(win, cfg, None);
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn configure_wheel_overlay_with_sync(
+    win: &WebviewWindow,
+    cfg: WheelOverlayConfig,
+    sync_target: Option<(Arc<HostState>, u64)>,
+) {
     let _ = win.set_visible_on_all_workspaces(cfg.can_join_all_spaces);
     let _ = win.set_focusable(cfg.focusable);
 
@@ -101,6 +110,19 @@ pub fn configure_wheel_overlay(win: &WebviewWindow, cfg: WheelOverlayConfig) {
                         let primary_height = primary.frame().size.height;
                         ns_win.setContentSize(NSSize::new(width, height));
                         ns_win.setFrameTopLeftPoint(NSPoint::new(x, primary_height - y));
+                        let actual_frame = ns_win.frame();
+                        let actual_x = actual_frame.origin.x.round() as i32;
+                        let actual_y = (primary_height
+                            - (actual_frame.origin.y + actual_frame.size.height))
+                            .round() as i32;
+                        if let Some((ref host_state, expected_epoch)) = sync_target {
+                            if let Ok(mut guard) = host_state.wheel.lock() {
+                                if guard.is_open && guard.open_epoch == expected_epoch {
+                                    guard.window_x = actual_x;
+                                    guard.window_y = actual_y;
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -542,12 +564,14 @@ pub fn present_wheel_at(
         family: inspected.family,
     };
 
+    let mut present_epoch = 0u64;
     if let Ok(mut guard) = state.wheel.lock() {
         guard.payload = payload.clone();
         guard.is_open = true;
         guard.window_x = win_x;
         guard.window_y = win_y;
         guard.open_epoch = guard.open_epoch.wrapping_add(1);
+        present_epoch = guard.open_epoch;
     }
 
     let _ = win.set_size(Size::Logical(LogicalSize::new(
@@ -566,7 +590,7 @@ pub fn present_wheel_at(
         WHEEL_WINDOW_SIZE as f64,
     ));
     let _ = win.emit("wheel:state", &payload);
-    configure_wheel_overlay(&win, overlay_cfg);
+    configure_wheel_overlay_with_sync(&win, overlay_cfg, Some((Arc::clone(state), present_epoch)));
     let _ = win.emit(
         "wheel:pointer-move",
         json!({ "localX": origin_x, "localY": origin_y }),
@@ -595,9 +619,16 @@ pub fn present_wheel_at(
 }
 
 pub fn hide_wheel(app: &AppHandle, state: &Arc<HostState>, reason: &str) {
-    if let Ok(mut guard) = state.wheel.lock() {
+    let was_open = if let Ok(mut guard) = state.wheel.lock() {
+        let prev = guard.is_open;
         guard.is_open = false;
         guard.payload.is_drag = false;
+        prev
+    } else {
+        false
+    };
+    if !was_open && reason != "window-close" {
+        return;
     }
     state.send_monitor_command(json!({
         "cmd": "wheel_state",
