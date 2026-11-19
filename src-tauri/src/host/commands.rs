@@ -783,6 +783,16 @@ pub async fn install_finder_quick_actions(
 }
 
 #[tauri::command]
+pub async fn uninstall_finder_quick_actions(
+    remove_cli: Option<bool>,
+) -> Result<QuickActionsStatus, String> {
+    let with_cli = remove_cli.unwrap_or(false);
+    tokio::task::spawn_blocking(move || quick_actions::uninstall_quick_actions(with_cli))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn check_for_updates(repo_url: Option<String>) -> Result<UpdateCheckResult, String> {
     tokio::task::spawn_blocking(move || updater::check_github_updates(repo_url.as_deref()))
         .await

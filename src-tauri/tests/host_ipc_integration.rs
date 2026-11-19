@@ -497,7 +497,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
             }
         }
     }
-    assert_eq!(rust_cmds.len(), 27);
+    assert_eq!(rust_cmds.len(), 28);
 
     // Extract every invoke<...>("cmd_name") in src/ipc.ts
     let mut ts_cmds = BTreeSet::new();
@@ -580,7 +580,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         rust_param_map.insert(name, keys);
         rem = &after_fn[close_p..];
     }
-    assert_eq!(rust_param_map.len(), 27);
+    assert_eq!(rust_param_map.len(), 28);
 
     let mut ts_search = ipc_ts.as_str();
     while let Some(idx) = ts_search.find("invoke<") {

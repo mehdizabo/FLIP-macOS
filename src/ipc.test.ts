@@ -30,6 +30,7 @@ import {
   requestPermission,
   savePreferences,
   switchWheelMode,
+  uninstallFinderQuickActions,
 } from "./ipc";
 
 describe("Frontend IPC surface & contract alignment", () => {
@@ -149,7 +150,10 @@ describe("Frontend IPC surface & contract alignment", () => {
       expect(created.renameTriggered).toBe(true);
 
       const kinds = await getNewFileKinds();
-      expect(kinds.kinds.length).toBeGreaterThanOrEqual(17);
+      expect(kinds.kinds.length).toBeGreaterThanOrEqual(21);
+      for (const id of ["yaml", "toml", "xml", "pdf"]) {
+        expect(kinds.kinds.some((k) => k.id === id)).toBe(true);
+      }
       expect(kinds.clipboard?.available).toBe(true);
 
       const eng = await getEngineStatus();
@@ -167,6 +171,10 @@ describe("Frontend IPC surface & contract alignment", () => {
       expect(qa1.convertInstalled).toBe(true);
       expect(qa1.newFileInstalled).toBe(true);
       expect(qa1.cliSymlinkPath).toBe("/Users/demo/.local/bin/flip");
+      const qa2 = await uninstallFinderQuickActions(true);
+      expect(qa2.convertInstalled).toBe(false);
+      expect(qa2.newFileInstalled).toBe(false);
+      expect(qa2.cliSymlinkPath).toBeNull();
 
       const prefs = await getPreferences();
       const prefsUpdates: string[] = [];

@@ -1419,6 +1419,13 @@ function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): 
           };
         case "install_finder_quick_actions":
           return defaultQuickActions;
+        case "uninstall_finder_quick_actions":
+          return {
+            ...defaultQuickActions,
+            convertInstalled: false,
+            newFileInstalled: false,
+            cliSymlinkPath: args.removeCli ? null : defaultQuickActions.cliSymlinkPath,
+          };
         case "check_for_updates": {
           const update: UpdateCheckResult = {
             currentVersion: "0.1.0",
@@ -1841,6 +1848,16 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     resetBtn.click();
     await flushMicrotasks();
     expect(doc.activeElement?.id).toBe("btn-reset-family-order");
+
+    // Engines tab: Remove Quick Actions button uninstalls Quick Actions and hides itself
+    root.querySelector<HTMLButtonElement>('.nav-item[data-tab="engines"]')!.click();
+    await flushMicrotasks();
+    const removeQaBtn = root.querySelector<HTMLButtonElement>("#btn-uninstall-quick-actions")!;
+    expect(removeQaBtn).not.toBeNull();
+    removeQaBtn.click();
+    await flushMicrotasks();
+    expect(harness.calls.some((c) => c.cmd === "uninstall_finder_quick_actions")).toBe(true);
+    expect(root.querySelector("#btn-uninstall-quick-actions")).toBeNull();
     });
   });
 

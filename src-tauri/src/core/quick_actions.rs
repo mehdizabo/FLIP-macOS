@@ -939,6 +939,70 @@ pub fn install_quick_actions(install_cli: bool) -> Result<QuickActionsStatus, St
     )
 }
 
+fn remove_path_if_exists(path: &Path) -> Result<(), String> {
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    if meta.is_dir() && !meta.file_type().is_symlink() {
+        fs::remove_dir_all(path)
+            .map_err(|e| format!("Failed to remove `{}`: {e}", path.display()))
+    } else {
+        fs::remove_file(path)
+            .map_err(|e| format!("Failed to remove `{}`: {e}", path.display()))
+    }
+}
+
+pub fn uninstall_quick_actions_in(
+    services_dir: &Path,
+    cli_dirs: &[PathBuf],
+    remove_cli_symlink: bool,
+    refresh_pbs: bool,
+) -> Result<QuickActionsStatus, String> {
+    remove_path_if_exists(&services_dir.join(CONVERT_WORKFLOW_NAME))?;
+    remove_path_if_exists(&services_dir.join(NEW_FILE_WORKFLOW_NAME))?;
+
+    if remove_cli_symlink {
+        for dir in cli_dirs {
+            let candidate = dir.join("flip");
+            if let Ok(meta) = fs::symlink_metadata(&candidate) {
+                if meta.file_type().is_symlink() {
+                    fs::remove_file(&candidate).map_err(|e| {
+                        format!("Failed to remove CLI symlink `{}`: {e}", candidate.display())
+                    })?;
+                }
+            }
+        }
+    }
+
+    if refresh_pbs {
+        refresh_macos_services_best_effort();
+    }
+
+    log_event(
+        "quick_actions.uninstalled",
+        Some(json!({
+            "servicesDir": services_dir.to_string_lossy(),
+            "cliRemoved": remove_cli_symlink,
+        })),
+    );
+
+    let current_exe = std::env::current_exe().ok();
+    let app_path = resolve_app_bundle_path(current_exe.as_deref());
+    let cli_exe = resolve_cli_executable(current_exe.as_deref());
+
+    Ok(get_quick_actions_status_in(
+        services_dir,
+        cli_dirs,
+        app_path.as_deref(),
+        cli_exe.as_deref(),
+    ))
+}
+
+pub fn uninstall_quick_actions(remove_cli: bool) -> Result<QuickActionsStatus, String> {
+    let cli_dirs = vec![default_cli_symlink_dir()];
+    uninstall_quick_actions_in(&default_services_dir(), &cli_dirs, remove_cli, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1145,5 +1209,31 @@ mod tests {
         .unwrap();
         assert!(status_reinstall.convert_installed);
         assert!(status_reinstall.new_file_installed);
+
+        // Uninstalling removes both workflows and CLI symlink (while never deleting non-symlink binaries)
+        let status_removed = uninstall_quick_actions_in(
+            &services_dir,
+            &[bin_dir.clone(), non_symlink_dir.clone()],
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(!status_removed.convert_installed);
+        assert!(!status_removed.new_file_installed);
+        assert!(!services_dir.join(CONVERT_WORKFLOW_NAME).exists());
+        assert!(!services_dir.join(NEW_FILE_WORKFLOW_NAME).exists());
+        assert!(fs::symlink_metadata(bin_dir.join("flip")).is_err());
+        assert!(non_symlink_dir.join("flip").is_file(), "must never delete non-symlink binary");
+
+        // Second uninstall when already absent is a clean no-op
+        let status_idempotent = uninstall_quick_actions_in(
+            &services_dir,
+            std::slice::from_ref(&bin_dir),
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(!status_idempotent.convert_installed);
+        assert!(!status_idempotent.new_file_installed);
     }
 }

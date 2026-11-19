@@ -83,6 +83,10 @@ describe("EN/IT i18n dictionary and formatter", () => {
     expect(localizeNewKindName("it", "folder", "Folder")).toBe("Cartella");
     expect(localizeNewKindName("it", "txt", "Plain Text")).toBe("Testo Semplice");
     expect(localizeNewKindName("en", "txt", "Plain Text")).toBe("Plain Text");
+    expect(localizeNewKindName("it", "yaml", "YAML Config")).toBe("Configurazione YAML");
+    expect(localizeNewKindName("it", "toml", "TOML Config")).toBe("Configurazione TOML");
+    expect(localizeNewKindName("it", "xml", "XML Document")).toBe("Documento XML");
+    expect(localizeNewKindName("it", "pdf", "Blank PDF (A4)")).toBe("PDF Vuoto (A4)");
     expect(localizeKindCategory("it", "system")).toBe("sistema");
     expect(localizeKindCategory("it", "clipboard")).toBe("appunti");
 

@@ -712,6 +712,7 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
             host::commands::get_recent_conversions,
             host::commands::get_quick_actions_status,
             host::commands::install_finder_quick_actions,
+            host::commands::uninstall_finder_quick_actions,
             host::commands::check_for_updates,
             host::commands::open_release_url,
             host::commands::consume_settings_navigation,

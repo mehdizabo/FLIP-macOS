@@ -7,10 +7,11 @@ DEST_DIR=""
 INSTALL_QUICK_ACTIONS=1
 INSTALL_CLI=1
 DRY_RUN=0
+UNINSTALL=0
 
 usage() {
   cat <<'EOF'
-Install FLIP.app locally on macOS (macOS counterpart to Install.ps1).
+Install or uninstall FLIP.app locally on macOS (macOS counterpart to Install.ps1).
 
 Usage:
   ./scripts/install-local.sh [options]
@@ -18,9 +19,10 @@ Usage:
 Options:
   --app <path>        Path to built FLIP.app (default: src-tauri/target/release/bundle/macos/FLIP.app)
   --dest <dir>        Target Applications directory (default: /Applications if writable, else ~/Applications)
-  --no-quick-actions  Skip installing Finder Quick Actions (scripts/install-quick-actions.sh)
-  --no-cli            Skip creating ~/.local/bin/flip symlink
-  --dry-run           Validate source bundle and print planned actions without modifying files
+  --no-quick-actions  Skip installing/removing Finder Quick Actions (scripts/install-quick-actions.sh)
+  --no-cli            Skip creating/removing ~/.local/bin/flip symlink
+  --uninstall         Remove installed FLIP.app, Finder Quick Actions, and CLI symlink (honors --dest, --no-quick-actions, --no-cli, --dry-run)
+  --dry-run           Validate source bundle (or planned uninstall) and print actions without modifying files
   -h, --help          Show this help message
 EOF
 }
@@ -45,6 +47,10 @@ while [[ $# -gt 0 ]]; do
       INSTALL_CLI=0
       shift
       ;;
+    --uninstall)
+      UNINSTALL=1
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -64,7 +70,9 @@ done
 APP_PATH="${APP_PATH%/}"
 
 if [[ -z "$DEST_DIR" ]]; then
-  if [[ -w "/Applications" ]]; then
+  if [[ "$UNINSTALL" -eq 1 && ! -e "/Applications/FLIP.app" && -e "${HOME}/Applications/FLIP.app" ]]; then
+    DEST_DIR="${HOME}/Applications"
+  elif [[ -w "/Applications" ]]; then
     DEST_DIR="/Applications"
   else
     DEST_DIR="${HOME}/Applications"
@@ -79,6 +87,53 @@ DEST_APP="${DEST_DIR}/FLIP.app"
 CLI_DIR="${HOME}/.local/bin"
 CLI_LINK="${CLI_DIR}/flip"
 DEST_CLI_TARGET="${DEST_APP}/Contents/MacOS/flip"
+
+if [[ "$UNINSTALL" -eq 1 ]]; then
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    echo "[dry-run] Would remove app bundle (if present): $DEST_APP"
+    if [[ "$INSTALL_QUICK_ACTIONS" -eq 1 ]]; then
+      if [[ "$INSTALL_CLI" -eq 1 ]]; then
+        echo "[dry-run] Would run: $ROOT_DIR/scripts/install-quick-actions.sh --uninstall --cli-dir $CLI_DIR"
+      else
+        echo "[dry-run] Would run: $ROOT_DIR/scripts/install-quick-actions.sh --uninstall"
+      fi
+    else
+      echo "[dry-run] Skipping Quick Actions uninstall (--no-quick-actions)"
+      if [[ "$INSTALL_CLI" -eq 1 ]]; then
+        echo "[dry-run] Would remove CLI symlink (if symlink): $CLI_LINK"
+      else
+        echo "[dry-run] Skipping CLI symlink removal (--no-cli)"
+      fi
+    fi
+    exit 0
+  fi
+
+  if [[ -e "$DEST_APP" || -L "$DEST_APP" ]]; then
+    rm -rf "$DEST_APP"
+    echo "==> Removed app bundle: $DEST_APP"
+  else
+    echo "==> App bundle not present at $DEST_APP (skipping)"
+  fi
+
+  if [[ "$INSTALL_QUICK_ACTIONS" -eq 1 ]]; then
+    if [[ "$INSTALL_CLI" -eq 1 ]]; then
+      "$ROOT_DIR/scripts/install-quick-actions.sh" --uninstall --cli-dir "$CLI_DIR"
+    else
+      "$ROOT_DIR/scripts/install-quick-actions.sh" --uninstall
+    fi
+  elif [[ "$INSTALL_CLI" -eq 1 ]]; then
+    if [[ -L "$CLI_LINK" ]]; then
+      rm -f "$CLI_LINK"
+      echo "==> Removed CLI symlink: $CLI_LINK"
+    elif [[ -e "$CLI_LINK" ]]; then
+      echo "Warning: Refusing to remove non-symlink file at $CLI_LINK" >&2
+    fi
+  fi
+
+  echo ""
+  echo "FLIP uninstalled cleanly."
+  exit 0
+fi
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Error: Source bundle not found at: $APP_PATH" >&2

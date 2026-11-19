@@ -7,19 +7,21 @@ SERVICES_DIR="${HOME}/Library/Services"
 CLI_DIR="${HOME}/.local/bin"
 INSTALL_CLI=0
 REFRESH_PBS=1
+UNINSTALL=0
 
 usage() {
   cat <<'EOF'
-Install FLIP Finder Quick Actions (~/Library/Services) and optional CLI symlink.
+Install or uninstall FLIP Finder Quick Actions (~/Library/Services) and optional CLI symlink.
 
 Usage:
   ./scripts/install-quick-actions.sh [options]
 
 Options:
   --app <path>          Explicit path to FLIP.app (overrides automatic bundle lookup)
-  --install-cli         Also symlink `flip` into ~/.local/bin/flip (or --cli-dir)
+  --install-cli         Also symlink `flip` into ~/.local/bin/flip (or remove symlink with --uninstall)
   --cli-dir <dir>       Target directory for the `flip` CLI symlink (implies --install-cli)
   --services-dir <dir>  Override target Services directory (default: ~/Library/Services)
+  --uninstall           Remove FLIP Finder Quick Actions (and optional CLI symlink if --cli-dir/--install-cli)
   --no-pbs              Skip refreshing macOS Services cache via pbs
   -h, --help            Show this help message
 EOF
@@ -47,6 +49,10 @@ while [[ $# -gt 0 ]]; do
       SERVICES_DIR="$2"
       shift 2
       ;;
+    --uninstall)
+      UNINSTALL=1
+      shift
+      ;;
     --no-pbs)
       REFRESH_PBS=0
       shift
@@ -62,6 +68,34 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$UNINSTALL" -eq 1 ]]; then
+  echo "==> Uninstalling Finder Quick Actions from $SERVICES_DIR"
+  for wf in "Convert with FLIP.workflow" "New File with FLIP.workflow"; do
+    target="$SERVICES_DIR/$wf"
+    if [[ -e "$target" || -L "$target" ]]; then
+      rm -rf "$target"
+      echo "  - Removed $target"
+    fi
+  done
+
+  if [[ "$INSTALL_CLI" -eq 1 ]]; then
+    DEST_CLI="$CLI_DIR/flip"
+    if [[ -L "$DEST_CLI" ]]; then
+      rm -f "$DEST_CLI"
+      echo "  - Removed CLI symlink $DEST_CLI"
+    elif [[ -e "$DEST_CLI" ]]; then
+      echo "Warning: Refusing to remove non-symlink file at $DEST_CLI" >&2
+    fi
+  fi
+
+  if [[ "$REFRESH_PBS" -eq 1 ]] && [[ -x /System/Library/CoreServices/pbs ]]; then
+    /System/Library/CoreServices/pbs -update >/dev/null 2>&1 || true
+  fi
+
+  echo "Quick Actions uninstalled cleanly."
+  exit 0
+fi
 
 APP_PATH=""
 if [[ -n "$APP_OVERRIDE" ]]; then

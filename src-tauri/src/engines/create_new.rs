@@ -145,6 +145,42 @@ pub fn built_in_kinds(clipboard_available: bool) -> Vec<NewFileKindInfo> {
             disabled_reason: None,
         },
         NewFileKindInfo {
+            id: "yaml".into(),
+            name: "YAML Config".into(),
+            extension: Some("yaml".into()),
+            category: "data".into(),
+            page: 2,
+            available: true,
+            disabled_reason: None,
+        },
+        NewFileKindInfo {
+            id: "toml".into(),
+            name: "TOML Config".into(),
+            extension: Some("toml".into()),
+            category: "data".into(),
+            page: 2,
+            available: true,
+            disabled_reason: None,
+        },
+        NewFileKindInfo {
+            id: "xml".into(),
+            name: "XML Document".into(),
+            extension: Some("xml".into()),
+            category: "data".into(),
+            page: 2,
+            available: true,
+            disabled_reason: None,
+        },
+        NewFileKindInfo {
+            id: "pdf".into(),
+            name: "Blank PDF (A4)".into(),
+            extension: Some("pdf".into()),
+            category: "document".into(),
+            page: 2,
+            available: true,
+            disabled_reason: None,
+        },
+        NewFileKindInfo {
             id: "sh".into(),
             name: "Shell Script".into(),
             extension: Some("sh".into()),
@@ -504,6 +540,33 @@ pub fn create_new_item(
                 write_new_file(&dest, b"column1,column2\n")?;
                 dest
             }
+            "yaml" => {
+                let dest = next_available_new_item_path(&target_dir, "Untitled", Some("yaml"))
+                    .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+                write_new_file(&dest, b"# Untitled\nname: untitled\n")?;
+                dest
+            }
+            "toml" => {
+                let dest = next_available_new_item_path(&target_dir, "Untitled", Some("toml"))
+                    .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+                write_new_file(&dest, b"# Untitled\ntitle = \"Untitled\"\n")?;
+                dest
+            }
+            "xml" => {
+                let dest = next_available_new_item_path(&target_dir, "Untitled", Some("xml"))
+                    .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+                write_new_file(
+                    &dest,
+                    b"<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root>\n  \n</root>\n",
+                )?;
+                dest
+            }
+            "pdf" => {
+                let dest = next_available_new_item_path(&target_dir, "Untitled", Some("pdf"))
+                    .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
+                write_new_file(&dest, &blank_pdf_bytes())?;
+                dest
+            }
             "sh" => {
                 let dest = next_available_new_item_path(&target_dir, "Untitled", Some("sh"))
                     .map_err(|e| EngineError::ConversionFailed(e.to_string()))?;
@@ -629,6 +692,32 @@ pub fn blank_rtf_bytes() -> &'static [u8] {
 
 pub fn blank_html_bytes() -> &'static [u8] {
     b"<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\" />\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  <title>Untitled</title>\n</head>\n<body>\n  \n</body>\n</html>\n"
+}
+
+pub fn blank_pdf_bytes() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(512);
+    buf.extend_from_slice(b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
+    let mut offsets = Vec::with_capacity(4);
+    let objects: [&[u8]; 4] = [
+        b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+        b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
+        b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << >> /Contents 4 0 R >>\nendobj\n",
+        b"4 0 obj\n<< /Length 0 >>\nstream\n\nendstream\nendobj\n",
+    ];
+    for obj in objects {
+        offsets.push(buf.len());
+        buf.extend_from_slice(obj);
+    }
+    let xref_offset = buf.len();
+    buf.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+    for off in offsets {
+        buf.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    buf.extend_from_slice(
+        format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n")
+            .as_bytes(),
+    );
+    buf
 }
 
 fn write_zip_entries(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, EngineError> {

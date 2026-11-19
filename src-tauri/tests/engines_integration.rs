@@ -468,13 +468,17 @@ fn create_new_builtin_office_ooxml_user_templates_and_readonly_guard() {
     let t2 = create_new_item("txt", Some(dir.path()), &prefs, false).unwrap();
     assert_eq!(Path::new(&t2.path).file_name().unwrap().to_str().unwrap(), "Untitled 2.txt");
 
-    // Create Markdown, RTF, HTML, JSON, CSV, Shell Script (+x), Python, Swift
+    // Create Markdown, RTF, HTML, JSON, CSV, YAML, TOML, XML, Blank PDF, Shell Script (+x), Python, Swift
     for (id, expected_name) in [
         ("md", "Untitled.md"),
         ("rtf", "Untitled.rtf"),
         ("html", "Untitled.html"),
         ("json", "Untitled.json"),
         ("csv", "Untitled.csv"),
+        ("yaml", "Untitled.yaml"),
+        ("toml", "Untitled.toml"),
+        ("xml", "Untitled.xml"),
+        ("pdf", "Untitled.pdf"),
         ("sh", "Untitled.sh"),
         ("py", "Untitled.py"),
         ("swift", "Untitled.swift"),
@@ -483,6 +487,33 @@ fn create_new_builtin_office_ooxml_user_templates_and_readonly_guard() {
         let p = Path::new(&created.path);
         assert_eq!(p.file_name().unwrap().to_str().unwrap(), expected_name);
         assert!(p.is_file());
+        if matches!(id, "json" | "yaml" | "toml" | "xml" | "pdf") {
+            let fmt = id.to_ascii_uppercase();
+            assert!(
+                validate_output(p, &fmt).is_ok(),
+                "validate_output failed for new kind `{id}` at {}",
+                p.display()
+            );
+        }
+        if id == "pdf" {
+            let swift_check = dir.path().join("check_blank_pdf.swift");
+            fs::write(
+                &swift_check,
+                format!(
+                    r#"import Foundation
+import PDFKit
+let doc = PDFDocument(url: URL(fileURLWithPath: "{}"))!
+assert(doc.pageCount == 1)
+let bounds = doc.page(at: 0)!.bounds(for: .mediaBox)
+assert(Int(bounds.width) == 595 && Int(bounds.height) == 842)
+"#,
+                    p.display()
+                ),
+            )
+            .unwrap();
+            let st = Command::new("/usr/bin/swift").arg(&swift_check).status().unwrap();
+            assert!(st.success(), "PDFKit failed to open blank A4 PDF");
+        }
         if id == "sh" {
             let mode = fs::metadata(p).unwrap().permissions().mode();
             assert_ne!(mode & 0o111, 0, "shell script must be executable");

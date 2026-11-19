@@ -33,6 +33,7 @@ import {
   revealInFinder,
   revealLogs,
   savePreferences,
+  uninstallFinderQuickActions,
 } from "../ipc";
 import type {
   AppPreferences,
@@ -810,13 +811,18 @@ export function mountSettingsView(root: HTMLElement): () => void {
             <div class="setting-label">${escapeHtml(t(l, "settings.engines.qaLabel"))}</div>
             <div class="setting-desc">${t(l, "settings.engines.qaDesc")}</div>
           </div>
-          <div style="display:flex;align-items:center;gap:8px">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span class="status-pill ${qaAllInstalled ? "is-ok" : "is-warn"}">
               <span class="status-dot"></span>${escapeHtml(qaLabel)}
             </span>
             <button type="button" class="btn btn-primary btn-sm" id="btn-install-quick-actions">
               ${escapeHtml(qaAllInstalled ? t(l, "settings.engines.qaReinstallBtn") : t(l, "settings.engines.qaInstallBtn"))}
             </button>
+            ${
+              qaAnyInstalled
+                ? `<button type="button" class="btn btn-sm" id="btn-uninstall-quick-actions">${escapeHtml(t(l, "settings.engines.qaRemoveBtn"))}</button>`
+                : ""
+            }
           </div>
         </div>
         <div class="setting-row">
@@ -1304,6 +1310,19 @@ export function mountSettingsView(root: HTMLElement): () => void {
         if (!disposed) {
           renderMain();
           showSavedToast(t(lang(), "settings.engines.qaSavedToast"));
+        }
+      } catch (err) {
+        if (!disposed) {
+          showSavedToast(t(lang(), "common.errorPrefix", { msg: formatError(err) }));
+        }
+      }
+    });
+    mainEl.querySelector("#btn-uninstall-quick-actions")?.addEventListener("click", async () => {
+      try {
+        quickActions = await uninstallFinderQuickActions(false);
+        if (!disposed) {
+          renderMain();
+          showSavedToast(t(lang(), "settings.engines.qaRemovedToast"));
         }
       } catch (err) {
         if (!disposed) {

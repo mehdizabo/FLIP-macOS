@@ -163,6 +163,10 @@ const MOCK_BUILT_IN_KINDS: NewFileKindInfo[] = [
   { id: "clipboard", name: "From Clipboard", extension: "png", category: "clipboard", page: 1, available: true, disabledReason: null },
   { id: "json", name: "JSON", extension: "json", category: "data", page: 2, available: true, disabledReason: null },
   { id: "csv", name: "CSV", extension: "csv", category: "data", page: 2, available: true, disabledReason: null },
+  { id: "yaml", name: "YAML Config", extension: "yaml", category: "data", page: 2, available: true, disabledReason: null },
+  { id: "toml", name: "TOML Config", extension: "toml", category: "data", page: 2, available: true, disabledReason: null },
+  { id: "xml", name: "XML Document", extension: "xml", category: "data", page: 2, available: true, disabledReason: null },
+  { id: "pdf", name: "Blank PDF (A4)", extension: "pdf", category: "document", page: 2, available: true, disabledReason: null },
   { id: "sh", name: "Shell Script", extension: "sh", category: "code", page: 2, available: true, disabledReason: null },
   { id: "py", name: "Python", extension: "py", category: "code", page: 2, available: true, disabledReason: null },
   { id: "swift", name: "Swift", extension: "swift", category: "code", page: 2, available: true, disabledReason: null },
@@ -933,6 +937,21 @@ export async function installFinderQuickActions(
     return { ...mockQuickActions };
   }
   return invoke<QuickActionsStatus>("install_finder_quick_actions", { installCli });
+}
+
+export async function uninstallFinderQuickActions(
+  removeCli = false,
+): Promise<QuickActionsStatus> {
+  if (!isTauriRuntime()) {
+    mockQuickActions = {
+      ...mockQuickActions,
+      convertInstalled: false,
+      newFileInstalled: false,
+      cliSymlinkPath: removeCli ? null : mockQuickActions.cliSymlinkPath,
+    };
+    return { ...mockQuickActions };
+  }
+  return invoke<QuickActionsStatus>("uninstall_finder_quick_actions", { removeCli });
 }
 
 export async function checkForUpdates(repoUrl?: string): Promise<UpdateCheckResult> {

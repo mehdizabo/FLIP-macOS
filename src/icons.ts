@@ -362,6 +362,14 @@ export function getNewKindMeta(
       return { shortLabel: "JSON", accent: "#2dd4bf", iconSvg: UI_ICONS.data };
     case "csv":
       return { shortLabel: "CSV", accent: "#4ade80", iconSvg: UI_ICONS.spreadsheet };
+    case "yaml":
+      return { shortLabel: "YAML", accent: "#2dd4bf", iconSvg: UI_ICONS.data };
+    case "toml":
+      return { shortLabel: "TOML", accent: "#2dd4bf", iconSvg: UI_ICONS.data };
+    case "xml":
+      return { shortLabel: "XML", accent: "#2dd4bf", iconSvg: UI_ICONS.data };
+    case "pdf":
+      return { shortLabel: "PDF", accent: "#fb7185", iconSvg: UI_ICONS.pdf };
     case "sh":
       return { shortLabel: "SH", accent: "#a3e635", iconSvg: UI_ICONS.code };
     case "py":
