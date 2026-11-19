@@ -567,6 +567,10 @@ pub fn present_wheel_at(
     ));
     let _ = win.emit("wheel:state", &payload);
     configure_wheel_overlay(&win, overlay_cfg);
+    let _ = win.emit(
+        "wheel:pointer-move",
+        json!({ "localX": origin_x, "localY": origin_y }),
+    );
     if !is_drag {
         let _ = win.set_focus();
     }

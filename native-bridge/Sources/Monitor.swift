@@ -71,6 +71,8 @@ final class MonitorController {
     private var dragKeyHeld = false
     private var dragKeyConsumed = false
     private var mouseTriggerHeld = false
+    private var lastEmittedX: Double = -9999
+    private var lastEmittedY: Double = -9999
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -164,7 +166,14 @@ final class MonitorController {
                             isWheelOpen: json["wheelOpen"] as? Bool
                         )
                     case "wheel_state":
-                        self.wheelOpen = (json["open"] as? Bool) ?? false
+                        let nextOpen = (json["open"] as? Bool) ?? false
+                        self.wheelOpen = nextOpen
+                        if !nextOpen {
+                            self.lastEmittedX = -9999
+                            self.lastEmittedY = -9999
+                        } else {
+                            self.emitMouseMoveIfChanged(force: true)
+                        }
                     case "feedback":
                         if let kind = json["kind"] as? String {
                             self.feedback.play(kind: kind)
@@ -183,14 +192,42 @@ final class MonitorController {
         }
     }
 
+    private func emitMouseMoveIfChanged(force: Bool = false) {
+        let pos = currentCursorAndScreen()
+        if force || hypot(pos.x - lastEmittedX, pos.y - lastEmittedY) >= 0.4 {
+            lastEmittedX = pos.x
+            lastEmittedY = pos.y
+            writeJSON(["event": "mouse_move", "x": pos.x, "y": pos.y])
+        }
+    }
+
+    private func triggerDragWheelIfNeeded(files: [String]) {
+        guard !wheelOpen, !files.isEmpty else { return }
+        wheelOpen = true
+        let pos = currentCursorAndScreen()
+        lastEmittedX = pos.x
+        lastEmittedY = pos.y
+        writeJSON([
+            "event": "trigger_drag_wheel",
+            "files": files,
+            "x": pos.x,
+            "y": pos.y,
+            "screen": pos.screen.toDict()
+        ])
+        emitMouseMoveIfChanged(force: true)
+    }
+
     private func setupDragPolling() {
-        // Lightweight timer + event-driven drag detection.
+        // Lightweight timer + event-driven drag detection (~60Hz when active).
         // When no mouse button is pressed and drag is inactive, checks changeCount in O(1).
-        dragTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
+        dragTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.checkDragState()
+            if self.wheelOpen || self.mouseTriggerHeld {
+                self.emitMouseMoveIfChanged()
+            }
             self.axPollTick += 1
-            if self.axPollTick >= 50 {
+            if self.axPollTick >= 90 {
                 self.axPollTick = 0
                 self.refreshAccessibilityMonitor(emitChange: true)
             }
@@ -204,12 +241,10 @@ final class MonitorController {
             } else if event.type == .leftMouseDragged {
                 self.checkDragState()
                 if self.wheelOpen || self.mouseTriggerHeld {
-                    let pos = currentCursorAndScreen()
-                    writeJSON(["event": "mouse_move", "x": pos.x, "y": pos.y])
+                    self.emitMouseMoveIfChanged(force: true)
                 }
             } else if (event.type == .mouseMoved || event.type == .otherMouseDragged) && (self.wheelOpen || self.mouseTriggerHeld) {
-                let pos = currentCursorAndScreen()
-                writeJSON(["event": "mouse_move", "x": pos.x, "y": pos.y])
+                self.emitMouseMoveIfChanged(force: true)
             }
         }
     }
@@ -273,8 +308,8 @@ final class MonitorController {
         let count = dragPasteboard.changeCount
 
         if count != lastChangeCount {
-            lastChangeCount = count
             if leftDown && !forceEndIfUp {
+                lastChangeCount = count
                 let files = readDragFileURLs()
                 if !files.isEmpty {
                     let changed = !dragActive || files != dragFiles
@@ -289,26 +324,25 @@ final class MonitorController {
                             "y": pos.y,
                             "screen": pos.screen.toDict()
                         ])
-                        if dragKeyHeld {
+                        if dragKeyHeld && !dragKeyConsumed && !wheelOpen {
                             dragKeyConsumed = true
-                            writeJSON([
-                                "event": "trigger_drag_wheel",
-                                "files": files,
-                                "x": pos.x,
-                                "y": pos.y,
-                                "screen": pos.screen.toDict()
-                            ])
+                            triggerDragWheelIfNeeded(files: files)
                         }
                     }
                 } else if dragActive {
                     dragActive = false
                     dragFiles = []
                 }
+            } else if !dragActive && readDragFileURLs().isEmpty {
+                lastChangeCount = count
             }
         }
 
         if dragActive && (!leftDown || forceEndIfUp) {
             dragActive = false
+            wheelOpen = false
+            lastEmittedX = -9999
+            lastEmittedY = -9999
             let pos = currentCursorAndScreen()
             writeJSON([
                 "event": "drag_end",
@@ -461,16 +495,12 @@ final class MonitorController {
                         return Unmanaged.passUnretained(event)
                     }
                     dragKeyHeld = true
+                    if !dragActive {
+                        checkDragState()
+                    }
                     if dragActive {
                         dragKeyConsumed = true
-                        let pos = currentCursorAndScreen()
-                        writeJSON([
-                            "event": "trigger_drag_wheel",
-                            "files": dragFiles,
-                            "x": pos.x,
-                            "y": pos.y,
-                            "screen": pos.screen.toDict()
-                        ])
+                        triggerDragWheelIfNeeded(files: dragFiles)
                         return nil
                     }
                     dragKeyConsumed = false
@@ -488,15 +518,11 @@ final class MonitorController {
             let pressed = modifierActive(mod, flags: flags)
             if pressed && !dragKeyHeld {
                 dragKeyHeld = true
+                if !dragActive {
+                    checkDragState()
+                }
                 if dragActive {
-                    let pos = currentCursorAndScreen()
-                    writeJSON([
-                        "event": "trigger_drag_wheel",
-                        "files": dragFiles,
-                        "x": pos.x,
-                        "y": pos.y,
-                        "screen": pos.screen.toDict()
-                    ])
+                    triggerDragWheelIfNeeded(files: dragFiles)
                 }
             } else if !pressed {
                 dragKeyHeld = false
@@ -561,15 +587,11 @@ final class MonitorController {
                     return
                 }
                 dragKeyHeld = true
+                if !dragActive {
+                    checkDragState()
+                }
                 if dragActive {
-                    let pos = currentCursorAndScreen()
-                    writeJSON([
-                        "event": "trigger_drag_wheel",
-                        "files": dragFiles,
-                        "x": pos.x,
-                        "y": pos.y,
-                        "screen": pos.screen.toDict()
-                    ])
+                    triggerDragWheelIfNeeded(files: dragFiles)
                 }
             } else if event.type == .keyUp {
                 dragKeyHeld = false
@@ -578,15 +600,11 @@ final class MonitorController {
             let pressed = modifierActive(mod, nsFlags: event.modifierFlags)
             if pressed && !dragKeyHeld {
                 dragKeyHeld = true
+                if !dragActive {
+                    checkDragState()
+                }
                 if dragActive {
-                    let pos = currentCursorAndScreen()
-                    writeJSON([
-                        "event": "trigger_drag_wheel",
-                        "files": dragFiles,
-                        "x": pos.x,
-                        "y": pos.y,
-                        "screen": pos.screen.toDict()
-                    ])
+                    triggerDragWheelIfNeeded(files: dragFiles)
                 }
             } else if !pressed {
                 dragKeyHeld = false

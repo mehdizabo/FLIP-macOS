@@ -588,8 +588,16 @@ class ShimElement extends ShimNode {
     this.classList = new ShimClassList(this);
 
     const styleStore: Record<string, string> = {};
+    const setStyleProp = (prop: string, value: string) => {
+      styleStore[prop] = String(value ?? "");
+    };
+    const getStyleProp = (prop: string) => styleStore[prop] ?? "";
     this.style = new Proxy(styleStore, {
-      get: (target, prop: string) => target[prop] ?? "",
+      get: (target, prop: string) => {
+        if (prop === "setProperty") return setStyleProp;
+        if (prop === "getPropertyValue") return getStyleProp;
+        return target[prop] ?? "";
+      },
       set: (target, prop: string, value) => {
         target[prop] = String(value ?? "");
         return true;
@@ -1262,6 +1270,10 @@ function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): 
   };
 
   win.__TAURI_INTERNALS__ = {
+    metadata: {
+      currentWebview: { label: "wheel" },
+      currentWindow: { label: "wheel" },
+    },
     transformCallback(cb: (payload: unknown) => void) {
       const id = nextCallbackId++;
       callbacks.set(id, cb);
@@ -1873,6 +1885,79 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     expect(root.querySelector(".wheel-hub-title")).toBe(newHubTitle);
     expect(root.querySelector(".wheel-hub-subtitle")).toBe(newHubSub);
     expect(doc.activeElement).not.toBeNull();
+    });
+  });
+
+  test("WheelView: Logi Options+ circular pucks react to cursor proximity and keep Finder drag tracking locked to cursor without jumping to top-left", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    // Open in drag mode centered under cursor (220, 220)
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/spec.pdf"],
+      isDrag: true,
+      compatibleFormats: ["PNG", "JPG", "WEBP", "HEIC", "TIFF", "TXT", "MD", "HTML", "RTF"],
+      batchActions: [],
+      availabilityMessage: "",
+      family: "pdf",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+
+    // Renders floating circular bubbles (.wheel-bubble-disc) + Logi outer ear on More slot
+    expect(root.querySelectorAll(".wheel-bubble-disc").length).toBe(8);
+    expect(root.querySelectorAll(".wheel-bubble-ear").length).toBe(1);
+
+    // Move pointer to sector 2 (3 o'clock -> 344, 220) via authoritative monitor stream
+    harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
+    await flushMicrotasks();
+    const groups = Array.from(root.querySelectorAll<HTMLElement>(".wheel-sector-group"));
+    expect(groups[2].classList.contains("is-active")).toBe(true);
+    expect(groups[7].classList.contains("is-active")).toBe(false);
+    expect(Number(groups[2].style.getPropertyValue("--bubble-prox"))).toBeGreaterThan(0.9);
+    expect(Number(groups[6].style.getPropertyValue("--bubble-prox"))).toBe(0);
+
+    // Simulate competing macOS WebKit native drag-over/enter/leave events while dragging
+    for (let i = 0; i < 6; i++) {
+      harness.emitEvent("tauri://drag-over", {
+        position: { x: 220, y: 220 },
+      });
+      harness.emitEvent("tauri://drag-enter", {
+        paths: ["/tmp/spec.pdf"],
+        position: { x: 215, y: 215 },
+      });
+    }
+    harness.emitEvent("tauri://drag-leave", {});
+    await flushMicrotasks();
+
+    // Selection MUST stay locked on sector 2 and NEVER jump to top-left slot 7
+    expect(groups[2].classList.contains("is-active")).toBe(true);
+    expect(groups[7].classList.contains("is-active")).toBe(false);
+
+    // Repeat KeyDown on ArrowDown during drag must not cycle selection away from cursor
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", repeat: true }));
+    await flushMicrotasks();
+    expect(groups[2].classList.contains("is-active")).toBe(true);
+
+    // Releasing left mouse button at cursor (344, 220) commits conversion once for slot 2's format
+    const slot2Label = groups[2].querySelector(".wheel-sector-label")?.textContent?.trim();
+    expect(Boolean(slot2Label)).toBe(true);
+    harness.emitEvent("wheel:pointer-release", { button: 0, localX: 344, localY: 220 });
+    harness.emitEvent("tauri://drag-drop", {
+      paths: ["/tmp/spec.pdf"],
+      position: { x: 220, y: 220 },
+    });
+    await flushMicrotasks();
+
+    const execCalls = harness.calls.filter((c) => c.cmd === "execute_conversion");
+    expect(execCalls.length).toBe(1);
+    expect(execCalls[0].args.formats).toEqual([slot2Label]);
     });
   });
 

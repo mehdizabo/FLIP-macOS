@@ -140,8 +140,10 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
             if let Ok(mut gate) = state.order_gate.lock() {
                 gate.mouse_up();
             }
-            let x = val.get("x").and_then(|v| v.as_f64()).unwrap_or(-1.0);
-            let y = val.get("y").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+            let x_opt = val.get("x").and_then(|v| v.as_f64());
+            let y_opt = val.get("y").and_then(|v| v.as_f64());
+            let x = x_opt.unwrap_or(-1.0);
+            let y = y_opt.unwrap_or(-1.0);
             let (is_open, is_drag, wx, wy, open_epoch) = state
                 .wheel
                 .lock()
@@ -153,8 +155,18 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
                     && x <= (wx as f64 + WHEEL_WINDOW_SIZE as f64 + 24.0)
                     && y >= (wy as f64 - 24.0)
                     && y <= (wy as f64 + WHEEL_WINDOW_SIZE as f64 + 24.0);
+                if let (Some(px), Some(py)) = (x_opt, y_opt) {
+                    let local_x = px - wx as f64;
+                    let local_y = py - wy as f64;
+                    if let Some(win) = app.get_webview_window("wheel") {
+                        let _ = win.emit(
+                            "wheel:pointer-release",
+                            json!({ "button": 0, "localX": local_x, "localY": local_y }),
+                        );
+                    }
+                }
                 let grace = if inside_wheel {
-                    Duration::from_millis(220)
+                    Duration::from_millis(380)
                 } else {
                     Duration::from_millis(60)
                 };

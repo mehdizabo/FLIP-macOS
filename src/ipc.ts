@@ -1197,13 +1197,20 @@ export async function subscribeNativeDragDrop(
     const webview = getCurrentWebview();
     return await webview.onDragDropEvent((event) => {
       const dpr = window.devicePixelRatio || 1;
+      const toLogical = (pos: { x: number; y: number }) =>
+        pos.x > 440 * 1.25 || pos.y > 440 * 1.25
+          ? { x: pos.x / dpr, y: pos.y / dpr }
+          : { x: pos.x, y: pos.y };
       const p = event.payload;
       if (p.type === "enter") {
-        callbacks.onEnter?.(p.paths, p.position.x / dpr, p.position.y / dpr);
+        const pt = toLogical(p.position);
+        callbacks.onEnter?.(p.paths, pt.x, pt.y);
       } else if (p.type === "over") {
-        callbacks.onOver?.(p.position.x / dpr, p.position.y / dpr);
+        const pt = toLogical(p.position);
+        callbacks.onOver?.(pt.x, pt.y);
       } else if (p.type === "drop") {
-        callbacks.onDrop?.(p.paths, p.position.x / dpr, p.position.y / dpr);
+        const pt = toLogical(p.position);
+        callbacks.onDrop?.(p.paths, pt.x, pt.y);
       } else if (p.type === "leave") {
         callbacks.onLeave?.();
       }
