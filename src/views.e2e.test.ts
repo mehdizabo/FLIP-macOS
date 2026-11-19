@@ -1703,6 +1703,82 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     });
   });
 
+  test("WheelView: Smart vs Raw Code toggle (#wheel-raw-toggle, R key, and Option+Click) passes rawMode cleanly", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    const rawBtn = root.querySelector<HTMLButtonElement>("#wheel-raw-toggle")!;
+    expect(rawBtn).not.toBeNull();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
+    expect(rawBtn.classList.contains("is-raw")).toBe(false);
+    expect(rawBtn.textContent).toContain(t("en", "wheel.mode.smart"));
+
+    // Click #wheel-raw-toggle -> enables Raw Mode and updates button + hub hint
+    rawBtn.click();
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(rawBtn.classList.contains("is-raw")).toBe(true);
+    expect(rawBtn.textContent).toContain(t("en", "wheel.mode.raw"));
+    expect(root.querySelector(".wheel-hub-subtitle")?.textContent).toContain(
+      t("en", "wheel.mode.raw"),
+    );
+
+    // Trigger slot 0 via key "1" -> passes rawMode: true
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "1" }));
+    await flushMicrotasks();
+    const firstExec = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+    expect(firstExec?.args.rawMode).toBe(true);
+
+    // Wait for auto-close or reset state via wheel:state -> resets rawMode to false
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/page.html"],
+      isDrag: false,
+      compatibleFormats: ["MD", "TXT", "PDF"],
+      batchActions: [],
+      availabilityMessage: "",
+      family: "document",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
+
+    // Pressing "r" toggles Raw Mode on; pressing "R" toggles it back off
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "r" }));
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("true");
+
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "R" }));
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
+
+    // Switching to New File mode hides #wheel-raw-toggle and ignores R key
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    await flushMicrotasks();
+    expect(rawBtn.style.display).toBe("none");
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "r" }));
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
+
+    // Tab back to Convert mode, then Option+Click (altKey: true) on sector triggers instant conversion with rawMode: true
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    await flushMicrotasks();
+    expect(rawBtn.style.display).toBe("inline-flex");
+    const firstSector = root.querySelector('.wheel-sector-group[data-slot-index="0"]') as unknown as ShimElement;
+    firstSector.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0, altKey: true }),
+    );
+    await flushMicrotasks();
+    const altExec = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+    expect(altExec?.args.rawMode).toBe(true);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // 2. SettingsView E2E
   // -----------------------------------------------------------------------
@@ -1944,7 +2020,21 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     const pdfExecCall = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
     expect(pdfExecCall!.args.formats).toContain("OPTIMIZE_PDF");
     expect(pdfExecCall!.args.formats).toContain("ZIP");
+    expect(pdfExecCall!.args.rawMode).toBe(false);
     expect(root.querySelectorAll(".batch-result-row").length).toBe(2);
+
+    // Toggling #batch-raw-mode-toggle passes rawMode: true to execute_conversion
+    const batchRawToggle = root.querySelector<HTMLInputElement>("#batch-raw-mode-toggle")!;
+    expect(batchRawToggle).not.toBeNull();
+    expect(batchRawToggle.checked).toBe(false);
+    batchRawToggle.click();
+    await flushMicrotasks();
+    expect(batchRawToggle.checked).toBe(true);
+
+    root.querySelector<HTMLButtonElement>("#batch-run-btn")!.click();
+    await flushMicrotasks();
+    const rawBatchCall = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+    expect(rawBatchCall!.args.rawMode).toBe(true);
     });
   });
 

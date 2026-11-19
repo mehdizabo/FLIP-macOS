@@ -592,6 +592,7 @@ export async function getThumbnail(path: string, size = 128): Promise<ThumbnailR
 export async function executeConversion(
   paths: string[],
   formats: string[],
+  options?: { rawMode?: boolean },
 ): Promise<ConversionCompletePayload> {
   if (!isTauriRuntime()) {
     mockCancelRequested = false;
@@ -667,9 +668,11 @@ export async function executeConversion(
     return payload;
   }
 
+  const rawMode = Boolean(options?.rawMode);
   const res = await invoke<ConversionCompletePayload | ConversionResult[]>("execute_conversion", {
     paths,
     formats,
+    rawMode,
   });
   if (Array.isArray(res)) {
     const failed = res.find((r) => Boolean(r.error));

@@ -6,7 +6,8 @@ use flip_lib::engines::create_new::{
     built_in_kinds, create_new_item, ensure_templates_dir_initialized, scan_user_templates,
 };
 use flip_lib::engines::{
-    bridge, convert_files, detect_tools, media, resolve_target_dir, validate_output, EngineError,
+    bridge, convert_files, convert_files_with_options, detect_tools, media, resolve_target_dir,
+    validate_output, validate_output_with_mode, EngineError,
 };
 use image::codecs::gif::GifDecoder;
 use image::{AnimationDecoder, GenericImageView, ImageBuffer, ImageFormat, Rgba};
@@ -3167,4 +3168,104 @@ fn xlsx_bidirectional_spreadsheet_sparse_cells_and_container_bomb() {
     assert!(bomb_res[0].outputs.is_empty());
 
     assert_eq!(sha256_file(&csv_path), csv_hash);
+}
+
+#[test]
+fn raw_mode_preserves_verbatim_code_and_renders_literal_pdf_while_smart_mode_converts() {
+    let dir = tempdir().unwrap();
+    let prefs = AppPreferences::default();
+    let cancel = Arc::new(AtomicBool::new(false));
+
+    let html_content = "<!DOCTYPE html><html><head><title>Test</title></head><body><h1>Heading</h1><script>const x = 1;</script></body></html>";
+    let html_path = dir.path().join("page.html");
+    fs::write(&html_path, html_content).unwrap();
+
+    // 1. Raw Mode -> MD and TXT preserve HTML source 100% verbatim
+    let raw_res = convert_files_with_options(
+        std::slice::from_ref(&html_path),
+        &["MD".into(), "TXT".into()],
+        &prefs,
+        &cancel,
+        None,
+        true,
+    )
+    .unwrap();
+    assert_eq!(raw_res.len(), 2);
+    for r in &raw_res {
+        assert!(r.error.is_none(), "raw {} failed: {:?}", r.format, r.error);
+        assert_eq!(r.outputs.len(), 1);
+        let out_str = fs::read_to_string(&r.outputs[0]).unwrap();
+        assert_eq!(out_str, html_content, "raw {} altered content", r.format);
+    }
+
+    // 2. Smart Mode -> MD and TXT perform normal HTML conversion (no <script>, heading converted)
+    let smart_dir = dir.path().join("smart");
+    fs::create_dir_all(&smart_dir).unwrap();
+    let smart_html = smart_dir.join("page.html");
+    fs::write(&smart_html, html_content).unwrap();
+    let smart_res = convert_files_with_options(
+        &[smart_html],
+        &["MD".into(), "TXT".into()],
+        &prefs,
+        &cancel,
+        None,
+        false,
+    )
+    .unwrap();
+    for r in &smart_res {
+        assert!(r.error.is_none(), "smart {} failed: {:?}", r.format, r.error);
+    }
+    let smart_md = fs::read_to_string(&smart_res.iter().find(|r| r.format == "MD").unwrap().outputs[0]).unwrap();
+    assert!(!smart_md.contains("<script>"), "smart MD kept script tag: {smart_md}");
+    assert!(smart_md.contains("Heading"), "smart MD lost Heading: {smart_md}");
+    let smart_txt = fs::read_to_string(&smart_res.iter().find(|r| r.format == "TXT").unwrap().outputs[0]).unwrap();
+    assert!(!smart_txt.contains("<h1>"), "smart TXT kept raw h1 tag: {smart_txt}");
+    assert!(smart_txt.contains("Heading"), "smart TXT lost Heading: {smart_txt}");
+
+    // 3. Raw Mode -> PDF produces valid %PDF- containing the literal HTML markup text
+    let pdf_dir = dir.path().join("pdf_raw");
+    fs::create_dir_all(&pdf_dir).unwrap();
+    let pdf_html = pdf_dir.join("code.html");
+    fs::write(&pdf_html, html_content).unwrap();
+    let raw_pdf_res = convert_files_with_options(
+        &[pdf_html],
+        &["PDF".into(), "DOCX".into(), "EPUB".into()],
+        &prefs,
+        &cancel,
+        None,
+        true,
+    )
+    .unwrap();
+    for r in &raw_pdf_res {
+        assert!(r.error.is_none(), "raw {} failed: {:?}", r.format, r.error);
+    }
+    let raw_pdf_path = PathBuf::from(&raw_pdf_res.iter().find(|r| r.format == "PDF").unwrap().outputs[0]);
+    let pdf_bytes = fs::read(&raw_pdf_path).unwrap();
+    assert!(pdf_bytes.starts_with(b"%PDF-"), "raw PDF missing %PDF- header");
+
+    let pdf_text_res = convert_files(&[raw_pdf_path], &["TXT".into()], &prefs, &cancel, None).unwrap();
+    assert!(pdf_text_res[0].error.is_none());
+    let extracted_pdf_txt = fs::read_to_string(&pdf_text_res[0].outputs[0]).unwrap();
+    let normalized_pdf_txt = extracted_pdf_txt.replace(['\r', '\n'], "");
+    assert!(
+        normalized_pdf_txt.contains("<h1>Heading</h1>")
+            && normalized_pdf_txt.contains("<script>const x = 1;</script>"),
+        "raw PDF did not preserve literal HTML tags: {extracted_pdf_txt}"
+    );
+
+    // 4. Raw Mode skips strict XML/FB2 schema validation (e.g. MD -> FB2 raw copy)
+    let md_src = dir.path().join("notes.md");
+    fs::write(&md_src, "# Raw Markdown\n\nPlain text").unwrap();
+    let raw_fb2 = convert_files_with_options(&[md_src], &["FB2".into()], &prefs, &cancel, None, true).unwrap();
+    assert!(raw_fb2[0].error.is_none(), "raw MD->FB2 failed: {:?}", raw_fb2[0].error);
+    let fb2_out = PathBuf::from(&raw_fb2[0].outputs[0]);
+    assert!(validate_output_with_mode(&fb2_out, "FB2", true).is_ok());
+    assert!(validate_output_with_mode(&fb2_out, "FB2", false).is_err());
+
+    // 5. Invalid UTF-8 file rejected cleanly in Raw Mode
+    let bad_utf8 = dir.path().join("binary.txt");
+    fs::write(&bad_utf8, [0xFF, 0xFE, 0x00, 0x80]).unwrap();
+    let bad_res = convert_files_with_options(&[bad_utf8], &["MD".into()], &prefs, &cancel, None, true).unwrap();
+    assert!(bad_res[0].error.is_some());
+    assert!(bad_res[0].outputs.is_empty());
 }

@@ -138,20 +138,28 @@ export function mountWheelView(root: HTMLElement): () => void {
   let lastAnnouncedMilestone = -1;
   let activeTargetFormat = "";
   let currentItemsCount = 0;
+  let rawMode = false;
 
   // Static shell DOM
   root.innerHTML = `
     <div class="wheel-stage" role="dialog" aria-label="${escapeHtml(t(lang(), "wheel.ariaLabel"))}">
       <div class="sr-only" id="wheel-live-announcer" aria-live="polite" aria-atomic="true"></div>
       <div class="wheel-shell" id="wheel-shell">
-        <div class="wheel-mode-pill" role="tablist" aria-label="${escapeHtml(t(lang(), "wheel.modeListLabel"))}">
-          <button type="button" class="wheel-mode-btn" data-mode="convert" role="tab">
-            ${UI_ICONS.convert}<span data-mode-label="convert">${escapeHtml(t(lang(), "wheel.modeConvert"))}</span>
+        <div class="wheel-top-bar">
+          <div class="wheel-mode-pill" role="tablist" aria-label="${escapeHtml(t(lang(), "wheel.modeListLabel"))}">
+            <button type="button" class="wheel-mode-btn" data-mode="convert" role="tab">
+              ${UI_ICONS.convert}<span data-mode-label="convert">${escapeHtml(t(lang(), "wheel.modeConvert"))}</span>
+            </button>
+            <button type="button" class="wheel-mode-btn" data-mode="new" role="tab">
+              ${UI_ICONS.newFile}<span data-mode-label="new">${escapeHtml(t(lang(), "wheel.modeNew"))}</span>
+            </button>
+            <span class="wheel-mode-tab-hint">Tab</span>
+          </div>
+          <button type="button" class="wheel-raw-toggle" id="wheel-raw-toggle" aria-pressed="false">
+            <span class="wheel-raw-dot" aria-hidden="true"></span>
+            <span id="wheel-raw-toggle-label">${escapeHtml(t(lang(), "wheel.mode.smart"))}</span>
+            <kbd class="wheel-raw-kbd">R</kbd>
           </button>
-          <button type="button" class="wheel-mode-btn" data-mode="new" role="tab">
-            ${UI_ICONS.newFile}<span data-mode-label="new">${escapeHtml(t(lang(), "wheel.modeNew"))}</span>
-          </button>
-          <span class="wheel-mode-tab-hint">Tab</span>
         </div>
 
         <div class="wheel-glass-ring" aria-hidden="true"></div>
@@ -217,6 +225,8 @@ export function mountWheelView(root: HTMLElement): () => void {
   const hubEl = root.querySelector<HTMLElement>("#wheel-hub")!;
   const pageDotsEl = root.querySelector<HTMLElement>("#wheel-page-dots")!;
   const modeButtons = Array.from(root.querySelectorAll<HTMLButtonElement>(".wheel-mode-btn"));
+  const rawToggleBtn = root.querySelector<HTMLButtonElement>("#wheel-raw-toggle")!;
+  const rawToggleLabelEl = root.querySelector<HTMLElement>("#wheel-raw-toggle-label")!;
 
   let sectorGroups: SVGGElement[] = [];
 
@@ -391,6 +401,13 @@ export function mountWheelView(root: HTMLElement): () => void {
         btn.title = t(l, "wheel.modeNewTitle");
       }
     }
+
+    const showRawToggle = state.mode === "convert";
+    rawToggleBtn.style.display = showRawToggle ? "inline-flex" : "none";
+    rawToggleBtn.classList.toggle("is-raw", rawMode);
+    rawToggleBtn.setAttribute("aria-pressed", rawMode ? "true" : "false");
+    rawToggleLabelEl.textContent = rawMode ? t(l, "wheel.mode.raw") : t(l, "wheel.mode.smart");
+    rawToggleBtn.title = rawMode ? t(l, "wheel.mode.raw_tooltip") : t(l, "wheel.mode.smart_tooltip");
   }
 
   function renderSectors(): void {
@@ -711,6 +728,9 @@ export function mountWheelView(root: HTMLElement): () => void {
         subtitle = hoveredSlot.item.subtitle;
         subClass = "";
       }
+    } else if (rawMode) {
+      subtitle = t(l, "wheel.mode.raw");
+      subClass = "is-raw-hint";
     }
 
     const thumbVisual = thumbnailDataUrl
@@ -932,7 +952,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     return phase;
   }
 
-  async function commitFormatConversion(formatId: string): Promise<void> {
+  async function commitFormatConversion(formatId: string, forceRaw = false): Promise<void> {
     if (getPhase() !== "idle" || state.files.length === 0) return;
     const filesSnapshot = [...state.files];
     const meta = getFormatMeta(formatId, lang());
@@ -941,7 +961,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     startConversionVisual(meta.shortLabel);
 
     try {
-      const res = await executeConversion(filesSnapshot, [formatId]);
+      const res = await executeConversion(filesSnapshot, [formatId], {
+        rawMode: Boolean(rawMode || forceRaw),
+      });
       if (disposed) return;
       if (conversionInFlight && getPhase() === "converting") {
         handleConversionComplete(res);
@@ -1023,7 +1045,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
   }
 
-  function activateSlot(idx: number): void {
+  function activateSlot(idx: number, options: { forceRaw?: boolean } = {}): void {
     if (phase !== "idle") return;
     const slot = slots[idx];
     if (!slot) return;
@@ -1056,7 +1078,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (state.mode === "new") {
       void commitCreateNew(slot.item);
     } else {
-      void commitFormatConversion(slot.item.id);
+      void commitFormatConversion(slot.item.id, Boolean(options.forceRaw));
     }
   }
 
@@ -1134,11 +1156,13 @@ export function mountWheelView(root: HTMLElement): () => void {
     stopProgressLoop();
     progressLayer.style.display = "none";
 
-    const modeOrFilesChanged =
-      next.mode !== state.mode ||
-      next.files.join("\n") !== state.files.join("\n");
+    const filesChanged = next.files.join("\n") !== state.files.join("\n");
+    const modeOrFilesChanged = next.mode !== state.mode || filesChanged;
 
     state = next;
+    if (wasClosing || filesChanged) {
+      rawMode = false;
+    }
     if (modeOrFilesChanged) {
       page = 0;
       activeIndex = -1;
@@ -1238,6 +1262,23 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
   }
 
+  function toggleRawMode(): void {
+    if (phase !== "idle" || state.mode !== "convert") return;
+    rawMode = !rawMode;
+    void playWheelFeedback("tick");
+    updateModePillUI();
+    renderHub();
+    announce(rawMode ? t(lang(), "wheel.mode.raw") : t(lang(), "wheel.mode.smart"), {
+      force: true,
+    });
+  }
+
+  rawToggleBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    rawToggleBtn.blur();
+    toggleRawMode();
+  });
+
   // Mode pill listeners
   for (const btn of modeButtons) {
     btn.addEventListener("click", (ev) => {
@@ -1301,7 +1342,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (
       state.mode === "convert" &&
       slot.kind === "item" &&
-      (ev.shiftKey || ev.altKey) &&
+      ev.shiftKey &&
+      !ev.altKey &&
       state.files.length > 0
     ) {
       void openBatchWithFiles(state.files).then(() => {
@@ -1309,7 +1351,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       });
       return;
     }
-    activateSlot(hit);
+    activateSlot(hit, { forceRaw: ev.altKey });
   };
 
   svgEl.addEventListener("pointermove", onPointerMove);
@@ -1322,7 +1364,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     const target = ev.target;
     if (
       target instanceof Element &&
-      target.closest("#wheel-hub, .wheel-mode-pill, .wheel-page-dots, .wheel-preview-dock, .wheel-sector-group")
+      target.closest(
+        "#wheel-hub, .wheel-top-bar, .wheel-mode-pill, #wheel-raw-toggle, .wheel-page-dots, .wheel-preview-dock, .wheel-sector-group",
+      )
     ) {
       return;
     }
@@ -1364,6 +1408,18 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (ev.key === "Tab") {
       ev.preventDefault();
       void toggleMode();
+      return;
+    }
+
+    if (
+      state.mode === "convert" &&
+      !ev.metaKey &&
+      !ev.ctrlKey &&
+      !ev.altKey &&
+      (ev.key === "r" || ev.key === "R")
+    ) {
+      ev.preventDefault();
+      toggleRawMode();
       return;
     }
 

@@ -49,6 +49,7 @@ export function mountBatchView(root: HTMLElement): () => void {
     family: null,
   };
   let selectedFormats = new Set<string>();
+  let rawMode = false;
   let busy = false;
   let progressPct = 0;
   let statusMode: BatchStatusMode = { kind: "prompt" };
@@ -148,6 +149,13 @@ export function mountBatchView(root: HTMLElement): () => void {
       </section>
 
       <section class="glass-card">
+        <label class="batch-raw-toggle" for="batch-raw-mode-toggle">
+          <input type="checkbox" id="batch-raw-mode-toggle" />
+          <span class="batch-raw-toggle-text">
+            <span class="batch-raw-toggle-label" id="batch-raw-mode-label"></span>
+            <span class="setting-desc" id="batch-raw-mode-hint"></span>
+          </span>
+        </label>
         <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
           <div style="display:flex;gap:8px;align-items:center">
             <button type="button" class="btn btn-primary" id="batch-run-btn" disabled></button>
@@ -185,6 +193,9 @@ export function mountBatchView(root: HTMLElement): () => void {
   const compatSubtitleEl = root.querySelector<HTMLElement>("#batch-compat-subtitle")!;
   const runBtn = root.querySelector<HTMLButtonElement>("#batch-run-btn")!;
   const cancelBtn = root.querySelector<HTMLButtonElement>("#batch-cancel-btn")!;
+  const rawModeChk = root.querySelector<HTMLInputElement>("#batch-raw-mode-toggle")!;
+  const rawModeLabelEl = root.querySelector<HTMLElement>("#batch-raw-mode-label")!;
+  const rawModeHintEl = root.querySelector<HTMLElement>("#batch-raw-mode-hint")!;
   const progressCopyDiagBtn = root.querySelector<HTMLButtonElement>("#batch-progress-copy-diag")!;
   const progressDiagFallbackEl = root.querySelector<HTMLElement>("#batch-progress-diag-fallback")!;
   const progressLabelEl = root.querySelector<HTMLElement>("#batch-progress-label")!;
@@ -217,6 +228,8 @@ export function mountBatchView(root: HTMLElement): () => void {
     root.querySelector("#batch-actions-heading")!.textContent = t(l, "batch.batchActionsHeading");
     runBtn.textContent = t(l, "batch.convertSelected");
     cancelBtn.textContent = t(l, "common.cancel");
+    rawModeLabelEl.textContent = t(l, "batch.raw_mode");
+    rawModeHintEl.textContent = t(l, "batch.raw_mode_hint");
     root.querySelector("#batch-results-title")!.textContent = t(l, "batch.resultsTitle");
   }
 
@@ -318,6 +331,8 @@ export function mountBatchView(root: HTMLElement): () => void {
       }
     }
 
+    rawModeChk.checked = rawMode;
+    rawModeChk.disabled = busy;
     runBtn.disabled = busy || files.length === 0 || selectedFormats.size === 0;
     cancelBtn.disabled = !busy;
     progressLabelEl.textContent = resolveStatusText();
@@ -593,6 +608,10 @@ export function mountBatchView(root: HTMLElement): () => void {
     render();
   }
 
+  rawModeChk.addEventListener("change", () => {
+    rawMode = rawModeChk.checked;
+  });
+
   runBtn.addEventListener("click", async () => {
     if (busy || files.length === 0 || selectedFormats.size === 0) return;
     busy = true;
@@ -606,7 +625,7 @@ export function mountBatchView(root: HTMLElement): () => void {
 
     try {
       const formatsList = Array.from(selectedFormats);
-      const res = await executeConversion(files, formatsList);
+      const res = await executeConversion(files, formatsList, { rawMode });
       finishBatchRun(res);
     } catch (err) {
       if (disposed || !busy) return;

@@ -203,6 +203,14 @@ fn gate() -> &'static Mutex<()> {
 }
 
 pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
+    validate_output_with_mode(path, format, false)
+}
+
+pub fn validate_output_with_mode(
+    path: &Path,
+    format: &str,
+    raw_mode: bool,
+) -> Result<(), EngineError> {
     let meta = fs::metadata(path).map_err(|e| {
         EngineError::ValidationFailed(path.display().to_string(), e.to_string())
     })?;
@@ -221,6 +229,24 @@ pub fn validate_output(path: &Path, format: &str) -> Result<(), EngineError> {
             path.display().to_string(),
             "Output file is empty".to_string(),
         ));
+    }
+
+    if raw_mode
+        && matches!(
+            fmt.as_str(),
+            "JSON" | "YAML" | "YML" | "TOML" | "FB2" | "XML" | "RST" | "TXT" | "MD" | "HTML" | "CSV"
+        )
+    {
+        let raw = fs::read_to_string(path).map_err(|e| {
+            EngineError::ValidationFailed(path.display().to_string(), e.to_string())
+        })?;
+        if raw.is_empty() {
+            return Err(EngineError::ValidationFailed(
+                path.display().to_string(),
+                format!("{fmt} output is empty"),
+            ));
+        }
+        return Ok(());
     }
 
     match fmt.as_str() {
@@ -661,6 +687,17 @@ pub fn convert_files(
     cancel: &Arc<AtomicBool>,
     progress: Option<ProgressCallback<'_>>,
 ) -> Result<Vec<ConversionResult>, EngineError> {
+    convert_files_with_options(paths, formats, prefs, cancel, progress, false)
+}
+
+pub fn convert_files_with_options(
+    paths: &[PathBuf],
+    formats: &[String],
+    prefs: &AppPreferences,
+    cancel: &Arc<AtomicBool>,
+    progress: Option<ProgressCallback<'_>>,
+    raw_mode: bool,
+) -> Result<Vec<ConversionResult>, EngineError> {
     if cancel.load(Ordering::Relaxed) {
         return Err(EngineError::Cancelled);
     }
@@ -753,15 +790,24 @@ pub fn convert_files(
                 cb(base_pct, &step_label);
             }
 
-            match convert_single_unit(source, format, prefs, &tools, &caps, cancel, &|pct| {
-                if let Some(cb) = progress {
-                    let mapped = (((completed_units as f64) + (pct as f64 / 100.0)) * 100.0
-                        / (total_units as f64))
-                        .round()
-                        .clamp(3.0, 98.0) as u8;
-                    cb(mapped, &step_label);
-                }
-            }) {
+            match convert_single_unit(
+                source,
+                format,
+                prefs,
+                &tools,
+                &caps,
+                cancel,
+                raw_mode,
+                &|pct| {
+                    if let Some(cb) = progress {
+                        let mapped = (((completed_units as f64) + (pct as f64 / 100.0)) * 100.0
+                            / (total_units as f64))
+                            .round()
+                            .clamp(3.0, 98.0) as u8;
+                        cb(mapped, &step_label);
+                    }
+                },
+            ) {
                 Ok(outputs_vec) => {
                     let out_strings: Vec<String> = outputs_vec
                         .into_iter()
@@ -773,6 +819,7 @@ pub fn convert_files(
                             "source": source.to_string_lossy(),
                             "format": format,
                             "outputs": &out_strings,
+                            "rawMode": raw_mode,
                         })),
                     );
                     results.push(ConversionResult {
@@ -892,6 +939,138 @@ fn run_zip_archive(
     Ok(committed)
 }
 
+pub fn is_raw_text_source_ext(ext: &str) -> bool {
+    matches!(
+        ext,
+        "txt"
+            | "md"
+            | "markdown"
+            | "html"
+            | "htm"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "toml"
+            | "xml"
+            | "csv"
+            | "rst"
+            | "fb2"
+            | "svg"
+    )
+}
+
+fn is_raw_text_target_format(format: &str) -> bool {
+    matches!(
+        format,
+        "TXT" | "MD" | "HTML" | "RST" | "CSV" | "JSON" | "YAML" | "YML" | "TOML" | "XML" | "FB2"
+    )
+}
+
+fn is_raw_rendered_target_format(format: &str) -> bool {
+    matches!(
+        format,
+        "PDF" | "DOCX" | "RTF" | "ODT" | "EPUB" | "PNG" | "JPG" | "WEBP" | "HEIC"
+    )
+}
+
+fn convert_raw_text_unit(
+    source: &Path,
+    format: &str,
+    staging: &JobStaging,
+    prefs: &AppPreferences,
+    tools: &DetectedTools,
+    cancel: &Arc<AtomicBool>,
+    unit_progress: &dyn Fn(u8),
+) -> Result<Option<Vec<PathBuf>>, EngineError> {
+    if !is_raw_text_target_format(format) && !is_raw_rendered_target_format(format) {
+        return Ok(None);
+    }
+
+    let meta = fs::metadata(source)?;
+    if meta.len() > document::MAX_HTML_READ_BYTES {
+        return Err(EngineError::ConversionFailed(format!(
+            "Source file exceeds {} MiB raw text read limit",
+            document::MAX_HTML_READ_BYTES / (1024 * 1024)
+        )));
+    }
+
+    let raw_text = fs::read_to_string(source).map_err(|e| {
+        EngineError::ConversionFailed(format!(
+            "Raw mode requires valid UTF-8 text source `{}`: {e}",
+            source.display()
+        ))
+    })?;
+
+    if is_raw_text_target_format(format) {
+        unit_progress(60);
+        let out = staging.staged_path(&format!("output.{}", format_extension(format)));
+        fs::write(&out, raw_text.as_bytes())?;
+        return Ok(Some(vec![out]));
+    }
+
+    let raw_txt_path = staging.dir().join("raw-source.txt");
+    fs::write(&raw_txt_path, raw_text.as_bytes())?;
+    let outputs_vec = document::convert(
+        &raw_txt_path,
+        format,
+        staging.dir(),
+        prefs,
+        tools,
+        cancel,
+        unit_progress,
+    )?;
+    Ok(Some(outputs_vec))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn convert_standard_unit(
+    source: &Path,
+    ext: &str,
+    format: &str,
+    staging: &JobStaging,
+    prefs: &AppPreferences,
+    tools: &DetectedTools,
+    cancel: &Arc<AtomicBool>,
+    unit_progress: &dyn Fn(u8),
+) -> Result<Vec<PathBuf>, EngineError> {
+    if IMAGE_EXTS.contains(&ext) {
+        unit_progress(35);
+        let out = staging.staged_path(&format!("output.{}", format_extension(format)));
+        image::convert(
+            source,
+            format,
+            &out,
+            staging.dir(),
+            image::ImageEncodeOptions {
+                quality_pct: prefs.image_quality,
+                preserve_exif: prefs.preserve_exif,
+                strip_gps_exif: prefs.strip_gps_exif,
+            },
+            cancel,
+        )?;
+        Ok(vec![out])
+    } else if crate::core::policy::DATA_EXTS.contains(&ext) {
+        unit_progress(40);
+        let out = staging.staged_path(&format!("output.{}", format_extension(format)));
+        data::convert(source, format, &out, staging.dir(), &prefs.pdf_page_size, cancel)?;
+        Ok(vec![out])
+    } else if is_media_ext(ext) {
+        let out = staging.staged_path(&format!("output.{}", format_extension(format)));
+        media::convert(source, format, &out, tools, cancel, unit_progress)?;
+        Ok(vec![out])
+    } else if ext == "pdf" {
+        pdf::convert(source, format, staging.dir(), prefs, tools, cancel, unit_progress)
+    } else if ARCHIVE_EXTS.contains(&ext) {
+        unit_progress(35);
+        let extract_dir = staging.staged_path("extracted");
+        archive::unzip_archive(source, &extract_dir, cancel)?;
+        Ok(vec![extract_dir])
+    } else {
+        document::convert(source, format, staging.dir(), prefs, tools, cancel, unit_progress)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn convert_single_unit(
     source: &Path,
     format: &str,
@@ -899,6 +1078,7 @@ fn convert_single_unit(
     tools: &DetectedTools,
     caps: &EngineCapabilities,
     cancel: &Arc<AtomicBool>,
+    raw_mode: bool,
     unit_progress: &dyn Fn(u8),
 ) -> Result<Vec<PathBuf>, EngineError> {
     let available = outputs(&[source], caps);
@@ -916,40 +1096,40 @@ fn convert_single_unit(
     let target_dir = resolve_target_dir(source, prefs)?;
     let staging = JobStaging::create(&target_dir)?;
 
-    let staged_outputs: Vec<PathBuf> = if IMAGE_EXTS.contains(&ext.as_str()) {
-        unit_progress(35);
-        let out = staging.staged_path(&format!("output.{}", format_extension(format)));
-        image::convert(
+    let staged_outputs: Vec<PathBuf> = if raw_mode && is_raw_text_source_ext(&ext) {
+        if let Some(raw_outputs) = convert_raw_text_unit(
             source,
             format,
-            &out,
-            staging.dir(),
-            image::ImageEncodeOptions {
-                quality_pct: prefs.image_quality,
-                preserve_exif: prefs.preserve_exif,
-                strip_gps_exif: prefs.strip_gps_exif,
-            },
+            &staging,
+            prefs,
+            tools,
             cancel,
-        )?;
-        vec![out]
-    } else if crate::core::policy::DATA_EXTS.contains(&ext.as_str()) {
-        unit_progress(40);
-        let out = staging.staged_path(&format!("output.{}", format_extension(format)));
-        data::convert(source, format, &out, staging.dir(), &prefs.pdf_page_size, cancel)?;
-        vec![out]
-    } else if is_media_ext(&ext) {
-        let out = staging.staged_path(&format!("output.{}", format_extension(format)));
-        media::convert(source, format, &out, tools, cancel, unit_progress)?;
-        vec![out]
-    } else if ext == "pdf" {
-        pdf::convert(source, format, staging.dir(), prefs, tools, cancel, unit_progress)?
-    } else if ARCHIVE_EXTS.contains(&ext.as_str()) {
-        unit_progress(35);
-        let extract_dir = staging.staged_path("extracted");
-        archive::unzip_archive(source, &extract_dir, cancel)?;
-        vec![extract_dir]
+            unit_progress,
+        )? {
+            raw_outputs
+        } else {
+            convert_standard_unit(
+                source,
+                &ext,
+                format,
+                &staging,
+                prefs,
+                tools,
+                cancel,
+                unit_progress,
+            )?
+        }
     } else {
-        document::convert(source, format, staging.dir(), prefs, tools, cancel, unit_progress)?
+        convert_standard_unit(
+            source,
+            &ext,
+            format,
+            &staging,
+            prefs,
+            tools,
+            cancel,
+            unit_progress,
+        )?
     };
 
     if cancel.load(Ordering::Relaxed) {
@@ -963,7 +1143,7 @@ fn convert_single_unit(
     }
 
     for staged in &staged_outputs {
-        validate_output(staged, format)?;
+        validate_output_with_mode(staged, format, raw_mode)?;
     }
 
     let is_multipage = staged_outputs.len() > 1

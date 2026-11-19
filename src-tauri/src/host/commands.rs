@@ -15,7 +15,9 @@ use crate::engines::create_new::{
     built_in_kinds, create_new_item, ensure_templates_dir_initialized, scan_user_templates,
     CreateNewResult, NewFileKindInfo, UserTemplateInfo,
 };
-use crate::engines::{convert_files, detect_tools, ConversionResult, DetectedTools, EngineError};
+use crate::engines::{
+    convert_files_with_options, detect_tools, ConversionResult, DetectedTools, EngineError,
+};
 use crate::host::tray::{open_templates_folder_in_finder, reveal_logs_in_finder, sync_tray_and_windows};
 use crate::host::{
     hide_wheel, inspect_paths_with_prefs, present_wheel_at, query_finder_context_or_fallback,
@@ -307,6 +309,7 @@ pub fn spawn_completion_notification(
 pub async fn execute_conversion(
     paths: Vec<String>,
     formats: Vec<String>,
+    raw_mode: Option<bool>,
     window: tauri::WebviewWindow,
     app: AppHandle,
     state: State<'_, Arc<HostState>>,
@@ -349,9 +352,10 @@ pub async fn execute_conversion(
     let app_for_progress = app.clone();
     let cancel_for_job = Arc::clone(&cancel);
     let started = std::time::Instant::now();
+    let raw = raw_mode.unwrap_or(false);
 
     let outcome = tokio::task::spawn_blocking(move || {
-        convert_files(
+        convert_files_with_options(
             &path_bufs,
             &formats,
             &prefs,
@@ -365,6 +369,7 @@ pub async fn execute_conversion(
                     }),
                 );
             }),
+            raw,
         )
     })
     .await

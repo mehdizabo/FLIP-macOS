@@ -87,13 +87,20 @@ html[data-route="wheel"] body.wheel-browser-preview {
   83% { transform: translateX(-3px); }
 }
 
-/* Top Floating Liquid Glass Mode Pill */
-.wheel-mode-pill {
+/* Top Floating Liquid Glass Mode Pill & Raw Toggle Bar */
+.wheel-top-bar {
   position: absolute;
   top: 6px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.wheel-mode-pill {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -106,6 +113,79 @@ html[data-route="wheel"] body.wheel-browser-preview {
   box-shadow:
     0 8px 24px rgba(0, 0, 0, 0.36),
     inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+.wheel-raw-toggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(20, 23, 30, 0.72);
+  backdrop-filter: blur(26px) saturate(190%);
+  -webkit-backdrop-filter: blur(26px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.36),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  color: rgba(255, 255, 255, 0.8);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.wheel-raw-toggle:hover {
+  color: #ffffff;
+  background: rgba(30, 35, 46, 0.84);
+  border-color: rgba(255, 255, 255, 0.36);
+}
+
+.wheel-raw-toggle.is-raw {
+  color: #fef3c7;
+  background: linear-gradient(180deg, rgba(245, 158, 11, 0.34), rgba(217, 119, 6, 0.26));
+  border-color: rgba(251, 191, 36, 0.65);
+  box-shadow:
+    0 8px 24px rgba(0, 0, 0, 0.36),
+    0 0 12px rgba(245, 158, 11, 0.28),
+    inset 0 1px 0 rgba(254, 243, 199, 0.4);
+}
+
+.wheel-raw-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #38bdf8;
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.7);
+  transition: background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.wheel-raw-toggle.is-raw .wheel-raw-dot {
+  background: #fbbf24;
+  box-shadow: 0 0 8px rgba(251, 191, 36, 0.9);
+}
+
+.wheel-raw-kbd {
+  font-family: inherit;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.wheel-raw-toggle.is-raw .wheel-raw-kbd {
+  background: rgba(251, 191, 36, 0.24);
+  color: #fef3c7;
 }
 
 .wheel-mode-btn {
@@ -514,6 +594,10 @@ html[data-route="wheel"] body.wheel-browser-preview {
   color: #6ee7b7;
 }
 
+.wheel-hub-subtitle.is-raw-hint {
+  color: #fbbf24;
+}
+
 .wheel-hub-actions {
   margin-top: 4px;
   display: inline-flex;
@@ -700,7 +784,8 @@ html[data-route="wheel"] body.wheel-browser-preview {
 @media (prefers-reduced-transparency: reduce) {
   .wheel-glass-ring,
   .wheel-hub,
-  .wheel-mode-pill {
+  .wheel-mode-pill,
+  .wheel-raw-toggle {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
     background: rgba(22, 24, 30, 0.96);

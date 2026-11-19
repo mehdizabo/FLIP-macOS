@@ -7,7 +7,7 @@ use crate::core::quick_actions::{
 use crate::core::startup::LOGIN_ITEM_ARG;
 use crate::engines::create_new::{built_in_kinds, create_new_item};
 use crate::engines::document::xml_escape;
-use crate::engines::{convert_files, detect_tools, ConversionResult};
+use crate::engines::{convert_files_with_options, detect_tools, ConversionResult};
 use crate::host::commands::ConversionCompletePayload;
 use serde_json::json;
 use std::ffi::OsString;
@@ -27,6 +27,7 @@ pub enum CliCommand {
     Convert {
         files: Vec<PathBuf>,
         formats: Vec<String>,
+        raw: bool,
     },
     New {
         kind: String,
@@ -73,7 +74,8 @@ pub fn help_text() -> String {
         "FLIP {} — Local macOS file converter & Create New File utility\n\n\
 USAGE:\n  \
   flip                                         Launch menu bar app\n  \
-  flip convert <file...> --to <FMT[,FMT2]>     Convert file(s) locally and print JSON\n  \
+  flip convert <file...> --to <FMT[,FMT2]> [--raw]
+                                               Convert file(s) locally and print JSON (--raw keeps original code/markup)\n  \
   flip new <kind> [--in <folder>] [--no-rename]\n                                               Create a new file/folder and print JSON\n  \
   flip wheel [--mode convert|new] [files...]   Open the radial wheel (launches FLIP if needed)\n  \
   flip settings                                Open FLIP Settings window\n  \
@@ -140,6 +142,7 @@ where
                 FlipUrlAction::Convert { files, formats } => Ok(CliCommand::Convert {
                     files: files.into_iter().map(PathBuf::from).collect(),
                     formats,
+                    raw: false,
                 }),
                 FlipUrlAction::CreateNew {
                     kind: Some(kind),
@@ -165,6 +168,7 @@ where
 fn parse_convert_args(args: &[String]) -> Result<CliCommand, String> {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut formats: Vec<String> = Vec::new();
+    let mut raw = false;
     let mut i = 0;
     let mut positional_only = false;
 
@@ -177,6 +181,11 @@ fn parse_convert_args(args: &[String]) -> Result<CliCommand, String> {
         }
         if !positional_only && (arg == "--help" || arg == "-h") {
             return Ok(CliCommand::Help);
+        }
+        if !positional_only && arg == "--raw" {
+            raw = true;
+            i += 1;
+            continue;
         }
         if !positional_only && (arg == "--to" || arg == "-t") {
             let val = args
@@ -207,7 +216,11 @@ fn parse_convert_args(args: &[String]) -> Result<CliCommand, String> {
         return Err("`flip convert` requires `--to <FORMAT[,FORMAT2]>`.".to_string());
     }
 
-    Ok(CliCommand::Convert { files, formats })
+    Ok(CliCommand::Convert {
+        files,
+        formats,
+        raw,
+    })
 }
 
 fn parse_new_args(args: &[String]) -> Result<CliCommand, String> {
@@ -794,11 +807,15 @@ where
             stdout: format!("{}\n", version_text()),
             stderr: String::new(),
         },
-        CliCommand::Convert { files, formats } => {
+        CliCommand::Convert {
+            files,
+            formats,
+            raw,
+        } => {
             let resolved_files: Vec<PathBuf> =
                 files.iter().map(|p| resolve_cli_path(p, cwd)).collect();
             let cancel = Arc::new(AtomicBool::new(false));
-            match convert_files(&resolved_files, &formats, prefs, &cancel, None) {
+            match convert_files_with_options(&resolved_files, &formats, prefs, &cancel, None, raw) {
                 Ok(results) => {
                     let first_err = results.iter().find_map(|r| r.error.clone());
                     let success = !results.is_empty() && first_err.is_none();
@@ -1502,6 +1519,15 @@ mod tests {
             CliCommand::Convert {
                 files: vec![PathBuf::from("a.png"), PathBuf::from("b.jpg")],
                 formats: vec!["WEBP".to_string(), "PDF".to_string()],
+                raw: false,
+            }
+        );
+        assert_eq!(
+            parse_cli_args(["flip", "convert", "page.html", "--to", "MD", "--raw"]).unwrap(),
+            CliCommand::Convert {
+                files: vec![PathBuf::from("page.html")],
+                formats: vec!["MD".to_string()],
+                raw: true,
             }
         );
         assert_eq!(
@@ -1509,6 +1535,7 @@ mod tests {
             CliCommand::Convert {
                 files: vec![PathBuf::from("-dash.heic")],
                 formats: vec!["PNG".to_string()],
+                raw: false,
             }
         );
         assert_eq!(
@@ -1517,6 +1544,7 @@ mod tests {
             CliCommand::Convert {
                 files: vec![PathBuf::from("a.png")],
                 formats: vec!["JPG".to_string(), "WEBP".to_string()],
+                raw: false,
             }
         );
 
@@ -1656,6 +1684,26 @@ mod tests {
         .unwrap();
         let bad_dir_out = execute_cli_command(bad_dir_cmd, &prefs);
         assert_eq!(bad_dir_out.exit_code, 1);
+
+        // `flip convert page.html --to MD --raw` preserves HTML markup verbatim
+        let raw_html = dir.path().join("page.html");
+        let html_src = "<!DOCTYPE html><html><body><h1>Raw</h1><script>const x = 1;</script></body></html>";
+        fs::write(&raw_html, html_src).unwrap();
+        let raw_cmd = parse_cli_args([
+            "flip",
+            "convert",
+            raw_html.to_str().unwrap(),
+            "--to",
+            "MD",
+            "--raw",
+        ])
+        .unwrap();
+        let raw_out = execute_cli_command(raw_cmd, &prefs);
+        assert_eq!(raw_out.exit_code, 0, "stderr: {}", raw_out.stderr);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("page.md")).unwrap(),
+            html_src
+        );
     }
 
     #[test]

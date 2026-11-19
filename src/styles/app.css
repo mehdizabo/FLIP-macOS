@@ -683,6 +683,42 @@ html[data-route="onboarding"] body {
   color: var(--accent);
 }
 
+.batch-raw-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 9px 12px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-hairline);
+  background: var(--bg-inset);
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+
+.batch-raw-toggle input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.batch-raw-toggle:has(input:checked) {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: var(--warning-soft);
+}
+
+.batch-raw-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.batch-raw-toggle-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 .progress-bar-wrap {
   width: 100%;
   height: 7px;
