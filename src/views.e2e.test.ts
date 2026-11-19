@@ -1788,6 +1788,60 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     await flushMicrotasks();
     const altExec = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
     expect(altExec?.args.rawMode).toBe(true);
+
+    // Drag mode without wheel window focus: native wheel:toggle-raw toggles Smart <-> Raw and conversion picks up rawMode
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/page.html"],
+      isDrag: true,
+      compatibleFormats: ["MD", "TXT", "PDF"],
+      batchActions: [],
+      availabilityMessage: "",
+      family: "document",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
+
+    harness.emitEvent("wheel:toggle-raw", {});
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(rawBtn.classList.contains("is-raw")).toBe(true);
+
+    // Toggling twice returns to Smart mode, then back to Raw for conversion check
+    harness.emitEvent("wheel:toggle-raw", {});
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
+    harness.emitEvent("wheel:toggle-raw", {});
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("true");
+
+    // Releasing pointer over slot 0 (12 o'clock -> 220, 96) commits conversion with rawMode: true
+    harness.emitEvent("wheel:pointer-release", { button: 0, localX: 220, localY: 96 });
+    await flushMicrotasks();
+    const dragToggleExec = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+    expect(dragToggleExec?.args.rawMode).toBe(true);
+
+    // Switching to New File mode ignores wheel:toggle-raw safely
+    harness.emitEvent("wheel:state", {
+      mode: "new",
+      files: [],
+      isDrag: false,
+      compatibleFormats: [],
+      batchActions: [],
+      availabilityMessage: "",
+      family: null,
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
+    harness.emitEvent("wheel:toggle-raw", {});
+    await flushMicrotasks();
+    expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
     });
   });
 

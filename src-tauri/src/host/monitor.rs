@@ -369,6 +369,21 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
                 hide_wheel(app, state, "escape-key");
             }
         }
+        "toggle_raw" => {
+            if state.is_converting.load(Ordering::Relaxed) {
+                return;
+            }
+            let can_toggle = state
+                .wheel
+                .lock()
+                .map(|g| g.is_open && g.payload.mode == "convert")
+                .unwrap_or(false);
+            if can_toggle {
+                if let Some(win) = app.get_webview_window("wheel") {
+                    let _ = win.emit("wheel:toggle-raw", json!({}));
+                }
+            }
+        }
         _ => {}
     }
 }

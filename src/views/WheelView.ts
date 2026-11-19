@@ -1896,6 +1896,7 @@ export function mountWheelView(root: HTMLElement): () => void {
 
     if (
       state.mode === "convert" &&
+      !ev.repeat &&
       !ev.metaKey &&
       !ev.ctrlKey &&
       !ev.altKey &&
@@ -2144,6 +2145,10 @@ export function mountWheelView(root: HTMLElement): () => void {
         } else {
           requestDismiss("escape-event");
         }
+      }),
+      events.onWheelToggleRaw(() => {
+        if (disposed || closing) return;
+        toggleRawMode();
       }),
       events.onConversionProgress((payload) => {
         if (disposed || !conversionInFlight || phase !== "converting") return;

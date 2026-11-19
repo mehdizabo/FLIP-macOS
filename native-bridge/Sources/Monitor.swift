@@ -74,6 +74,7 @@ final class MonitorController {
     private var dragWheelTriggeredForDrag = false
     private var dragKeyHeld = false
     private var dragKeyConsumed = false
+    private var rawToggleKeyConsumed = false
     private var mouseTriggerHeld = false
     private var lastEmittedX: Double = -9999
     private var lastEmittedY: Double = -9999
@@ -174,6 +175,7 @@ final class MonitorController {
                         self.wheelOpen = nextOpen
                         if !nextOpen {
                             self.dragWheelTriggeredForDrag = false
+                            self.rawToggleKeyConsumed = false
                             self.lastEmittedX = -9999
                             self.lastEmittedY = -9999
                         } else {
@@ -406,6 +408,7 @@ final class MonitorController {
     private func tearDownMonitors() {
         dragKeyHeld = false
         dragKeyConsumed = false
+        rawToggleKeyConsumed = false
         mouseTriggerHeld = false
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
@@ -523,6 +526,25 @@ final class MonitorController {
             }
         }
 
+        if (dragModifierOnly != nil || dragKeyCode != 15) && keyCode == 15 {
+            let disallowedMods: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl]
+            if type == .keyDown {
+                if !isRepeat {
+                    if wheelOpen && flags.intersection(disallowedMods).isEmpty {
+                        rawToggleKeyConsumed = true
+                        writeJSON(["event": "toggle_raw"])
+                        return nil
+                    }
+                    rawToggleKeyConsumed = false
+                } else if rawToggleKeyConsumed {
+                    return nil
+                }
+            } else if type == .keyUp && rawToggleKeyConsumed {
+                rawToggleKeyConsumed = false
+                return nil
+            }
+        }
+
         // 1) Idle Global Shortcut
         if type == .keyDown && !isRepeat && !dragActive, let idle = idleShortcut, idle.matches(keyCode: keyCode, flags: flags) {
             let pos = currentCursorAndScreen()
@@ -618,6 +640,14 @@ final class MonitorController {
         if event.type == .keyDown && event.keyCode == 53 {
             writeJSON(["event": "escape"])
             return
+        }
+
+        if event.type == .keyDown && !event.isARepeat && event.keyCode == 15 && wheelOpen && (dragModifierOnly != nil || dragKeyCode != 15) {
+            let modFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if modFlags.intersection([.command, .option, .control]).isEmpty {
+                writeJSON(["event": "toggle_raw"])
+                return
+            }
         }
 
         if event.type == .keyDown && !event.isARepeat && !dragActive, let idle = idleShortcut, idle.matches(event: event) {

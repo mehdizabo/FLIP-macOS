@@ -1166,6 +1166,8 @@ export const events = {
     subscribeEvent<WheelPointerReleasePayload>("wheel:pointer-release", cb),
   onWheelEscape: (cb: (p: Record<string, unknown>) => void) =>
     subscribeEvent<Record<string, unknown>>("wheel:escape", cb),
+  onWheelToggleRaw: (cb: () => void) =>
+    subscribeEvent<Record<string, unknown>>("wheel:toggle-raw", () => cb()),
   onConversionProgress: (cb: (p: ConversionProgressPayload) => void) =>
     subscribeEvent<ConversionProgressPayload>("conversion:progress", cb),
   onConversionComplete: (cb: (p: ConversionCompletePayload) => void) =>

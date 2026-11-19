@@ -128,6 +128,11 @@ pub fn configure_wheel_overlay_with_sync(
 
                 if cfg.order_front {
                     if cfg.make_key {
+                        if let Some(mtm) = mtm {
+                            let ns_app = NSApplication::sharedApplication(mtm);
+                            #[allow(deprecated)]
+                            ns_app.activateIgnoringOtherApps(true);
+                        }
                         ns_win.makeKeyAndOrderFront(None);
                     } else {
                         if let Some(mtm) = mtm {

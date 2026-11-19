@@ -552,6 +552,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         "wheel:pointer-move",
         "wheel:pointer-release",
         "wheel:escape",
+        "wheel:toggle-raw",
         "conversion:progress",
         "conversion:complete",
         "batch:files",
