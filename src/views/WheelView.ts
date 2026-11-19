@@ -174,23 +174,21 @@ export function mountWheelView(root: HTMLElement): () => void {
 
         <svg class="wheel-svg" id="wheel-svg" viewBox="0 0 ${WHEEL_CANVAS_SIZE} ${WHEEL_CANVAS_SIZE}" width="${WHEEL_CANVAS_SIZE}" height="${WHEEL_CANVAS_SIZE}">
           <defs>
-            <linearGradient id="flip-sector-rest-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="rgba(255,255,255,0.09)" />
-              <stop offset="55%" stop-color="rgba(148,163,184,0.05)" />
-              <stop offset="100%" stop-color="rgba(15,23,42,0.22)" />
+            <linearGradient id="flip-sector-rest-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="rgba(34, 37, 46, 0.95)" />
+              <stop offset="100%" stop-color="rgba(20, 22, 29, 0.96)" />
             </linearGradient>
-            <linearGradient id="flip-sector-nav-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="rgba(56,189,248,0.14)" />
-              <stop offset="100%" stop-color="rgba(37,99,235,0.12)" />
+            <linearGradient id="flip-sector-nav-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="rgba(38, 42, 54, 0.95)" />
+              <stop offset="100%" stop-color="rgba(22, 25, 34, 0.96)" />
             </linearGradient>
-            <linearGradient id="flip-sector-active-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="rgba(56,189,248,0.42)" />
-              <stop offset="55%" stop-color="rgba(14,165,233,0.45)" />
-              <stop offset="100%" stop-color="rgba(37,99,235,0.48)" />
+            <linearGradient id="flip-sector-active-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+              <stop offset="0%" stop-color="rgba(58, 64, 80, 0.98)" />
+              <stop offset="100%" stop-color="rgba(34, 38, 49, 0.98)" />
             </linearGradient>
             <linearGradient id="flip-progress-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#38bdf8" />
-              <stop offset="100%" stop-color="#818cf8" />
+              <stop offset="0%" stop-color="#0a84ff" />
+              <stop offset="100%" stop-color="#5ac8fa" />
             </linearGradient>
           </defs>
           <g id="wheel-sectors-layer"></g>
@@ -448,12 +446,12 @@ export function mountWheelView(root: HTMLElement): () => void {
       const placeholders = ["DOCX", "PDF", "MD", "HTML", "PNG", "JPG", "WEBP", "MP3"];
       sectorsLayer.innerHTML = placeholders
         .map((label, i) => {
-          const d = sectorSvgPath(i, placeholders.length);
+          const d = sectorSvgPath(i, placeholders.length, { cornerInset: 9 });
           const pos = getSectorCenter(i, placeholders.length, 124);
           return `
             <g class="wheel-sector-group is-disabled" data-slot-index="${i}" aria-hidden="true">
               <path class="wheel-sector-path" d="${d}" />
-              <foreignObject x="${pos.x - 36}" y="${pos.y - 26}" width="72" height="52">
+              <foreignObject x="${pos.x - 40}" y="${pos.y - 32}" width="80" height="64">
                 <div class="wheel-sector-content">
                   <span class="wheel-sector-icon">${getFormatMeta(label, l).iconSvg}</span>
                   <span class="wheel-sector-label">${escapeHtml(label)}</span>
@@ -470,7 +468,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     const count = slots.length;
     sectorsLayer.innerHTML = slots
       .map((slot, i) => {
-        const d = sectorSvgPath(i, count);
+        const d = sectorSvgPath(i, count, { cornerInset: 9 });
         const pos = getSectorCenter(i, count, 124);
         const isNav = slot.kind === "more" || slot.kind === "back";
         const enabled = isSlotActionable(slot);
@@ -514,7 +512,7 @@ export function mountWheelView(root: HTMLElement): () => void {
              aria-label="${escapeHtml(ariaLabel)}">
             <path class="wheel-sector-path" d="${d}" />
             <path class="wheel-sector-spec" pathLength="100" d="${d}" />
-            <foreignObject x="${pos.x - 36}" y="${pos.y - 26}" width="72" height="52">
+            <foreignObject x="${pos.x - 40}" y="${pos.y - 32}" width="80" height="64">
               <div class="wheel-sector-content">
                 <span class="wheel-sector-icon">${icon}</span>
                 <span class="wheel-sector-label">${escapeHtml(label)}</span>

@@ -108,13 +108,11 @@ html[data-route="wheel"] body.wheel-browser-preview {
   padding: 3px;
   border-radius: 999px;
   pointer-events: auto;
-  background: rgba(15, 17, 23, 0.82);
+  background: rgba(22, 24, 31, 0.92);
   backdrop-filter: blur(26px) saturate(185%);
   -webkit-backdrop-filter: blur(26px) saturate(185%);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  box-shadow:
-    0 8px 22px rgba(0, 0, 0, 0.34),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
 }
 
 .wheel-raw-toggle {
@@ -125,13 +123,11 @@ html[data-route="wheel"] body.wheel-browser-preview {
   padding: 6px 10px;
   border-radius: 999px;
   pointer-events: auto;
-  background: rgba(15, 17, 23, 0.82);
+  background: rgba(22, 24, 31, 0.92);
   backdrop-filter: blur(26px) saturate(185%);
   -webkit-backdrop-filter: blur(26px) saturate(185%);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  box-shadow:
-    0 8px 22px rgba(0, 0, 0, 0.34),
-    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
   color: rgba(255, 255, 255, 0.84);
   font-family: inherit;
   font-size: 11px;
@@ -147,8 +143,8 @@ html[data-route="wheel"] body.wheel-browser-preview {
 
 .wheel-raw-toggle:hover {
   color: #ffffff;
-  background: rgba(30, 35, 46, 0.84);
-  border-color: rgba(255, 255, 255, 0.36);
+  background: rgba(34, 38, 49, 0.94);
+  border-color: rgba(255, 255, 255, 0.24);
 }
 
 .wheel-raw-toggle.is-raw {
@@ -216,10 +212,8 @@ html[data-route="wheel"] body.wheel-browser-preview {
 
 .wheel-mode-btn.is-active {
   color: #ffffff;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.28), rgba(255, 255, 255, 0.14));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.38),
-    0 1px 4px rgba(0, 0, 0, 0.25);
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: none;
 }
 
 .wheel-mode-btn:disabled,
@@ -237,52 +231,12 @@ html[data-route="wheel"] body.wheel-browser-preview {
   pointer-events: none;
 }
 
-/* Frosted Ring Backing (strictly donut-masked, zero square artifact) */
-.wheel-glass-ring {
-  position: absolute;
-  left: 48px;
-  top: 48px;
-  width: 344px;
-  height: 344px;
-  border-radius: 50%;
-  pointer-events: none;
-  background:
-    radial-gradient(circle at 26% 22%, rgba(255, 255, 255, 0.12), transparent 50%),
-    radial-gradient(circle at 78% 82%, rgba(56, 189, 248, 0.08), transparent 44%),
-    rgba(15, 17, 23, 0.78);
-  backdrop-filter: blur(30px) saturate(185%);
-  -webkit-backdrop-filter: blur(30px) saturate(185%);
-  -webkit-mask-image: radial-gradient(circle at center, transparent 0, transparent 73px, #000 75px, #000 171px, transparent 173px);
-  mask-image: radial-gradient(circle at center, transparent 0, transparent 73px, #000 75px, #000 171px, transparent 173px);
-  box-shadow:
-    0 18px 44px rgba(0, 0, 0, 0.44),
-    0 4px 14px rgba(0, 0, 0, 0.28);
-}
-
+/* Legacy Ring Backing Nodes (kept hidden in DOM for structural compatibility) */
+.wheel-glass-ring,
 .wheel-chromatic-rim {
-  position: absolute;
-  left: 48px;
-  top: 48px;
-  width: 344px;
-  height: 344px;
-  border-radius: 50%;
+  display: none;
+  opacity: 0;
   pointer-events: none;
-  padding: 1.25px;
-  background: conic-gradient(
-    from 315deg,
-    rgba(255, 255, 255, 0.56) 0deg,
-    rgba(186, 230, 253, 0.34) 68deg,
-    rgba(255, 255, 255, 0.1) 145deg,
-    rgba(148, 163, 184, 0.16) 225deg,
-    rgba(186, 230, 253, 0.22) 295deg,
-    rgba(255, 255, 255, 0.56) 360deg
-  );
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  opacity: 0.72;
 }
 
 /* SVG Ring Canvas */
@@ -293,12 +247,12 @@ html[data-route="wheel"] body.wheel-browser-preview {
   display: block;
   z-index: 4;
   overflow: visible;
-  filter: drop-shadow(0 16px 32px rgba(0, 0, 0, 0.35));
+  filter: drop-shadow(0 18px 34px rgba(0, 0, 0, 0.45));
 }
 
 .wheel-sector-group {
   transform-origin: 220px 220px;
-  transition: transform 220ms cubic-bezier(0.22, 1.38, 0.36, 1), opacity 180ms ease;
+  transition: transform 200ms cubic-bezier(0.22, 1.18, 0.36, 1), opacity 160ms ease;
   cursor: pointer;
 }
 
@@ -313,17 +267,14 @@ html[data-route="wheel"] body.wheel-browser-preview {
 }
 
 .wheel-sector-group.is-active {
-  transform: scale(1.032);
-  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--sector-accent, #38bdf8) 52%, transparent));
+  transform: scale(1.022);
+  filter:
+    drop-shadow(0 10px 22px rgba(0, 0, 0, 0.52))
+    drop-shadow(0 0 14px color-mix(in srgb, var(--sector-accent, #0a84ff) 26%, transparent));
 }
 
 .wheel-sector-group:focus {
   outline: none;
-}
-
-.wheel-sector-group:focus-visible .wheel-sector-path {
-  stroke: rgba(125, 211, 252, 0.95);
-  stroke-width: 2.2;
 }
 
 .wheel-sector-group.is-pulsing {
@@ -331,29 +282,29 @@ html[data-route="wheel"] body.wheel-browser-preview {
 }
 
 @keyframes flip-sector-pulse {
-  0% { transform: scale(1.032); }
-  50% { transform: scale(1.072); }
-  100% { transform: scale(1.01); }
+  0% { transform: scale(1.022); }
+  50% { transform: scale(1.055); }
+  100% { transform: scale(1.0); }
 }
 
 .wheel-sector-path {
   fill: url(#flip-sector-rest-grad);
-  stroke: rgba(255, 255, 255, 0.14);
+  stroke: rgba(255, 255, 255, 0.11);
   stroke-width: 1;
   transition: fill 160ms ease, stroke 160ms ease, stroke-width 160ms ease;
 }
 
 .wheel-sector-spec {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.12);
-  stroke-width: 0.75;
+  stroke: none;
+  stroke-width: 0;
   pointer-events: none;
 }
 
 .wheel-sector-group.is-active .wheel-sector-path {
   fill: url(#flip-sector-active-grad);
-  stroke: rgba(186, 230, 253, 0.88);
-  stroke-width: 1.5;
+  stroke: color-mix(in srgb, var(--sector-accent, #0a84ff) 55%, rgba(255, 255, 255, 0.45));
+  stroke-width: 1.25;
 }
 
 .wheel-sector-group.is-nav .wheel-sector-path {
@@ -365,8 +316,8 @@ html[data-route="wheel"] body.wheel-browser-preview {
 }
 
 .wheel-sector-group.is-nav.is-dwelling .wheel-sector-spec {
-  stroke: #7dd3fc;
-  stroke-width: 2.3;
+  stroke: #0a84ff;
+  stroke-width: 2;
   stroke-dasharray: 100;
   stroke-dashoffset: 100;
   animation: flip-dwell-charge 300ms linear forwards;
@@ -383,7 +334,7 @@ html[data-route="wheel"] body.wheel-browser-preview {
 }
 
 .wheel-sector-group:focus-visible .wheel-sector-path {
-  stroke: #7dd3fc;
+  stroke: #0a84ff;
   stroke-width: 2.2;
 }
 
@@ -398,53 +349,71 @@ html[data-route="wheel"] body.wheel-browser-preview {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2.5px;
-  width: 72px;
-  height: 52px;
+  gap: 4px;
+  width: 80px;
+  height: 64px;
   text-align: center;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
 }
 
 .wheel-sector-icon {
   pointer-events: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--sector-accent, #7dd3fc);
-  transition: transform 180ms ease, color 180ms ease, filter 180ms ease;
+  color: var(--sector-accent, #0a84ff);
+  background: color-mix(in srgb, var(--sector-accent, #0a84ff) 15%, rgba(255, 255, 255, 0.04));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
 }
 
 .wheel-sector-icon svg {
-  width: 21px;
-  height: 21px;
+  width: 17px;
+  height: 17px;
   display: block;
 }
 
 .wheel-sector-group.is-active .wheel-sector-icon {
   color: #ffffff;
-  transform: translateY(-1px) scale(1.08);
-  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.45));
+  background: var(--sector-accent, #0a84ff);
+  transform: translateY(-1px) scale(1.06);
+  box-shadow:
+    0 4px 12px color-mix(in srgb, var(--sector-accent, #0a84ff) 48%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.38);
+  filter: none;
 }
 
 .wheel-sector-label {
   pointer-events: none;
   font-size: 11.5px;
-  font-weight: 650;
-  letter-spacing: 0.015em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   line-height: 1.08;
-  max-width: 68px;
+  max-width: 72px;
+  color: rgba(255, 255, 255, 0.88);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
+.wheel-sector-group.is-active .wheel-sector-label {
+  color: #ffffff;
+}
+
 .wheel-sector-kbd {
   pointer-events: none;
-  font-size: 8.5px;
+  font-size: 8px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.85);
-  opacity: 0.52;
+  color: rgba(255, 255, 255, 0.28);
+  opacity: 1;
   line-height: 1;
+}
+
+.wheel-sector-group.is-nav .wheel-sector-kbd {
+  display: none;
 }
 
 /* Radial Progress Overlay */
@@ -484,13 +453,13 @@ html[data-route="wheel"] body.wheel-browser-preview {
   filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.9));
 }
 
-/* Dynamic 132px Center Hub */
+/* Dynamic 134px Center Hub */
 .wheel-hub {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 132px;
-  height: 132px;
+  width: 134px;
+  height: 134px;
   transform: translate(-50%, -50%);
   border-radius: 50%;
   z-index: 12;
@@ -502,16 +471,13 @@ html[data-route="wheel"] body.wheel-browser-preview {
   padding: 10px;
   box-sizing: border-box;
   text-align: center;
-  background:
-    radial-gradient(circle at 28% 22%, rgba(255, 255, 255, 0.16), transparent 54%),
-    rgba(14, 16, 22, 0.88);
+  background: linear-gradient(180deg, rgba(32, 35, 44, 0.94) 0%, rgba(18, 20, 26, 0.96) 100%);
   backdrop-filter: blur(28px) saturate(185%);
   -webkit-backdrop-filter: blur(28px) saturate(185%);
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  border: 1px solid rgba(255, 255, 255, 0.13);
   box-shadow:
-    0 12px 30px rgba(0, 0, 0, 0.46),
-    inset 0 1px 0 rgba(255, 255, 255, 0.26),
-    inset 0 -1px 6px rgba(0, 0, 0, 0.42);
+    0 16px 36px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
   color: #ffffff;
 }
 
@@ -541,7 +507,7 @@ html[data-route="wheel"] body.wheel-browser-preview {
   border-radius: 8px;
   object-fit: cover;
   background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
 }
 
@@ -554,7 +520,7 @@ html[data-route="wheel"] body.wheel-browser-preview {
   align-items: center;
   justify-content: center;
   background: linear-gradient(145deg, rgba(56, 189, 248, 0.34), rgba(99, 102, 241, 0.34));
-  border: 1px solid rgba(255, 255, 255, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   color: #e0f2fe;
 }
 
@@ -664,8 +630,8 @@ html[data-route="wheel"] body.wheel-browser-preview {
 
 .wheel-hub-pill-btn {
   appearance: none;
-  border: 1px solid rgba(255, 255, 255, 0.24);
-  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.9);
   font-family: inherit;
   font-size: 9.5px;
@@ -736,8 +702,9 @@ html[data-route="wheel"] body.wheel-browser-preview {
   gap: 6px;
   padding: 4px 10px;
   border-radius: 999px;
-  background: rgba(15, 17, 23, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(22, 24, 31, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.42);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   z-index: 20;
@@ -803,13 +770,12 @@ html[data-route="wheel"] body.wheel-browser-preview {
 }
 
 @media (prefers-reduced-transparency: reduce) {
-  .wheel-glass-ring,
   .wheel-hub,
   .wheel-mode-pill,
   .wheel-raw-toggle {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-    background: rgba(22, 24, 30, 0.96);
+    background: rgba(22, 24, 30, 0.98);
   }
 }
 
