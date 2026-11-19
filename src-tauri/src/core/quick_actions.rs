@@ -952,9 +952,10 @@ fn remove_path_if_exists(path: &Path) -> Result<(), String> {
     }
 }
 
-pub fn uninstall_quick_actions_in(
+pub fn uninstall_quick_actions_with_status_dirs(
     services_dir: &Path,
-    cli_dirs: &[PathBuf],
+    remove_cli_dirs: &[PathBuf],
+    status_cli_dirs: &[PathBuf],
     remove_cli_symlink: bool,
     refresh_pbs: bool,
 ) -> Result<QuickActionsStatus, String> {
@@ -962,7 +963,7 @@ pub fn uninstall_quick_actions_in(
     remove_path_if_exists(&services_dir.join(NEW_FILE_WORKFLOW_NAME))?;
 
     if remove_cli_symlink {
-        for dir in cli_dirs {
+        for dir in remove_cli_dirs {
             let candidate = dir.join("flip");
             if let Ok(meta) = fs::symlink_metadata(&candidate) {
                 if meta.file_type().is_symlink() {
@@ -992,15 +993,41 @@ pub fn uninstall_quick_actions_in(
 
     Ok(get_quick_actions_status_in(
         services_dir,
-        cli_dirs,
+        status_cli_dirs,
         app_path.as_deref(),
         cli_exe.as_deref(),
     ))
 }
 
+pub fn uninstall_quick_actions_in(
+    services_dir: &Path,
+    cli_dirs: &[PathBuf],
+    remove_cli_symlink: bool,
+    refresh_pbs: bool,
+) -> Result<QuickActionsStatus, String> {
+    uninstall_quick_actions_with_status_dirs(
+        services_dir,
+        cli_dirs,
+        cli_dirs,
+        remove_cli_symlink,
+        refresh_pbs,
+    )
+}
+
 pub fn uninstall_quick_actions(remove_cli: bool) -> Result<QuickActionsStatus, String> {
-    let cli_dirs = vec![default_cli_symlink_dir()];
-    uninstall_quick_actions_in(&default_services_dir(), &cli_dirs, remove_cli, true)
+    let managed_cli_dirs = vec![default_cli_symlink_dir()];
+    let status_cli_dirs = vec![
+        default_cli_symlink_dir(),
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    uninstall_quick_actions_with_status_dirs(
+        &default_services_dir(),
+        &managed_cli_dirs,
+        &status_cli_dirs,
+        remove_cli,
+        true,
+    )
 }
 
 #[cfg(test)]
@@ -1225,15 +1252,24 @@ mod tests {
         assert!(fs::symlink_metadata(bin_dir.join("flip")).is_err());
         assert!(non_symlink_dir.join("flip").is_file(), "must never delete non-symlink binary");
 
-        // Second uninstall when already absent is a clean no-op
-        let status_idempotent = uninstall_quick_actions_in(
+        // Second uninstall when already absent is a clean no-op, and status still detects external CLI links
+        let ext_bin_dir = dir.path().join("homebrew_bin");
+        fs::create_dir_all(&ext_bin_dir).unwrap();
+        let ext_link = ext_bin_dir.join("flip");
+        std::os::unix::fs::symlink(&fake_exe, &ext_link).unwrap();
+        let status_idempotent = uninstall_quick_actions_with_status_dirs(
             &services_dir,
             std::slice::from_ref(&bin_dir),
-            true,
+            &[bin_dir.clone(), ext_bin_dir.clone()],
+            false,
             false,
         )
         .unwrap();
         assert!(!status_idempotent.convert_installed);
         assert!(!status_idempotent.new_file_installed);
+        assert_eq!(
+            status_idempotent.cli_symlink_path.as_deref(),
+            Some(ext_link.to_string_lossy().as_ref())
+        );
     }
 }

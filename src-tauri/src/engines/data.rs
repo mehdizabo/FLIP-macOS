@@ -1054,12 +1054,20 @@ fn to_xlsx(root: &Value) -> Result<Vec<u8>, EngineError> {
     Ok(finished.into_inner())
 }
 
+fn strip_bom(s: String) -> String {
+    if let Some(rest) = s.strip_prefix('\u{FEFF}') {
+        rest.to_string()
+    } else {
+        s
+    }
+}
+
 fn read_zip_entry_string(archive: &mut ZipArchive<File>, target: &str) -> Option<String> {
     let normalized = target.trim_start_matches('/');
     if let Ok(mut entry) = archive.by_name(normalized) {
         let mut s = String::new();
         if entry.read_to_string(&mut s).is_ok() {
-            return Some(s);
+            return Some(strip_bom(s));
         }
     }
     let matched_name = (0..archive.len()).find_map(|i| {
@@ -1075,7 +1083,21 @@ fn read_zip_entry_string(archive: &mut ZipArchive<File>, target: &str) -> Option
     let mut entry = archive.by_name(&matched_name).ok()?;
     let mut s = String::new();
     entry.read_to_string(&mut s).ok()?;
-    Some(s)
+    Some(strip_bom(s))
+}
+
+fn zip_entry_exists(archive: &mut ZipArchive<File>, target: &str) -> bool {
+    let normalized = target.trim_start_matches('/');
+    if archive.by_name(normalized).is_ok() {
+        return true;
+    }
+    (0..archive.len()).any(|i| {
+        archive.by_index(i).ok().is_some_and(|e| {
+            e.name()
+                .trim_start_matches('/')
+                .eq_ignore_ascii_case(normalized)
+        })
+    })
 }
 
 fn normalize_ooxml_target(base_dir: &str, target: &str) -> String {
@@ -1109,15 +1131,21 @@ fn resolve_first_worksheet_path(archive: &mut ZipArchive<File>) -> String {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
                     if e.local_name().as_ref() == b"sheet" {
+                        let mut namespaced_id: Option<String> = None;
+                        let mut bare_id: Option<String> = None;
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"r:id" || attr.key.local_name().as_ref() == b"id"
-                            {
+                            if attr.key.as_ref() == b"r:id" || attr.key.as_ref().ends_with(b":id") {
                                 if let Ok(v) = attr.unescape_value() {
-                                    first_rid = Some(v.into_owned());
+                                    namespaced_id = Some(v.into_owned());
                                     break;
+                                }
+                            } else if attr.key.local_name().as_ref() == b"id" && bare_id.is_none() {
+                                if let Ok(v) = attr.unescape_value() {
+                                    bare_id = Some(v.into_owned());
                                 }
                             }
                         }
+                        first_rid = namespaced_id.or(bare_id);
                         if first_rid.is_some() {
                             break;
                         }
@@ -1150,7 +1178,14 @@ fn resolve_first_worksheet_path(archive: &mut ZipArchive<File>) -> String {
                                 }
                                 if id_val.as_deref() == Some(rid.as_str()) {
                                     if let Some(t) = target_val {
-                                        return normalize_ooxml_target("xl", &t);
+                                        let rel_norm = normalize_ooxml_target("xl", &t);
+                                        if zip_entry_exists(archive, &rel_norm) {
+                                            return rel_norm;
+                                        }
+                                        let root_norm = normalize_ooxml_target("", &t);
+                                        if zip_entry_exists(archive, &root_norm) {
+                                            return root_norm;
+                                        }
                                     }
                                 }
                             }
@@ -1687,5 +1722,35 @@ mod tests {
 </sst>"#;
         let ss = parse_shared_strings(ss_xml).unwrap();
         assert_eq!(ss, vec!["Name", "Rich Text", ""]);
+
+        // Test <sheet id="99" r:id="rId2"/> + Target="xl/worksheets/sheet2.xml" + UTF-8 BOM
+        let dir = tempdir().unwrap();
+        let quirky_xlsx = dir.path().join("quirky.xlsx");
+        {
+            let file = File::create(&quirky_xlsx).unwrap();
+            let mut zip = ZipWriter::new(file);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zip.start_file("xl/workbook.xml", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet id="99" r:id="rId2" name="Data"/></sheets>
+</workbook>"#,
+            )
+            .unwrap();
+            zip.start_file("xl/_rels/workbook.xml.rels", opts).unwrap();
+            zip.write_all(
+                br#"<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="xl/worksheets/sheet2.xml"/>
+</Relationships>"#,
+            )
+            .unwrap();
+            zip.start_file("xl/worksheets/sheet2.xml", opts).unwrap();
+            zip.write_all("\u{FEFF}<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet><sheetData><row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>k</t></is></c></row><row r=\"2\"><c r=\"A2\" t=\"n\"><v>7</v></c></row></sheetData></worksheet>".as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let parsed_quirky = parse_xlsx(&quirky_xlsx).unwrap();
+        assert_eq!(parsed_quirky[0]["k"], Value::Number(Number::from(7)));
     }
 }

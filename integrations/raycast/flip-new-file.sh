@@ -48,9 +48,9 @@ FOLDER_ARG="${2:-}"
 
 if [[ -n "$KIND_ARG" ]]; then
   if [[ -n "$FOLDER_ARG" ]]; then
-    "$FLIP_BIN" new "$KIND_ARG" --in "$FOLDER_ARG"
+    "$FLIP_BIN" new --in "$FOLDER_ARG" -- "$KIND_ARG"
   else
-    "$FLIP_BIN" new "$KIND_ARG"
+    "$FLIP_BIN" new -- "$KIND_ARG"
   fi
 else
   "$FLIP_BIN" wheel --mode new

@@ -47,9 +47,9 @@ FILE_ARG="${1:-}"
 FORMAT_ARG="${2:-}"
 
 if [[ -n "$FILE_ARG" && -n "$FORMAT_ARG" ]]; then
-  "$FLIP_BIN" convert "$FILE_ARG" --to "$FORMAT_ARG"
+  "$FLIP_BIN" convert --to "$FORMAT_ARG" -- "$FILE_ARG"
 elif [[ -n "$FILE_ARG" ]]; then
-  "$FLIP_BIN" wheel --mode convert "$FILE_ARG"
+  "$FLIP_BIN" wheel --mode convert -- "$FILE_ARG"
 else
   "$FLIP_BIN" wheel --mode convert
 fi
