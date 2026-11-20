@@ -4,6 +4,7 @@ pub mod create_new;
 pub mod data;
 pub mod document;
 pub mod image;
+pub mod image_tools;
 pub mod media;
 pub mod pdf;
 
@@ -1070,6 +1071,41 @@ fn convert_standard_unit(
     }
 }
 
+/// Image tools keep the source's format, so the output format is resolved from the source and the
+/// result is committed under a descriptive suffix (`photo-crop-9x16.jpg`), never over the original.
+fn convert_image_tool_unit(
+    source: &Path,
+    tool: image_tools::ImageTool,
+    prefs: &AppPreferences,
+    cancel: &Arc<AtomicBool>,
+    unit_progress: &dyn Fn(u8),
+) -> Result<Vec<PathBuf>, EngineError> {
+    let ext = ext_lower(source);
+    if !image_tools::tools_for_ext(&ext).contains(&tool.token()) {
+        return Err(EngineError::Unsupported(format!(
+            "Tool unavailable: .{ext} → {}",
+            tool.token()
+        )));
+    }
+
+    validate_container(source)?;
+    let target_dir = resolve_target_dir(source, prefs)?;
+    let staging = JobStaging::create(&target_dir)?;
+    let out_format = tool.output_format(&ext);
+    let staged = staging.staged_path(&format!("output.{}", format_extension(out_format)));
+
+    unit_progress(35);
+    image_tools::apply(tool, source, &staged, staging.dir(), prefs.image_quality, cancel)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EngineError::Cancelled);
+    }
+
+    validate_output(&staged, out_format)?;
+    let committed = staging.commit_one(&staged, source, Some(tool.suffix()), out_format)?;
+    staging.cleanup()?;
+    Ok(vec![committed])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn convert_single_unit(
     source: &Path,
@@ -1081,6 +1117,10 @@ fn convert_single_unit(
     raw_mode: bool,
     unit_progress: &dyn Fn(u8),
 ) -> Result<Vec<PathBuf>, EngineError> {
+    if let Some(tool) = image_tools::ImageTool::parse(format) {
+        return convert_image_tool_unit(source, tool, prefs, cancel, unit_progress);
+    }
+
     let available = outputs(&[source], caps);
     if !available.contains(&format.to_string()) {
         return Err(EngineError::Unsupported(format!(

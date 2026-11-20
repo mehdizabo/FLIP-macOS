@@ -63,7 +63,7 @@ fn normalize_to_png(
     }
 }
 
-fn decode_via_bridge_or_rust(
+pub(crate) fn decode_via_bridge_or_rust(
     source: &Path,
     staging_dir: &Path,
     cancel: &Arc<AtomicBool>,
