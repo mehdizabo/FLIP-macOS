@@ -13,7 +13,7 @@ Build and test on Apple Silicon macOS using [README.md](README.md). Keep changes
 
 ```bash
 ./native-bridge/build.sh
-npx tsc --noEmit && npm run build && bun test
+pnpm exec tsc --noEmit && pnpm run build && bun test
 cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 ./scripts/audit-repository.sh
 ```

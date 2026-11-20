@@ -94,13 +94,13 @@ flip --version                                # Mostra versione
 - **macOS 15.0+** (Apple Silicon; sviluppato per **macOS 27.2.1 Golden Gate**)
 - **Apple Command Line Tools** (`xcode-select --install`) — `Xcode.app` completo **non** è necessario (usa `/usr/bin/swiftc` e `/usr/bin/clang`)
 - **Rust** (`cargo`) e `tauri-cli` (`cargo install tauri-cli --version ^2`)
-- **Node.js / npm** (e **Bun** opzionale per i test frontend)
+- **Node.js e pnpm** (`corepack enable` oppure `brew install pnpm`; la versione è fissata in `package.json`), più **Bun** opzionale per i test frontend
 - Opzionali: `brew install ffmpeg pandoc`
 
 ### Sviluppo
 
 ```bash
-npm install
+pnpm install
 ./native-bridge/build.sh
 cargo tauri dev
 ```
@@ -149,8 +149,8 @@ APPLE_NOTARY_PROFILE="notary-profile" \
 
 ```bash
 ./native-bridge/build.sh
-npx tsc --noEmit
-npm run build
+pnpm exec tsc --noEmit
+pnpm run build
 bun test
 cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 ```

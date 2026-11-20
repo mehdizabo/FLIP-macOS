@@ -40,9 +40,14 @@ export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path)}"
 export CC="${CC:-/usr/bin/clang}"
 export CXX="${CXX:-/usr/bin/clang++}"
 
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "pnpm not found in PATH. Install it with 'corepack enable' (Node.js) or 'brew install pnpm'." >&2
+  exit 1
+fi
+
 if [ ! -d "$ROOT_DIR/node_modules" ]; then
   echo "==> Installing frontend dependencies"
-  (cd "$ROOT_DIR" && npm install)
+  (cd "$ROOT_DIR" && pnpm install --frozen-lockfile)
 fi
 
 TOTAL_STEPS=4
@@ -54,7 +59,7 @@ echo "==> [1/${TOTAL_STEPS}] Building native Swift/AppKit bridge"
 "$ROOT_DIR/native-bridge/build.sh"
 
 echo "==> [2/${TOTAL_STEPS}] Building TypeScript + Vite frontend"
-(cd "$ROOT_DIR" && npm run build)
+(cd "$ROOT_DIR" && pnpm run build)
 
 echo "==> [3/${TOTAL_STEPS}] Building Tauri release .app bundle"
 (cd "$ROOT_DIR/src-tauri" && cargo tauri build --bundles app)

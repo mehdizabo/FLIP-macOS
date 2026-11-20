@@ -25,11 +25,14 @@ jobs:
       - name: Repository privacy audit
         run: ./scripts/audit-repository.sh
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
+          cache: "pnpm"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -55,12 +58,12 @@ jobs:
         run: ./native-bridge/build.sh
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck & build frontend
         run: |
-          npx tsc --noEmit
-          npm run build
+          pnpm exec tsc --noEmit
+          pnpm run build
 
       - name: Run frontend unit tests
         run: bun test

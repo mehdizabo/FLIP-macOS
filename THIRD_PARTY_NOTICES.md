@@ -38,7 +38,7 @@ FLIP for macOS (`FLIP-macOS-port`) — source code, radial Liquid Glass UI, nati
 
 ---
 
-## Frontend Dependencies (`package.json` / `package-lock.json`)
+## Frontend Dependencies (`package.json` / `pnpm-lock.yaml`)
 
 | Package | Resolved Version | License | Scope |
 |---|---|---|---|

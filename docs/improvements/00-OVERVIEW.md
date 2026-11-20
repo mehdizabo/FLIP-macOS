@@ -55,7 +55,7 @@ Impatto: **A**lto / **M**edio / **B**asso · Sforzo: **S** (ore) / **M** (1–3 
 | 13 | PERF-01 | Profilo `release` (`lto`, `codegen-units`, `strip`) + `tokio` ridotto | M | S | [02](02-PERFORMANCE-ARCHITECTURE.md) |
 | 14 | QA-07 | Marcare come storici i documenti `docs/0x` (descrivono SwiftUI nativo, non Tauri) e aggiornare spec/CHANGELOG | M | S | [04](04-TESTING-CI-DOCS-DX.md) |
 | 15 | SEC-06 | Notarizzazione + entitlements versionati + workflow di release | A | L | [03](03-SECURITY-PRIVACY-RELEASE.md) |
-| 16 | QA-04 | Un solo package manager (oggi `package-lock.json` tracciato ma si lavora con `pnpm`) | B | S | [04](04-TESTING-CI-DOCS-DX.md) |
+| 16 | QA-04 | Un solo package manager (pnpm; `package-lock.json` rimosso il 2026-11-20) | B | S | [04](04-TESTING-CI-DOCS-DX.md) |
 
 ## 4. Percorso suggerito
 
@@ -83,7 +83,7 @@ Ogni voce ha un commit e una prova; "prova rossa" = il test nuovo fallisce senza
 | REL-04 | Fatto (variante prudente) | `31ec68b` | La molla non supera più il tempo reale: eventi a < 2 ms dallo step precedente vengono accumulati, non arrotondati a 6 ms (con mouse a 1 kHz il vecchio codice integrava **6000 ms per 100 ms reali, 60×**). Resta lo step per evento (non spostato in rAF) per non riaprire il fix WKWebView di `607b36f`. Lo stub rAF dei test usava `Date.now()` invece di `performance.now()`: corretto. **Controllo dal vivo necessario** con un mouse ad alta frequenza (il feel è stato tarato a mano): `Monitor.swift` emette la posizione quando il cursore si sposta di ≥ 0,4 pt, **senza limite di frequenza**, quindi in drag con un mouse oltre ~500 Hz il vecchio codice poteva davvero accelerare la molla e questa modifica cambia il feel. Con mouse/trackpad più lenti non cambia nulla. Annullabile con `git revert 31ec68b`. |
 | SEC-01 | Solo metà: escaping | `ccab327` | Test d'iniezione su Batch (lista e risultati) ed Error Hub della Wheel; prova rossa togliendo `escapeHtml`. **La CSP non è attiva** (vedi 03). Tagged template e regola di lint non fatti. |
 | QA-03 | Minimo | `5734e9e` | `concurrency` con `cancel-in-progress` e `audit-repository.sh` in CI (passa in locale; `actionlint` pulito salvo un SC2012 già presente). Non fatti: split `verify`/`package`, `cargo audit`, pin degli action, rimozione dello step `tauri-cli` (serve ancora: `build-macos.sh` usa `cargo tauri build`). Non eseguibile senza un push. |
-| QA-04 | Rimandato | — | È una scelta di Capo (npm vs pnpm): il lavoro locale è in pnpm, la CI e il lockfile tracciato in npm. `pnpm-workspace.yaml` contiene ancora il segnaposto `allowBuilds: esbuild: set this to true or false` e non va committato così. |
+| QA-04 | Fatto (2026-11-20) | vedi `git log` | Scelta di Capo: pnpm. `package-lock.json` rimosso, `pnpm-lock.yaml` e `pnpm-workspace.yaml` (`allowBuilds: esbuild: true`) tracciati, `packageManager: pnpm@12.16.1`, `pnpm/action-setup@v6` in CI, `tauri.conf.json`, `build-macos.sh` e README aggiornati. La CI resta non eseguibile senza un push. |
 | REL-01, REL-02, REL-05, SEC-02, PERF-03, PERF-05 | Non iniziati | — | Sprint 2–3. |
 
 ## 7. Novità 0.6 "Aura" portate nel port (ramo `feat/0.6-tools`, 2026-11-20)
