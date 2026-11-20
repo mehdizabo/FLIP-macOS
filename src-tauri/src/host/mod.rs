@@ -174,6 +174,19 @@ pub struct WheelStatePayload {
     pub family: Option<FormatFamily>,
 }
 
+impl WheelStatePayload {
+    /// Replaces the part of the payload that depends on which files are selected (what a Finder
+    /// drag brought in after the wheel had already opened) and keeps position, mode and folder.
+    pub fn apply_inspection(&mut self, inspected: InspectFilesResult) {
+        self.files = inspected.files;
+        self.compatible_formats = inspected.compatible_formats;
+        self.batch_actions = inspected.batch_actions;
+        self.tool_actions = inspected.tool_actions;
+        self.availability_message = inspected.availability_message;
+        self.family = inspected.family;
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InspectFilesResult {
@@ -727,5 +740,54 @@ mod tests {
         let dir_res = inspect_paths_with_prefs(&[dir.path().to_string_lossy().into_owned()], &prefs);
         assert!(dir_res.compatible_formats.is_empty());
         assert!(dir_res.availability_message.contains("Directories cannot be converted"));
+    }
+
+    fn empty_payload() -> WheelStatePayload {
+        WheelStatePayload {
+            mode: "convert".to_string(),
+            files: Vec::new(),
+            is_drag: true,
+            target_folder: "/tmp".to_string(),
+            compatible_formats: Vec::new(),
+            batch_actions: Vec::new(),
+            tool_actions: Vec::new(),
+            origin_x: 220.0,
+            origin_y: 220.0,
+            availability_message: "Drop local files here".to_string(),
+            family: None,
+        }
+    }
+
+    #[test]
+    fn files_that_arrive_after_the_wheel_opened_bring_their_image_tools_along() {
+        // Finder drag: the wheel opens first (no files), the monitor reports the files afterwards.
+        // The stored payload must then carry the tools too, or `T` has nothing to switch to.
+        let dir = tempdir().unwrap();
+        let prefs = AppPreferences::default();
+        let photo = dir.path().join("photo.jpg");
+        fs::write(&photo, b"fake").unwrap();
+        let doc = dir.path().join("notes.pdf");
+        fs::write(&doc, b"fake").unwrap();
+
+        let mut payload = empty_payload();
+        payload.apply_inspection(inspect_paths_with_prefs(
+            &[photo.to_string_lossy().into_owned()],
+            &prefs,
+        ));
+        assert!(payload.tool_actions.contains(&"CROP_9_16".to_string()));
+        assert!(payload.tool_actions.contains(&"STRIP_EXIF".to_string()));
+        assert_eq!(payload.family, Some(FormatFamily::Image));
+        // Position, mode and folder belong to the open wheel and are left alone.
+        assert_eq!(payload.mode, "convert");
+        assert_eq!(payload.target_folder, "/tmp");
+        assert!(payload.is_drag);
+        assert_eq!(payload.origin_x, 220.0);
+
+        // A later drag of a non-image must not keep the previous selection's tools.
+        payload.apply_inspection(inspect_paths_with_prefs(
+            &[doc.to_string_lossy().into_owned()],
+            &prefs,
+        ));
+        assert!(payload.tool_actions.is_empty());
     }
 }

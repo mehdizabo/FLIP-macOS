@@ -129,15 +129,12 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
             if is_open && is_drag && !files.is_empty() {
                 let prefs = state.prefs.lock().map(|g| g.clone()).unwrap_or_default();
                 let inspected = inspect_paths_with_prefs(&files, &prefs);
+                let inspected_files = inspected.files.clone();
                 if let Ok(mut guard) = state.wheel.lock() {
-                    guard.payload.files = inspected.files.clone();
-                    guard.payload.compatible_formats = inspected.compatible_formats;
-                    guard.payload.batch_actions = inspected.batch_actions;
-                    guard.payload.availability_message = inspected.availability_message;
-                    guard.payload.family = inspected.family;
+                    guard.payload.apply_inspection(inspected);
                 }
                 if let Some(win) = app.get_webview_window("wheel") {
-                    let _ = win.emit("wheel:drag-files", json!({ "files": inspected.files }));
+                    let _ = win.emit("wheel:drag-files", json!({ "files": inspected_files }));
                 }
             }
         }
@@ -384,7 +381,8 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
                 }
             }
         }
-        // `T`: switch the wheel between its Formats and Tools faces (only meaningful for images).
+        // `T`: switch the wheel between its Formats and Tools faces. Like `R`, the host only checks
+        // that a convert-mode wheel is open; the frontend decides whether the selection has tools.
         "toggle_face" => {
             if state.is_converting.load(Ordering::Relaxed) {
                 return;
@@ -392,9 +390,7 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
             let can_toggle = state
                 .wheel
                 .lock()
-                .map(|g| {
-                    g.is_open && g.payload.mode == "convert" && !g.payload.tool_actions.is_empty()
-                })
+                .map(|g| g.is_open && g.payload.mode == "convert")
                 .unwrap_or(false);
             if can_toggle {
                 if let Some(win) = app.get_webview_window("wheel") {
