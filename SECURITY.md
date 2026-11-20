@@ -38,7 +38,7 @@ FLIP treats untrusted files defensively across `src-tauri/src/core/policy.rs`, `
 
 ## Logs & Redacted Diagnostics
 
-- Runtime events are written to bounded rotating JSONL files in `~/Library/Logs/FLIP/events.jsonl` (rotated to `events.jsonl.previous` at **2 MiB**).
+- Runtime events are written to bounded rotating JSONL files in `~/Library/Logs/FLIP/events.jsonl` (rotated to `events.jsonl.previous` at **2 MiB**). User home directories and per-user temporary/system paths are reduced to `~` **when each line is written**, so usernames never reach the log file; file and folder names below the home directory are still recorded.
 - Exporting via **Copy Diagnostics** (`Settings → About` or error views in the Wheel / Batch window) automatically redacts `/Users/<username>`, `/private/Users/<username>`, custom home directories, per-user macOS temporary/system paths (`/private/var/folders/...`, `/var/folders/...`, `/private/var/mobile`, `/private/var/root`, `/var/mobile`, `/var/root`), JSON-escaped newline/tab path prefixes (`\n/Users/...`), and percent-encoded URL user paths (`%2FUsers%2F...`, `%2Fprivate%2Fvar%2Ffolders%2F...`) to `~`.
 
 ---

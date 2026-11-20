@@ -72,8 +72,11 @@ impl DiagnosticLogger {
             "name": name,
             "detail": detail,
         });
+        // Redact at write time: the log stays on disk (until rotated), so user home directories
+        // and per-user temp paths must never reach it, not only the exported diagnostics.
+        let line = redact_paths_with_home(&line_obj.to_string(), dirs::home_dir().as_deref());
         if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-            let _ = writeln!(file, "{line_obj}");
+            let _ = writeln!(file, "{line}");
         }
     }
 
@@ -536,6 +539,37 @@ mod tests {
             new_len < 1024,
             "new log file should be small after rotation, got {new_len}"
         );
+    }
+
+    #[test]
+    fn log_redacts_user_paths_before_they_reach_disk() {
+        let dir = tempdir().unwrap();
+        let logger = DiagnosticLogger::new(dir.path().to_path_buf());
+        let home = dirs::home_dir().expect("home directory");
+        let home_file = home.join("Desktop").join("taxes.pdf");
+
+        logger.log(
+            "conversion.failed",
+            Some(json!({
+                "source": "/Users/alice/Documents/secret plan.docx",
+                "home_source": home_file.to_string_lossy(),
+                "temp": "/private/var/folders/38/htd8qbz91714b54kc33lt3b80000gn/T/.tmpXYZ/out.png",
+                "message": "failed to read /Users/alice/Desktop/a.png: denied",
+            })),
+        );
+
+        let written = fs::read_to_string(DiagnosticLogger::events_path_in(dir.path())).unwrap();
+        assert!(!written.contains("alice"), "username leaked: {written}");
+        assert!(
+            !written.contains(home.to_string_lossy().as_ref()),
+            "home directory leaked: {written}"
+        );
+        assert!(!written.contains("htd8qbz91714b54kc33lt3b80000gn"), "{written}");
+        assert!(written.contains("~/Documents/secret plan.docx"), "{written}");
+        assert!(written.contains("~/Desktop/taxes.pdf"), "{written}");
+        // Still one valid JSON object per line with the event name intact.
+        let parsed: Value = serde_json::from_str(written.trim()).unwrap();
+        assert_eq!(parsed["name"], "conversion.failed");
     }
 
     #[test]
