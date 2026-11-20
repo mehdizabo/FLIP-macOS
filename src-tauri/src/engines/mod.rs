@@ -7,7 +7,9 @@ pub mod image;
 pub mod image_tools;
 pub mod media;
 pub mod pdf;
+pub mod pdfa;
 pub mod redact;
+pub mod transcribe;
 
 use crate::core::logging::log_event;
 use crate::core::naming::format_extension;
