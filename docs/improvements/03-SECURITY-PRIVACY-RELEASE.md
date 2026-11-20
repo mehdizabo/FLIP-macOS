@@ -25,6 +25,24 @@ con accesso ai comandi Tauri.
 3. Test E2E che inietta un nome file `"><img src=x onerror=…>` e verifica che non finisca nel DOM come markup (in parte già
    coperto da `escapeHtml`, ma va fissato a livello di vista).
 
+**Stato (2026-11-20).** Punto 3 **fatto** (`ccab327`, prova rossa). Punti 1–2 **non fatti di proposito**: la CSP non è
+verificabile dal DOM shim dei test e, se sbagliata, rompe l'interfaccia senza errori visibili. Cosa è emerso dall'analisi:
+
+- **[Verificato nel sorgente di `tauri-codegen 2.7.5`]** Tauri aggiunge alla CSP solo *hash* di `<script>`/`<style>` inline
+  presenti nell'HTML. L'`index.html` (e `dist/index.html`) non ne ha: l'unico script è `type="module" src=…`. Su macOS non
+  dovrebbe quindi comparire un nonce/hash in `style-src`; se comparisse, `'unsafe-inline'` verrebbe ignorato e gli attributi
+  `style="--bubble-*"` scritti via `innerHTML` (WheelView, BatchView) sparirebbero. Per sicurezza la policy dichiara anche
+  `style-src-attr 'unsafe-inline'`; in alternativa `dangerousDisableAssetCspModification: ["style-src"]`.
+- **[Inferenza]** La CSP di Tauri vale per gli asset serviti da `tauri://` (build release/`custom-protocol`): con `devUrl` la
+  pagina arriva da Vite e `tauri dev` **non** la esercita. Va quindi provata su una build di prova, non in dev.
+- Il frontend non usa `eval`, `new Function` né `<style>` creati da JS (grep su `src/`); le miniature arrivano come `data:` URI.
+- Policy candidata: `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline';
+  img-src 'self' data:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none';
+  form-action 'none'; frame-ancestors 'none'`.
+- **Controllo dal vivo (serve una build di prova, non un `.app` di rilascio):** `TAURI_CONFIG='{"app":{"security":{"csp":"…"}}}'
+  cargo build --release --features tauri/custom-protocol`, aprire wheel, settings, batch e onboarding, e leggere la console di
+  Web Inspector: zero violazioni e bolle ancora stilate (`--bubble-*`). Solo allora mettere la CSP in `tauri.conf.json`.
+
 ## SEC-02 · Superficie dei comandi per finestra (Impatto M · Sforzo M)
 
 **Problema [Verificato].** Esiste un'unica capability `default` con `core:default` per tutte e quattro le finestre

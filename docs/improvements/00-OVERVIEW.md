@@ -68,4 +68,20 @@ Impatto: **A**lto / **M**edio / **B**asso · Sforzo: **S** (ore) / **M** (1–3 
 - Se in modalità drag funzionano `Tab`, `1`–`8`, frecce, `Enter` (la finestra non è key: **[Inferenza]**, vedi REL-06).
 - Latenza reale di apertura della wheel in modalità idle (processo `finder-context` + AppleScript): **[Da misurare]**.
 - Costo GPU di ~11 layer `backdrop-filter` contemporanei su display ProMotion/5K: **[Da misurare]** (PERF-08).
-- Riduzione dimensione binario con `lto`/`strip`: **[Da misurare]**.
+- ~~Riduzione dimensione binario con `lto`/`strip`~~: **misurata** (vedi §6).
+
+## 6. Avanzamento Sprint 1 (ramo `sprint-1`, 2026-11-20)
+
+Ogni voce ha un commit e una prova; "prova rossa" = il test nuovo fallisce senza la modifica.
+
+| ID | Stato | Commit | Prova |
+|---|---|---|---|
+| SEC-08 | Fatto | `fc80b8a` | Build release con `--features tauri/custom-protocol`: 0 occorrenze del path di build nel binario (il vecchio binario ne aveva 2). `*_from` ora prendono `Option<&Path>`; test release-like. Effetto collaterale: un binario release **fuori dal bundle** non trova più il bridge dal repo, serve `FLIP_BRIDGE_PATH`. |
+| SEC-07 | Fatto (solo redazione) | `b1bbb4e` | Prova rossa: senza la modifica il log contiene `/Users/alice/...` e la home. Restano registrati i nomi di file e cartelle sotto la home; hash dei nomi, `FLIP_LOG_VERBOSE` e retention a 14 giorni **non** fatti. |
+| QA-07 | Fatto in parte | `c27b14c` | Banner "storico" su `docs/00–06` e `PLAN-*`, `[Unreleased]` nel CHANGELOG (dai commit reali), sezione 14 in `ACCEPTANCE.md`. **Non** fatto: riscrittura di `03-UX-WHEEL-SPEC.md`, scelta della lingua dei documenti. |
+| PERF-01 | Fatto | `a6f87fd` | `cargo build --release --features tauri/custom-protocol`, stesso commit: **21.022.992 → 10.774.976 byte (−48,8 %)**; build pulita ~80 s → ~176 s (`codegen-units = 1`). Smoke CLI md → EPUB → TXT sul binario ridotto: OK. `tokio` ridotto a `rt-multi-thread` + `time`. Avviamento a freddo **non** misurato. |
+| REL-04 | Fatto (variante prudente) | `31ec68b` | La molla non supera più il tempo reale: eventi a < 2 ms dallo step precedente vengono accumulati, non arrotondati a 6 ms (con mouse a 1 kHz il vecchio codice integrava **6000 ms per 100 ms reali, 60×**). Resta lo step per evento (non spostato in rAF) per non riaprire il fix WKWebView di `607b36f`. Lo stub rAF dei test usava `Date.now()` invece di `performance.now()`: corretto. **Controllo dal vivo necessario** con un mouse ad alta frequenza (il feel è stato tarato a mano). |
+| SEC-01 | Solo metà: escaping | `ccab327` | Test d'iniezione su Batch (lista e risultati) ed Error Hub della Wheel; prova rossa togliendo `escapeHtml`. **La CSP non è attiva** (vedi 03). Tagged template e regola di lint non fatti. |
+| QA-03 | Minimo | `5734e9e` | `concurrency` con `cancel-in-progress` e `audit-repository.sh` in CI (passa in locale; `actionlint` pulito salvo un SC2012 già presente). Non fatti: split `verify`/`package`, `cargo audit`, pin degli action, rimozione dello step `tauri-cli` (serve ancora: `build-macos.sh` usa `cargo tauri build`). Non eseguibile senza un push. |
+| QA-04 | Rimandato | — | È una scelta di Capo (npm vs pnpm): il lavoro locale è in pnpm, la CI e il lockfile tracciato in npm. `pnpm-workspace.yaml` contiene ancora il segnaposto `allowBuilds: esbuild: set this to true or false` e non va committato così. |
+| REL-01, REL-02, REL-05, SEC-02, PERF-03, PERF-05 | Non iniziati | — | Sprint 2–3. |
