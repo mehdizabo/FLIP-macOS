@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify-and-package:
     name: Build, Test & Package macOS arm64
@@ -17,6 +21,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Repository privacy audit
+        run: ./scripts/audit-repository.sh
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
