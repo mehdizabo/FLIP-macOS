@@ -1,0 +1,15 @@
+%!PS
+% FLIP: PDF/A-2b prefix for Ghostscript's pdfwrite. Written for FLIP from the pdfmark and PDF/A rules.
+% It embeds one sRGB output intent. The token @ICC_PROFILE@ is replaced by the engine with the profile path.
+% The colour conversion strategy is always RGB, so the profile has exactly 3 components.
+[/_objdef {flip_icc} /type /stream /OBJ pdfmark
+[{flip_icc} << /N 3 >> /PUT pdfmark
+[{flip_icc} (@ICC_PROFILE@) (r) file /PUT pdfmark
+[/_objdef {flip_oi} /type /dict /OBJ pdfmark
+[{flip_oi} <<
+  /Type /OutputIntent
+  /S /GTS_PDFA1
+  /DestOutputProfile {flip_icc}
+  /OutputConditionIdentifier (sRGB)
+>> /PUT pdfmark
+[{Catalog} << /OutputIntents [ {flip_oi} ] >> /PUT pdfmark
