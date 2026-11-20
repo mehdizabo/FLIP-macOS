@@ -901,6 +901,169 @@ enum MediaAndDocs {
         ]
     }
 
+    // MARK: - PDF/A support: pdf-printable and pdfa-inspect
+
+    private static func pdfaFailure(_ message: String) -> [String: Any] {
+        ["ok": false, "error": message]
+    }
+
+    /// Marks every annotation as printable. Ghostscript's PDF/A mode silently drops each annotation
+    /// that lacks the Print flag (that is how all the links of a manual vanish), so the engine runs this first.
+    ///
+    /// "Lacks the flag" is read from the file, not from PDFKit: an annotation with no `/F` entry at all has
+    /// no Print flag (PDF 32000, 12.5.3) and Ghostscript drops it, yet PDFKit's `shouldPrint` reports `true`
+    /// for it. So `changed` counts the annotations whose `/F` is absent or has the Print bit clear, and when
+    /// there is at least one, `shouldPrint = true` is set on every annotation, which makes PDFKit write an
+    /// explicit `/F 4`. The output is written only then; a file that is already fine is left alone.
+    static func makePDFPrintable(inputPath: String, outputPath: String) -> [String: Any] {
+        let inputURL = URL(fileURLWithPath: inputPath)
+        guard let doc = PDFDocument(url: inputURL) else {
+            return pdfaFailure("Failed to open PDF: \(inputPath)")
+        }
+        if doc.isLocked {
+            return pdfaFailure("The PDF is protected by a password.")
+        }
+
+        var annotationCount = 0
+        var pdfKitUnprintable = 0
+        for index in 0..<doc.pageCount {
+            autoreleasepool {
+                guard let page = doc.page(at: index) else { return }
+                for annotation in page.annotations {
+                    annotationCount += 1
+                    if !annotation.shouldPrint { pdfKitUnprintable += 1 }
+                }
+            }
+        }
+        let changedCount = max(countAnnotationsWithoutPrintFlag(inputURL) ?? 0, pdfKitUnprintable)
+
+        guard changedCount > 0 else {
+            return ["ok": true, "annotations": annotationCount, "changed": 0, "written": false]
+        }
+        if FileManager.default.fileExists(atPath: outputPath) {
+            return pdfaFailure("Refusing to overwrite existing output PDF: \(outputPath)")
+        }
+        for index in 0..<doc.pageCount {
+            autoreleasepool {
+                for annotation in doc.page(at: index)?.annotations ?? [] {
+                    annotation.shouldPrint = true
+                }
+            }
+        }
+        guard doc.write(to: URL(fileURLWithPath: outputPath)) else {
+            try? FileManager.default.removeItem(atPath: outputPath)
+            return pdfaFailure("Failed to write the PDF: \(outputPath)")
+        }
+        return ["ok": true, "annotations": annotationCount, "changed": changedCount, "written": true]
+    }
+
+    /// How many annotations of the file have no Print flag: `/F` absent, or its Print bit (value 4) clear.
+    /// Read with CoreGraphics straight from each page's `/Annots` array; nil when the file cannot be read that way.
+    private static func countAnnotationsWithoutPrintFlag(_ url: URL) -> Int? {
+        guard let cgDoc = CGPDFDocument(url as CFURL) else { return nil }
+        if cgDoc.isEncrypted && !cgDoc.isUnlocked {
+            _ = cgDoc.unlockWithPassword("")
+            if !cgDoc.isUnlocked { return nil }
+        }
+        var count = 0
+        let pageTotal = cgDoc.numberOfPages
+        guard pageTotal > 0 else { return 0 }
+        for pageNumber in 1...pageTotal {
+            guard let pageDict = cgDoc.page(at: pageNumber)?.dictionary else { continue }
+            var annots: CGPDFArrayRef? = nil
+            guard CGPDFDictionaryGetArray(pageDict, "Annots", &annots), let annots = annots else { continue }
+            for index in 0..<CGPDFArrayGetCount(annots) {
+                var annotation: CGPDFDictionaryRef? = nil
+                guard CGPDFArrayGetDictionary(annots, index, &annotation), let annotation = annotation else { continue }
+                var flags: CGPDFInteger = 0
+                _ = CGPDFDictionaryGetInteger(annotation, "F", &flags)
+                if flags & 4 == 0 { count += 1 }
+            }
+        }
+        return count
+    }
+
+    /// Reports page count, extractable text size, password lock and the PDF/A declarations of one PDF.
+    /// The declarations are read with CoreGraphics from the catalog: `/OutputIntents` and the XMP packet in `/Metadata`.
+    static func inspectPDFForPDFA(path: String) -> [String: Any] {
+        let url = URL(fileURLWithPath: path)
+        guard let doc = PDFDocument(url: url) else {
+            return pdfaFailure("Failed to open PDF: \(path)")
+        }
+        if doc.isLocked {
+            return [
+                "ok": true, "locked": true, "pages": 0, "characters": 0,
+                "outputIntent": false, "part": NSNull(), "conformance": NSNull()
+            ]
+        }
+
+        var characters = 0
+        for index in 0..<doc.pageCount {
+            autoreleasepool {
+                if let text = doc.page(at: index)?.string {
+                    characters += text.reduce(0) { $1.isWhitespace ? $0 : $0 + 1 }
+                }
+            }
+        }
+
+        var outputIntent = false
+        var part: Int? = nil
+        var conformance: String? = nil
+        if let cgDoc = CGPDFDocument(url as CFURL), let catalog = cgDoc.catalog {
+            var intents: CGPDFArrayRef? = nil
+            if CGPDFDictionaryGetArray(catalog, "OutputIntents", &intents), let intents = intents {
+                outputIntent = CGPDFArrayGetCount(intents) > 0
+            }
+            if let xmp = catalogMetadataText(catalog) {
+                if let value = firstCapture(in: xmp, patterns: [
+                    "pdfaid:part\\s*=\\s*[\"']\\s*([0-9]+)\\s*[\"']",
+                    "<pdfaid:part\\s*>\\s*([0-9]+)\\s*</pdfaid:part\\s*>"
+                ]) {
+                    part = Int(value)
+                }
+                if let value = firstCapture(in: xmp, patterns: [
+                    "pdfaid:conformance\\s*=\\s*[\"']\\s*([A-Za-z])\\s*[\"']",
+                    "<pdfaid:conformance\\s*>\\s*([A-Za-z])\\s*</pdfaid:conformance\\s*>"
+                ]) {
+                    conformance = value.uppercased()
+                }
+            }
+        }
+
+        return [
+            "ok": true,
+            "pages": doc.pageCount,
+            "characters": characters,
+            "locked": false,
+            "outputIntent": outputIntent,
+            "part": part.map { $0 as Any } ?? NSNull(),
+            "conformance": conformance.map { $0 as Any } ?? NSNull()
+        ]
+    }
+
+    /// The catalog's `/Metadata` stream as text (CoreGraphics returns the decoded bytes for Flate), or nil.
+    private static func catalogMetadataText(_ catalog: CGPDFDictionaryRef) -> String? {
+        var stream: CGPDFStreamRef? = nil
+        guard CGPDFDictionaryGetStream(catalog, "Metadata", &stream), let stream = stream else { return nil }
+        var format = CGPDFDataFormat.raw
+        guard let data = CGPDFStreamCopyData(stream, &format) as Data? else { return nil }
+        return String(data: data, encoding: .utf8) ?? String(data: data, encoding: .utf16)
+    }
+
+    /// The first capture group of the first pattern that matches, or nil.
+    private static func firstCapture(in text: String, patterns: [String]) -> String? {
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(text.startIndex..., in: text)
+            if let match = regex.firstMatch(in: text, range: range),
+               match.numberOfRanges > 1,
+               let captured = Range(match.range(at: 1), in: text) {
+                return String(text[captured])
+            }
+        }
+        return nil
+    }
+
     private static func sanitizeHTMLForOfflineImport(_ html: String) -> String {
         var out = html
         let stripBlockPatterns = [

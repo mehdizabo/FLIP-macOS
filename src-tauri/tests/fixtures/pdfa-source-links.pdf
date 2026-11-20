@@ -1,0 +1,85 @@
+%PDF-1.4
+%Äåòåë§ó ÐÄÆ
+1 0 obj
+<< /Pages 2 0 R /Type /Catalog >>
+endobj
+2 0 obj
+<< /Count 2 /Kids [ 3 0 R 4 0 R ] /Type /Pages >>
+endobj
+5 0 obj
+<< /Encoding /WinAnsiEncoding /BaseFont /Helvetica /Subtype /Type1 /Type /Font
+>>
+endobj
+6 0 obj
+<< /Encoding /WinAnsiEncoding /BaseFont /Helvetica-Bold /Subtype /Type1 /Type
+/Font >>
+endobj
+3 0 obj
+<< /Annots [ 7 0 R ] /Contents 8 0 R /Resources << /Font << /F2 6 0 R /F1
+5 0 R >> >> /MediaBox [ 0 0 420 595 ] /Parent 2 0 R /Type /Page >>
+endobj
+8 0 obj
+<< /Length 598 >> 
+stream
+BT
+/F2 20 Tf 1 0 0 1 40 525 Tm (FLIP FIXTURE MANUAL, PAGE ONE) Tj
+/F1 13 Tf 1 0 0 1 40 501 Tm (This is a made-up manual used only by the PDF/A tests.) Tj
+/F1 13 Tf 1 0 0 1 40 477 Tm (The quick brown fox jumps over the lazy dog, twice.) Tj
+/F1 13 Tf 1 0 0 1 40 453 Tm (Chapter one explains how to install the imaginary widget.) Tj
+/F1 13 Tf 1 0 0 1 40 429 Tm (Chapter two explains how to remove the imaginary widget.) Tj
+/F1 13 Tf 1 0 0 1 40 405 Tm (Caffè, perché, città e naïve stay readable as text.) Tj
+/F1 13 Tf 1 0 0 1 40 381 Tm (Visit the example site \(link below\) or go to page two.) Tj
+ET
+
+endstream
+endobj
+7 0 obj
+<< /Border [ 0 0 0 ] /Rect [ 40 120 260 138 ] /Subtype /Link /A << /URI (https://example.com/flip-fixture)
+/S /URI >> /Type /Annot >>
+endobj
+4 0 obj
+<< /Annots [ 9 0 R ] /Contents 10 0 R /Resources << /Font << /F2 6 0 R /F1
+5 0 R >> >> /MediaBox [ 0 0 420 595 ] /Parent 2 0 R /Type /Page >>
+endobj
+10 0 obj
+<< /Length 495 >> 
+stream
+BT
+/F2 20 Tf 1 0 0 1 40 525 Tm (PAGE TWO: THE APPENDIX) Tj
+/F1 13 Tf 1 0 0 1 40 501 Tm (Nothing here is real: names, numbers and places are invented.) Tj
+/F1 13 Tf 1 0 0 1 40 477 Tm (Part number 0001-FAKE, serial 123456, revision A.) Tj
+/F1 13 Tf 1 0 0 1 40 453 Tm (Selectable text must still be selectable after conversion.) Tj
+/F1 13 Tf 1 0 0 1 40 429 Tm (Searching this page for the word appendix must find it.) Tj
+/F1 13 Tf 1 0 0 1 40 405 Tm (Go back to page one with the link below.) Tj
+ET
+
+endstream
+endobj
+9 0 obj
+<< /Dest [ 3 0 R /XYZ 0 595 null ] /Rect [ 40 120 260 138 ] /Border [ 0 0
+0 ] /F 0 /Subtype /Link /Type /Annot >>
+endobj
+11 0 obj
+<< /Title (FLIP PDF/A fixture \(fake data\)) >>
+endobj
+xref
+0 12
+0000000000 65535 f 
+0000000022 00000 n 
+0000000071 00000 n 
+0000000335 00000 n 
+0000001290 00000 n 
+0000000136 00000 n 
+0000000233 00000 n 
+0000001141 00000 n 
+0000000491 00000 n 
+0000001995 00000 n 
+0000001447 00000 n 
+0000002124 00000 n 
+
+trailer
+<< /Info 11 0 R /ID [ <37733b4cf6174cbd3886ad41123f9937> <37733b4cf6174cbd3886ad41123f9937>
+] /Root 1 0 R /Size 12 >> 
+startxref
+2188
+%%EOF

@@ -21,12 +21,20 @@ func printUsage() {
       convert-image <input> <format> <output> [quality] [preserve-exif:true|false] [strip-gps:true|false]
       remove-bg <input-image> <output-png>
       optimize-pdf <input-pdf> <output-pdf>
+      pdf-printable <input-pdf> <output-pdf>
+      pdfa-inspect <pdf>
       convert-av <input> <format> <output>
       create-iwork <pages|numbers|key> <output>
       feedback <tick|sound|alignment|level|generic|success|error> [wav-path]
       notify <title> <body> [reveal-path]
     """
     print(usage)
+}
+
+/// A failure answered the way the PDF/A commands promise: one JSON line on stdout, exit status 1.
+func failJSON(_ message: String) -> Never {
+    writeJSON(["ok": false, "error": message])
+    exit(1)
 }
 
 func runCLI() {
@@ -187,6 +195,18 @@ func runCLI() {
         } catch {
             failExit(error.localizedDescription)
         }
+
+    case "pdf-printable":
+        guard args.count >= 3 else { failJSON("pdf-printable <input-pdf> <output-pdf>") }
+        let res = MediaAndDocs.makePDFPrintable(inputPath: args[1], outputPath: args[2])
+        writeJSON(res)
+        if (res["ok"] as? Bool) != true { exit(1) }
+
+    case "pdfa-inspect":
+        guard args.count >= 2 else { failJSON("pdfa-inspect <pdf>") }
+        let res = MediaAndDocs.inspectPDFForPDFA(path: args[1])
+        writeJSON(res)
+        if (res["ok"] as? Bool) != true { exit(1) }
 
     case "create-iwork":
         guard args.count >= 3 else { failExit("create-iwork <pages|numbers|key> <output>") }
