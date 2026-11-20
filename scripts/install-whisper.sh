@@ -10,9 +10,10 @@ MODEL_PATH="$MODEL_DIR/ggml-small.bin"
 PART_PATH="$MODEL_PATH.part"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin"
 
-# Left empty on purpose: fill it only with a SHA-1 you verified yourself against
-# the whisper.cpp project's models/README.md, never from memory.
-EXPECTED_SHA1=""
+# SHA-1 of ggml-small.bin as listed in the whisper.cpp project's models/README.md
+# (row "small", 466 MiB), checked on 2026-11-20 against the file the script downloaded.
+# If a new model build is ever published, update it only from that README, never from memory.
+EXPECTED_SHA1="55356645c2b361a969dfd0ef2c5a50d530afd8d5"
 
 ASSUME_YES=0
 FORCE=0
@@ -70,8 +71,9 @@ curl -L --fail --progress-bar -o "$PART_PATH" "$MODEL_URL"
 mv "$PART_PATH" "$MODEL_PATH"
 shasum -a 1 "$MODEL_PATH"
 
-Builds of whisper.cpp since 2024 name the tool whisper-cli; older Homebrew
-versions install it as whisper-cpp. FLIP accepts either name.
+Homebrew currently installs the tool as whisper-cli (the formula is now named
+whisper.cpp and whisper-cpp is kept as an alias). FLIP also accepts the older
+binary name whisper-cpp. The download is checked against a pinned SHA-1.
 EOF
   exit 0
 fi
