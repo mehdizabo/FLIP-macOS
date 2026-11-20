@@ -1183,6 +1183,8 @@ export const events = {
     subscribeEvent<Record<string, unknown>>("wheel:escape", cb),
   onWheelToggleRaw: (cb: () => void) =>
     subscribeEvent<Record<string, unknown>>("wheel:toggle-raw", () => cb()),
+  onWheelToggleFace: (cb: () => void) =>
+    subscribeEvent<Record<string, unknown>>("wheel:toggle-face", () => cb()),
   onConversionProgress: (cb: (p: ConversionProgressPayload) => void) =>
     subscribeEvent<ConversionProgressPayload>("conversion:progress", cb),
   onConversionComplete: (cb: (p: ConversionCompletePayload) => void) =>

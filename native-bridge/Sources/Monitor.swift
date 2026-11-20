@@ -75,6 +75,7 @@ final class MonitorController {
     private var dragKeyHeld = false
     private var dragKeyConsumed = false
     private var rawToggleKeyConsumed = false
+    private var faceToggleKeyConsumed = false
     private var mouseTriggerHeld = false
     private var lastEmittedX: Double = -9999
     private var lastEmittedY: Double = -9999
@@ -176,6 +177,7 @@ final class MonitorController {
                         if !nextOpen {
                             self.dragWheelTriggeredForDrag = false
                             self.rawToggleKeyConsumed = false
+                            self.faceToggleKeyConsumed = false
                             self.lastEmittedX = -9999
                             self.lastEmittedY = -9999
                         } else {
@@ -409,6 +411,7 @@ final class MonitorController {
         dragKeyHeld = false
         dragKeyConsumed = false
         rawToggleKeyConsumed = false
+        faceToggleKeyConsumed = false
         mouseTriggerHeld = false
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
@@ -545,6 +548,26 @@ final class MonitorController {
             }
         }
 
+        // T (keyCode 17) switches the wheel between its Formats and Tools faces, like R toggles Raw.
+        if (dragModifierOnly != nil || dragKeyCode != 17) && keyCode == 17 {
+            let disallowedMods: CGEventFlags = [.maskCommand, .maskAlternate, .maskControl]
+            if type == .keyDown {
+                if !isRepeat {
+                    if wheelOpen && flags.intersection(disallowedMods).isEmpty {
+                        faceToggleKeyConsumed = true
+                        writeJSON(["event": "toggle_face"])
+                        return nil
+                    }
+                    faceToggleKeyConsumed = false
+                } else if faceToggleKeyConsumed {
+                    return nil
+                }
+            } else if type == .keyUp && faceToggleKeyConsumed {
+                faceToggleKeyConsumed = false
+                return nil
+            }
+        }
+
         // 1) Idle Global Shortcut
         if type == .keyDown && !isRepeat && !dragActive, let idle = idleShortcut, idle.matches(keyCode: keyCode, flags: flags) {
             let pos = currentCursorAndScreen()
@@ -646,6 +669,14 @@ final class MonitorController {
             let modFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if modFlags.intersection([.command, .option, .control]).isEmpty {
                 writeJSON(["event": "toggle_raw"])
+                return
+            }
+        }
+
+        if event.type == .keyDown && !event.isARepeat && event.keyCode == 17 && wheelOpen && (dragModifierOnly != nil || dragKeyCode != 17) {
+            let modFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if modFlags.intersection([.command, .option, .control]).isEmpty {
+                writeJSON(["event": "toggle_face"])
                 return
             }
         }

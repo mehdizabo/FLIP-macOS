@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { t } from "./i18n";
+import { IMAGE_TOOL_TOKENS } from "./imageTools";
 import { defaultPreferences } from "./ipc";
 import type {
   AppPreferences,
@@ -1858,6 +1859,132 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     harness.emitEvent("wheel:toggle-raw", {});
     await flushMicrotasks();
     expect(rawBtn.getAttribute("aria-pressed")).toBe("false");
+    });
+  });
+
+  test("WheelView: Tools face (T key, #wheel-face-toggle, wheel:toggle-face) opens Crop/Rotate/Scale sub-pages and runs a tool token", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+    const harness = installTauriHarness(win);
+    const dispose = mountWheelView(root);
+    cleanups.push(dispose);
+    await flushMicrotasks();
+
+    const faceBtn = root.querySelector<HTMLButtonElement>("#wheel-face-toggle")!;
+    expect(faceBtn).not.toBeNull();
+    const labels = () =>
+      Array.from(root.querySelectorAll(".wheel-sector-group")).map(
+        (el) => el.querySelector(".wheel-sector-label")?.textContent ?? "",
+      );
+    const click = async (index: number) => {
+      const sector = root.querySelector(
+        `.wheel-sector-group[data-slot-index="${index}"]`,
+      ) as unknown as ShimElement;
+      sector.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+      await flushMicrotasks();
+    };
+
+    // A PDF has no image tools: no Tools switch, and T does nothing
+    expect(faceBtn.style.display).toBe("none");
+    const pdfLabels = labels();
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "t" }));
+    await flushMicrotasks();
+    expect(labels()).toEqual(pdfLabels);
+
+    // A selection of images offers the Tools face
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/photo.jpg"],
+      isDrag: false,
+      compatibleFormats: ["PNG", "WEBP", "TIFF", "REMOVE_BG"],
+      batchActions: [],
+      toolActions: [...IMAGE_TOOL_TOKENS],
+      availabilityMessage: "",
+      family: "image",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    expect(faceBtn.style.display).toBe("inline-flex");
+    expect(faceBtn.textContent).toContain(t("en", "wheel.faceTools"));
+    expect(faceBtn.getAttribute("aria-pressed")).toBe("false");
+    expect(labels()).toContain("PNG");
+
+    // T switches to the Tools face: Crop, Rotate, Scale, Remove BG, Palette, EXIF
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "t" }));
+    await flushMicrotasks();
+    expect(faceBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(faceBtn.classList.contains("is-tools")).toBe(true);
+    expect(faceBtn.textContent).toContain(t("en", "wheel.faceFormats"));
+    expect(labels()).toEqual([
+      t("en", "wheel.toolGroup.crop"),
+      t("en", "wheel.toolGroup.rotate"),
+      t("en", "wheel.toolGroup.scale"),
+      "No BG",
+      "Palette",
+      "No EXIF",
+    ]);
+
+    // Crop opens a sub-page of presets plus an "up" slot
+    await click(0);
+    expect(labels()).toEqual(["9:16", "4:5", "1:1", "16:9", t("en", "wheel.backSlot")]);
+    expect(harness.calls.some((c) => c.cmd === "execute_conversion")).toBe(false);
+
+    // Up returns to the first page of tools
+    await click(4);
+    expect(labels()[0]).toBe(t("en", "wheel.toolGroup.crop"));
+    expect(labels().length).toBe(6);
+
+    // Rotate -> 90° right runs the tool token through the normal conversion path
+    await click(1);
+    expect(labels()).toEqual(["90° R", "90° L", "180°", "Flip H", "Flip V", t("en", "wheel.backSlot")]);
+    await click(0);
+    const toolExec = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+    expect(toolExec?.args.paths).toEqual(["/tmp/photo.jpg"]);
+    expect(toolExec?.args.formats).toEqual(["ROTATE_RIGHT"]);
+
+    // A new selection starts again on the Formats face (and wheel:toggle-face flips it back and forth)
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/other.png"],
+      isDrag: true,
+      compatibleFormats: ["JPG", "WEBP"],
+      batchActions: [],
+      toolActions: [...IMAGE_TOOL_TOKENS],
+      availabilityMessage: "",
+      family: "image",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    expect(faceBtn.getAttribute("aria-pressed")).toBe("false");
+    expect(labels()).toEqual(["JPG", "WEBP"]);
+    harness.emitEvent("wheel:toggle-face", {});
+    await flushMicrotasks();
+    expect(faceBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(labels()[0]).toBe(t("en", "wheel.toolGroup.crop"));
+    harness.emitEvent("wheel:toggle-face", {});
+    await flushMicrotasks();
+    expect(labels()).toEqual(["JPG", "WEBP"]);
+
+    // A selection without tools drops back to formats and hides the switch
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/page.html"],
+      isDrag: false,
+      compatibleFormats: ["MD", "TXT"],
+      batchActions: [],
+      toolActions: [],
+      availabilityMessage: "",
+      family: "document",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    expect(faceBtn.style.display).toBe("none");
+    expect(labels()).toEqual(["MD", "TXT"]);
     });
   });
 

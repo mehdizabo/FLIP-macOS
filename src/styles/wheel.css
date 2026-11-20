@@ -211,6 +211,32 @@ html[data-route="wheel"] body.wheel-browser-preview {
   color: #fef3c7;
 }
 
+/* Tools / Formats face switch (T): same capsule as the Smart/Raw toggle, blue when Tools is showing */
+.wheel-face-toggle .wheel-face-icon {
+  display: inline-flex;
+  align-items: center;
+  opacity: 0.85;
+}
+
+.wheel-face-toggle .wheel-face-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.wheel-face-toggle.is-tools {
+  color: #dbeafe;
+  background: linear-gradient(180deg, rgba(10, 132, 255, 0.34), rgba(10, 100, 214, 0.26));
+  border-color: rgba(90, 170, 255, 0.6);
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.3),
+    inset 0 1px 0.5px rgba(219, 234, 254, 0.36);
+}
+
+.wheel-face-toggle.is-tools .wheel-raw-kbd {
+  background: rgba(90, 170, 255, 0.26);
+  color: #dbeafe;
+}
+
 .wheel-mode-btn {
   appearance: none;
   border: none;
@@ -1006,6 +1032,7 @@ html[data-route="wheel"] body.wheel-browser-preview {
   .wheel-glass-puck,
   .wheel-mode-pill,
   .wheel-raw-toggle,
+  .wheel-face-toggle,
   .wheel-page-dots {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;

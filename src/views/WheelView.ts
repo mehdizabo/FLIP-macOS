@@ -5,7 +5,8 @@ import {
   normalizeLanguage,
   t,
 } from "../i18n";
-import { getFormatMeta, getNewKindMeta, UI_ICONS } from "../icons";
+import { getFormatMeta, getNewKindMeta, getToolGroupMeta, UI_ICONS } from "../icons";
+import { buildToolEntries, isImageToolToken, type ToolGroupId } from "../imageTools";
 import {
   cancelConversion,
   copyDiagnosticsToClipboard,
@@ -77,9 +78,23 @@ interface WheelActionItem {
   iconSvg: string;
   enabled: boolean;
   disabledReason?: string;
+  /** Tools face: this slot opens a sub-page of presets (Crop, Rotate, Scale) instead of acting. */
+  groupId?: ToolGroupId;
+  /** Tools face: this slot returns from a sub-page to the first page of tools. */
+  isUp?: boolean;
 }
 
 type WheelPhase = "idle" | "converting" | "success" | "error";
+
+/** The wheel has two faces for a selection of images: output formats, and image tools. */
+type WheelFace = "formats" | "tools";
+
+/** Where a navigation slot leads: another page of the same list, or into/out of a tool group. */
+type SlotNavigation =
+  | { kind: "page"; page: number }
+  | { kind: "group"; group: ToolGroupId | null };
+
+const TOOLS_UP_ITEM_ID = "__tools-up__";
 
 export function mountWheelView(root: HTMLElement): () => void {
   document.documentElement.dataset.route = "wheel";
@@ -101,6 +116,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     targetFolder: "/Users/demo/Desktop",
     compatibleFormats: [],
     batchActions: [],
+    toolActions: [],
     originX: WHEEL_CENTER,
     originY: WHEEL_CENTER,
     availabilityMessage: "",
@@ -150,6 +166,8 @@ export function mountWheelView(root: HTMLElement): () => void {
   let activeTargetFormat = "";
   let currentItemsCount = 0;
   let rawMode = false;
+  let face: WheelFace = "formats";
+  let toolGroup: ToolGroupId | null = null;
   let lastDomPointerMoveAt = 0;
   let lastMonitorPointerMoveAt = 0;
   let lastReleaseHandledAt = 0;
@@ -180,6 +198,11 @@ export function mountWheelView(root: HTMLElement): () => void {
             <span class="wheel-raw-dot" aria-hidden="true"></span>
             <span id="wheel-raw-toggle-label">${escapeHtml(t(lang(), "wheel.mode.smart"))}</span>
             <kbd class="wheel-raw-kbd">R</kbd>
+          </button>
+          <button type="button" class="wheel-raw-toggle wheel-face-toggle" id="wheel-face-toggle" aria-pressed="false" style="display:none">
+            <span class="wheel-face-icon" id="wheel-face-toggle-icon" aria-hidden="true">${UI_ICONS.tools}</span>
+            <span id="wheel-face-toggle-label">${escapeHtml(t(lang(), "wheel.faceTools"))}</span>
+            <kbd class="wheel-raw-kbd">T</kbd>
           </button>
         </div>
 
@@ -251,6 +274,9 @@ export function mountWheelView(root: HTMLElement): () => void {
   const modeButtons = Array.from(root.querySelectorAll<HTMLButtonElement>(".wheel-mode-btn"));
   const rawToggleBtn = root.querySelector<HTMLButtonElement>("#wheel-raw-toggle")!;
   const rawToggleLabelEl = root.querySelector<HTMLElement>("#wheel-raw-toggle-label")!;
+  const faceToggleBtn = root.querySelector<HTMLButtonElement>("#wheel-face-toggle")!;
+  const faceToggleLabelEl = root.querySelector<HTMLElement>("#wheel-face-toggle-label")!;
+  const faceToggleIconEl = root.querySelector<HTMLElement>("#wheel-face-toggle-icon")!;
 
   let sectorGroups: SVGGElement[] = [];
   let sectorBodies: Array<SVGGElement | null> = [];
@@ -321,6 +347,76 @@ export function mountWheelView(root: HTMLElement): () => void {
     return prefs.preferredFormats[key];
   }
 
+  /** Tools are offered only for a selection of images (the host reports which apply to every file). */
+  function toolFaceAvailable(): boolean {
+    return state.mode === "convert" && (state.toolActions?.length ?? 0) > 0;
+  }
+
+  function isToolsFaceActive(): boolean {
+    return face === "tools" && toolFaceAvailable();
+  }
+
+  /**
+   * Tools face. First page: Crop / Rotate / Scale open a sub-page of presets, the rest act directly.
+   * A sub-page lists the group's presets plus an "up" slot that returns to the first page.
+   */
+  function buildToolItems(): WheelActionItem[] {
+    const l = lang();
+    const leaf = (token: string): WheelActionItem => {
+      const meta = getFormatMeta(token, l);
+      return {
+        id: token,
+        label: meta.shortLabel,
+        subtitle: meta.title,
+        accent: meta.accent,
+        iconSvg: meta.iconSvg,
+        enabled: true,
+      };
+    };
+
+    const entries = buildToolEntries(state.toolActions, state.compatibleFormats, state.batchActions);
+    const open = toolGroup
+      ? entries.find((entry) => entry.kind === "group" && entry.id === toolGroup)
+      : undefined;
+    if (open && open.kind === "group") {
+      return [
+        ...open.tokens.map(leaf),
+        {
+          id: TOOLS_UP_ITEM_ID,
+          label: t(l, "wheel.backSlot"),
+          subtitle: t(l, "wheel.backToTools"),
+          accent: "#38bdf8",
+          iconSvg: UI_ICONS.back,
+          enabled: true,
+          isUp: true,
+        },
+      ];
+    }
+
+    return entries.map((entry): WheelActionItem => {
+      if (entry.kind === "leaf") return leaf(entry.token);
+      const meta = getToolGroupMeta(entry.id, l);
+      return {
+        id: `group:${entry.id}`,
+        label: meta.shortLabel,
+        subtitle: t(l, "wheel.toolGroupSubtitle", { name: meta.title }),
+        accent: meta.accent,
+        iconSvg: meta.iconSvg,
+        enabled: true,
+        groupId: entry.id,
+      };
+    });
+  }
+
+  function slotNavigation(slot: PaginatedSlot<WheelActionItem>): SlotNavigation | null {
+    if (slot.kind === "more" || slot.kind === "back") {
+      return { kind: "page", page: slot.targetPage };
+    }
+    if (slot.item.groupId) return { kind: "group", group: slot.item.groupId };
+    if (slot.item.isUp) return { kind: "group", group: null };
+    return null;
+  }
+
   function buildActionItems(): WheelActionItem[] {
     const l = lang();
     if (state.mode === "new") {
@@ -366,6 +462,8 @@ export function mountWheelView(root: HTMLElement): () => void {
 
       return items;
     }
+
+    if (isToolsFaceActive()) return buildToolItems();
 
     const orderedFormats = orderFormats(
       state.compatibleFormats,
@@ -442,6 +540,16 @@ export function mountWheelView(root: HTMLElement): () => void {
     rawToggleBtn.setAttribute("aria-pressed", rawMode ? "true" : "false");
     rawToggleLabelEl.textContent = rawMode ? t(l, "wheel.mode.raw") : t(l, "wheel.mode.smart");
     rawToggleBtn.title = rawMode ? t(l, "wheel.mode.raw_tooltip") : t(l, "wheel.mode.smart_tooltip");
+
+    // Face toggle: names the face a press leads to ("Tools" while on formats, "Formats" while on tools).
+    const toolsActive = isToolsFaceActive();
+    faceToggleBtn.style.display = toolFaceAvailable() ? "inline-flex" : "none";
+    faceToggleBtn.classList.toggle("is-tools", toolsActive);
+    faceToggleBtn.setAttribute("aria-pressed", toolsActive ? "true" : "false");
+    faceToggleLabelEl.textContent = toolsActive ? t(l, "wheel.faceFormats") : t(l, "wheel.faceTools");
+    faceToggleIconEl.innerHTML = toolsActive ? UI_ICONS.convert : UI_ICONS.tools;
+    faceToggleBtn.title = t(l, "wheel.faceSwitchLabel");
+    faceToggleBtn.setAttribute("aria-label", t(l, "wheel.faceSwitchLabel"));
   }
 
   function setCssVar(el: Element, name: string, value: string): void {
@@ -718,8 +826,18 @@ export function mountWheelView(root: HTMLElement): () => void {
     const puckMarkups: string[] = [];
     sectorsLayer.innerHTML = slots
       .map((slot, i) => {
-        const isNav = slot.kind === "more" || slot.kind === "back";
+        const navigation = slotNavigation(slot);
+        const isNav = navigation !== null;
         const enabled = isSlotActionable(slot);
+        const earKind: "more" | "back" | null = !navigation
+          ? null
+          : navigation.kind === "page"
+            ? slot.kind === "back"
+              ? "back"
+              : "more"
+            : navigation.group === null
+              ? "back"
+              : "more";
         const label =
           slot.kind === "more"
             ? t(l, "wheel.moreSlot")
@@ -779,7 +897,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           label,
           showKbd: true,
           includeSpec: true,
-          earKind: slot.kind === "more" ? "more" : slot.kind === "back" ? "back" : null,
+          earKind,
         });
       })
       .join("");
@@ -1150,22 +1268,17 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
     if (slot && isSlotActionable(slot)) {
       void playWheelFeedback("tick");
+      const navigation = slotNavigation(slot);
       if (
-        (slot.kind === "more" || slot.kind === "back") &&
+        navigation &&
         (state.isDrag || isDragHovering) &&
         latchedDwellSlot !== bounded
       ) {
         dwellSlotIndex = bounded;
-        const targetPage = slot.targetPage;
         dwellTimer = window.setTimeout(() => {
           if (disposed || phase !== "idle" || activeIndex !== dwellSlotIndex) return;
           latchedDwellSlot = dwellSlotIndex;
-          page = targetPage;
-          activeIndex = -1;
-          void playWheelFeedback("level");
-          renderSectors();
-          renderHub();
-          announce(formatPageFlipAnnouncement(page, totalPages, lang()), { force: true });
+          followNavigation(navigation);
         }, DRAG_DWELL_MS);
       }
     }
@@ -1309,6 +1422,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     conversionInFlight = true;
     void playWheelFeedback("generic");
     startConversionVisual(meta.shortLabel);
+    // Tool labels are terse ("9:16"); the progress line names the action instead of "→ 9:16".
+    if (isImageToolToken(formatId)) stepLabel = meta.title;
 
     try {
       const res = await executeConversion(filesSnapshot, [formatId], {
@@ -1411,22 +1526,42 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
   }
 
+  /** Turns the page, or steps into / out of a tool group, and re-renders the ring. */
+  function followNavigation(navigation: SlotNavigation): void {
+    activeIndex = -1;
+    clearDwell();
+    if (navigation.kind === "page") {
+      page = navigation.page;
+    } else {
+      toolGroup = navigation.group;
+      page = 0;
+    }
+    void playWheelFeedback("level");
+    renderSectors();
+    renderHub();
+    if (navigation.kind === "page") {
+      announce(formatPageFlipAnnouncement(page, totalPages, lang()), { force: true });
+    } else {
+      announce(
+        navigation.group
+          ? getToolGroupMeta(navigation.group, lang()).title
+          : t(lang(), "wheel.faceTools"),
+        { force: true },
+      );
+    }
+  }
+
   function activateSlot(idx: number, options: { forceRaw?: boolean } = {}): void {
     if (phase !== "idle") return;
     const slot = slots[idx];
     if (!slot) return;
 
-    if (slot.kind === "more" || slot.kind === "back") {
+    const navigation = slotNavigation(slot);
+    if (navigation) {
       const wasFocusInsideSectors =
         document.activeElement instanceof Element &&
         sectorsLayer.contains(document.activeElement);
-      page = slot.targetPage;
-      activeIndex = -1;
-      clearDwell();
-      void playWheelFeedback("level");
-      renderSectors();
-      renderHub();
-      announce(formatPageFlipAnnouncement(page, totalPages, lang()), { force: true });
+      followNavigation(navigation);
       if (wasFocusInsideSectors) {
         const firstFocusIdx = slots.findIndex((s) => isSlotActionable(s));
         if (firstFocusIdx >= 0) {
@@ -1436,7 +1571,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       return;
     }
 
-    if (!slot.item.enabled) return;
+    if (slot.kind !== "item" || !slot.item.enabled) return;
 
     const group = sectorGroups[idx];
     const body = sectorBodies[idx];
@@ -1578,11 +1713,17 @@ export function mountWheelView(root: HTMLElement): () => void {
     lastMonitorPointerMoveAt = next.isDrag ? performance.now() : 0;
     if (wasClosing || filesChanged) {
       rawMode = false;
+      face = "formats";
     }
     if (modeOrFilesChanged) {
       page = 0;
       activeIndex = -1;
       latchedDwellSlot = -1;
+      toolGroup = null;
+    }
+    if (!toolFaceAvailable()) {
+      face = "formats";
+      toolGroup = null;
     }
 
     // Render immediately so stale sectors from an earlier mode/selection are cleared before async IPC fetches.
@@ -1658,6 +1799,7 @@ export function mountWheelView(root: HTMLElement): () => void {
       files: inspected.files,
       compatibleFormats: inspected.compatibleFormats,
       batchActions: inspected.batchActions,
+      toolActions: inspected.toolActions ?? [],
       availabilityMessage: inspected.availabilityMessage,
       family: inspected.family ?? null,
     });
@@ -1698,10 +1840,33 @@ export function mountWheelView(root: HTMLElement): () => void {
     });
   }
 
+  function toggleFace(): void {
+    if (phase !== "idle" || !toolFaceAvailable()) return;
+    face = face === "tools" ? "formats" : "tools";
+    toolGroup = null;
+    page = 0;
+    activeIndex = -1;
+    latchedDwellSlot = -1;
+    clearDwell();
+    void playWheelFeedback("level");
+    updateModePillUI();
+    renderSectors();
+    renderHub();
+    announce(face === "tools" ? t(lang(), "wheel.faceTools") : t(lang(), "wheel.faceFormats"), {
+      force: true,
+    });
+  }
+
   rawToggleBtn.addEventListener("click", (ev) => {
     ev.stopPropagation();
     rawToggleBtn.blur();
     toggleRawMode();
+  });
+
+  faceToggleBtn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    faceToggleBtn.blur();
+    toggleFace();
   });
 
   // Mode pill listeners
@@ -1854,7 +2019,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (
       target instanceof Element &&
       target.closest(
-        "#wheel-hub, .wheel-top-bar, .wheel-mode-pill, #wheel-raw-toggle, .wheel-page-dots, .wheel-preview-dock, .wheel-sector-group",
+        "#wheel-hub, .wheel-top-bar, .wheel-mode-pill, #wheel-raw-toggle, #wheel-face-toggle, .wheel-page-dots, .wheel-preview-dock, .wheel-sector-group",
       )
     ) {
       return;
@@ -1910,6 +2075,19 @@ export function mountWheelView(root: HTMLElement): () => void {
     ) {
       ev.preventDefault();
       toggleRawMode();
+      return;
+    }
+
+    if (
+      !ev.repeat &&
+      !ev.metaKey &&
+      !ev.ctrlKey &&
+      !ev.altKey &&
+      (ev.key === "t" || ev.key === "T") &&
+      toolFaceAvailable()
+    ) {
+      ev.preventDefault();
+      toggleFace();
       return;
     }
 
@@ -2084,7 +2262,7 @@ export function mountWheelView(root: HTMLElement): () => void {
         const isDragging = state.isDrag || isDragHovering;
         const pt = windowLogicalToCanvasPoint(payload.localX, payload.localY);
         if (!isDragging && isHoveringControl) {
-          const inTopBar = Boolean(topBarEl) && pt.y <= 44 && pt.x >= 90 && pt.x <= 350;
+          const inTopBar = Boolean(topBarEl) && pt.y <= 44 && pt.x >= 50 && pt.x <= 390;
           const nearCenterHubButton = Math.hypot(pt.x - WHEEL_CENTER, pt.y - WHEEL_CENTER) <= 58;
           if (inTopBar || nearCenterHubButton) {
             setActiveIndex(-1, { skipStep: true });
@@ -2102,7 +2280,7 @@ export function mountWheelView(root: HTMLElement): () => void {
         }
         lastMonitorPointerMoveAt = performance.now();
         lastMonitorPointerPos = { x: payload.localX, y: payload.localY };
-        if (!isDragging && topBarEl && pt.y <= 44 && pt.x >= 90 && pt.x <= 350) {
+        if (!isDragging && topBarEl && pt.y <= 44 && pt.x >= 50 && pt.x <= 390) {
           setActiveIndex(-1, { skipStep: true });
           updateCursorProximity(null, null);
           return;
@@ -2155,6 +2333,10 @@ export function mountWheelView(root: HTMLElement): () => void {
       events.onWheelToggleRaw(() => {
         if (disposed || closing) return;
         toggleRawMode();
+      }),
+      events.onWheelToggleFace(() => {
+        if (disposed || closing) return;
+        toggleFace();
       }),
       events.onConversionProgress((payload) => {
         if (disposed || !conversionInFlight || phase !== "converting") return;

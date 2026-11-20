@@ -384,6 +384,24 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
                 }
             }
         }
+        // `T`: switch the wheel between its Formats and Tools faces (only meaningful for images).
+        "toggle_face" => {
+            if state.is_converting.load(Ordering::Relaxed) {
+                return;
+            }
+            let can_toggle = state
+                .wheel
+                .lock()
+                .map(|g| {
+                    g.is_open && g.payload.mode == "convert" && !g.payload.tool_actions.is_empty()
+                })
+                .unwrap_or(false);
+            if can_toggle {
+                if let Some(win) = app.get_webview_window("wheel") {
+                    let _ = win.emit("wheel:toggle-face", json!({}));
+                }
+            }
+        }
         _ => {}
     }
 }
