@@ -183,6 +183,16 @@ pub fn resolve_bridge_binary_from(
     Err(BridgeError::BridgeNotFound)
 }
 
+/// Longest pause between checks on a running child (also the cancel/timeout reaction time).
+const MAX_POLL_DELAY_MS: u64 = 20;
+
+/// Pause before checking a running child again. It starts at 1 ms and doubles, so short commands
+/// (most bridge calls finish in a few ms) are not rounded up to a fixed 20 ms tick, then it settles at
+/// `MAX_POLL_DELAY_MS` so long conversions poll exactly as often as before.
+fn poll_delay(attempt: u32) -> Duration {
+    Duration::from_millis((1u64 << attempt.min(5)).min(MAX_POLL_DELAY_MS))
+}
+
 pub fn run_external_command(
     exe: &Path,
     args: &[String],
@@ -226,6 +236,7 @@ pub fn run_external_command(
         .unwrap_or("tool")
         .to_string();
 
+    let mut poll_attempt = 0u32;
     let status = loop {
         if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
             let _ = child.kill();
@@ -244,7 +255,8 @@ pub fn run_external_command(
             let _ = err_handle.join();
             return Err(BridgeError::TimedOut(label, timeout_secs));
         }
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(poll_delay(poll_attempt));
+        poll_attempt = poll_attempt.saturating_add(1);
     };
 
     let stdout = out_handle.join().unwrap_or_default();
@@ -546,4 +558,73 @@ pub fn notify(title: &str, body: &str, reveal_path: Option<&Path>) -> Result<Val
         args.push(path.to_string_lossy().into_owned());
     }
     run_bridge_json(&args, 8, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poll_delay_starts_short_grows_and_caps_at_the_old_fixed_tick() {
+        let delays: Vec<u64> = (0..12).map(|i| poll_delay(i).as_millis() as u64).collect();
+        assert_eq!(&delays[..6], &[1, 2, 4, 8, 16, 20]);
+        assert!(delays.windows(2).all(|w| w[0] <= w[1]), "never shrinks: {delays:?}");
+        assert!(delays.iter().all(|&d| (1..=MAX_POLL_DELAY_MS).contains(&d)));
+        assert_eq!(poll_delay(u32::MAX), Duration::from_millis(MAX_POLL_DELAY_MS));
+        // A command finishing within ~30 ms is noticed on the first polls, not after a 20 ms tick.
+        assert!(delays[..5].iter().sum::<u64>() <= 31);
+    }
+
+    #[test]
+    fn slow_commands_keep_their_output_cancel_and_timeout_behaviour() {
+        let sh = Path::new("/bin/sh");
+        let (out, _) = run_external_command(
+            sh,
+            &["-c".into(), "sleep 0.15; printf done".into()],
+            None,
+            10,
+            None,
+        )
+        .expect("slow command completes");
+        assert_eq!(out, "done");
+
+        let started = Instant::now();
+        let err = run_external_command(sh, &["-c".into(), "sleep 5".into()], None, 1, None)
+            .expect_err("times out");
+        assert!(matches!(err, BridgeError::TimedOut(_, 1)), "{err:?}");
+        assert!(started.elapsed() < Duration::from_millis(1500), "timeout overshoot: {:?}", started.elapsed());
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let err = run_external_command(sh, &["-c".into(), "sleep 5".into()], None, 30, Some(&cancel))
+            .expect_err("cancelled");
+        assert!(matches!(err, BridgeError::Cancelled), "{err:?}");
+        assert!(started.elapsed() < Duration::from_millis(1000), "cancel latency: {:?}", started.elapsed());
+    }
+
+    /// Manual timing of the process-spawn path: `cargo test --lib external_command_latency -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing probe, run manually"]
+    fn external_command_latency() {
+        let exe = Path::new("/usr/bin/true");
+        let mut samples: Vec<f64> = (0..40)
+            .map(|_| {
+                let start = Instant::now();
+                run_external_command(exe, &[], None, 10, None).expect("true runs");
+                start.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect();
+        samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "run_external_command(/usr/bin/true): median {:.1} ms, min {:.1} ms, max {:.1} ms",
+            samples[samples.len() / 2],
+            samples[0],
+            samples[samples.len() - 1]
+        );
+    }
 }
