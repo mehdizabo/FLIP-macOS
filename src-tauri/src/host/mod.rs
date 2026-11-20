@@ -309,7 +309,7 @@ pub fn resolve_wav_path(app: &AppHandle) -> Option<PathBuf> {
     resolve_wav_path_from(
         &resource_candidates,
         current_exe.as_deref(),
-        Path::new(env!("CARGO_MANIFEST_DIR")),
+        bridge::dev_checkout_dir(),
     )
 }
 
@@ -330,7 +330,7 @@ fn probe_wav_near_exe(exe: &Path) -> Option<PathBuf> {
 pub fn resolve_wav_path_from(
     resource_candidates: &[PathBuf],
     exe_path: Option<&Path>,
-    manifest_dir: &Path,
+    manifest_dir: Option<&Path>,
 ) -> Option<PathBuf> {
     for candidate in resource_candidates {
         if candidate.is_file() {
@@ -349,11 +349,9 @@ pub fn resolve_wav_path_from(
             }
         }
     }
-    let dev = manifest_dir.join("resources").join("flip-tick.wav");
-    if dev.is_file() {
-        return Some(dev);
-    }
-    None
+    manifest_dir
+        .map(|dir| dir.join("resources").join("flip-tick.wav"))
+        .filter(|dev| dev.is_file())
 }
 
 pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> InspectFilesResult {

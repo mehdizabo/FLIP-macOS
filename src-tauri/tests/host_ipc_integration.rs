@@ -371,14 +371,14 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
 #[test]
 fn bridge_and_wav_resolve_in_both_dev_and_app_bundle_layouts() {
     // 1. Dev mode (real repo files)
-    let dev_bridge = resolve_bridge_binary_from(None, &manifest_dir(), None).unwrap();
+    let dev_bridge = resolve_bridge_binary_from(None, Some(&manifest_dir()), None).unwrap();
     assert_eq!(
         dev_bridge,
         repo_root().join("native-bridge/bin/flip-macos-bridge")
     );
     assert!(dev_bridge.is_file());
 
-    let dev_wav = resolve_wav_path_from(&[], None, &manifest_dir()).unwrap();
+    let dev_wav = resolve_wav_path_from(&[], None, Some(&manifest_dir())).unwrap();
     assert_eq!(dev_wav, manifest_dir().join("resources/flip-tick.wav"));
     assert!(dev_wav.is_file());
 
@@ -401,20 +401,20 @@ fn bridge_and_wav_resolve_in_both_dev_and_app_bundle_layouts() {
     // Even with bogus manifest_dir (simulating relocated .app), bundled resources resolve cleanly
     let fake_manifest = temp.path().join("nonexistent-src-tauri");
     let resolved_bridge =
-        resolve_bridge_binary_from(Some(&fake_exe), &fake_manifest, None).unwrap();
+        resolve_bridge_binary_from(Some(&fake_exe), Some(&fake_manifest), None).unwrap();
     assert_eq!(resolved_bridge, bundled_bridge);
 
     let resolved_wav = resolve_wav_path_from(
         std::slice::from_ref(&bundled_wav),
         Some(&fake_exe),
-        &fake_manifest,
+        Some(&fake_manifest),
     )
     .unwrap();
     assert_eq!(resolved_wav, bundled_wav);
 
     // Also resolves via exe-relative Contents/Resources when BaseDirectory list is empty
     let resolved_wav_exe_fallback =
-        resolve_wav_path_from(&[], Some(&fake_exe), &fake_manifest).unwrap();
+        resolve_wav_path_from(&[], Some(&fake_exe), Some(&fake_manifest)).unwrap();
     assert_eq!(resolved_wav_exe_fallback, bundled_wav);
 
     // 3. Symlinked CLI invocation (`~/.local/bin/flip -> FLIP.app/Contents/MacOS/flip`) still finds bundled bridge & wav
@@ -423,11 +423,11 @@ fn bridge_and_wav_resolve_in_both_dev_and_app_bundle_layouts() {
     let cli_symlink = bin_dir.join("flip");
     std::os::unix::fs::symlink(&fake_exe, &cli_symlink).unwrap();
     assert_eq!(
-        resolve_bridge_binary_from(Some(&cli_symlink), &fake_manifest, None).unwrap(),
+        resolve_bridge_binary_from(Some(&cli_symlink), Some(&fake_manifest), None).unwrap(),
         fs::canonicalize(&bundled_bridge).unwrap()
     );
     assert_eq!(
-        resolve_wav_path_from(&[], Some(&cli_symlink), &fake_manifest).unwrap(),
+        resolve_wav_path_from(&[], Some(&cli_symlink), Some(&fake_manifest)).unwrap(),
         fs::canonicalize(&bundled_wav).unwrap()
     );
 
@@ -435,7 +435,7 @@ fn bridge_and_wav_resolve_in_both_dev_and_app_bundle_layouts() {
     let sibling_bridge = macos_dir.join("flip-macos-bridge");
     fs::write(&sibling_bridge, b"sibling").unwrap();
     assert_eq!(
-        resolve_bridge_binary_from(Some(&fake_exe), &fake_manifest, None).unwrap(),
+        resolve_bridge_binary_from(Some(&fake_exe), Some(&fake_manifest), None).unwrap(),
         sibling_bridge
     );
 
@@ -448,8 +448,23 @@ fn bridge_and_wav_resolve_in_both_dev_and_app_bundle_layouts() {
     fs::write(&dev_exe, b"dev-exe").unwrap();
     fs::write(&stale_target_bridge, b"stale-target").unwrap();
     assert_eq!(
-        resolve_bridge_binary_from(Some(&dev_exe), &manifest_dir(), None).unwrap(),
+        resolve_bridge_binary_from(Some(&dev_exe), Some(&manifest_dir()), None).unwrap(),
         repo_root().join("native-bridge/bin/flip-macos-bridge")
+    );
+
+    // 5b. Release behaviour (no dev checkout): the repo working copy is never consulted, so the
+    // unbundled exe falls back to its sibling bridge, and with nothing nearby resolution fails
+    // instead of reaching into the source tree. The tick sound is likewise not taken from the repo.
+    assert_eq!(
+        resolve_bridge_binary_from(Some(&dev_exe), None, None).unwrap(),
+        stale_target_bridge
+    );
+    assert!(resolve_bridge_binary_from(None, None, None).is_err());
+    assert!(resolve_wav_path_from(&[], None, None).is_none());
+    // `dev_checkout_dir` is the single switch: present in debug builds, absent in release builds.
+    assert_eq!(
+        flip_lib::engines::bridge::dev_checkout_dir().is_some(),
+        cfg!(debug_assertions)
     );
 
     // 6. Silent non-zero subprocess exit produces a non-empty diagnostic message instead of blank string

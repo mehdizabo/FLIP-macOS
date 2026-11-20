@@ -70,12 +70,26 @@ pub struct ThumbnailResult {
     pub error: Option<String>,
 }
 
+/// Repository checkout (`src-tauri/`) used as a development-only fallback for the bridge and the
+/// tick sound. It is `None` in release builds, so a shipped binary neither embeds the build
+/// machine's absolute path nor consults a working copy; unbundled release runs can point at the
+/// bridge with `FLIP_BRIDGE_PATH`.
+#[cfg(debug_assertions)]
+pub fn dev_checkout_dir() -> Option<&'static Path> {
+    Some(Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+#[cfg(not(debug_assertions))]
+pub fn dev_checkout_dir() -> Option<&'static Path> {
+    None
+}
+
 pub fn resolve_bridge_binary() -> Result<PathBuf, BridgeError> {
     let explicit = std::env::var("FLIP_BRIDGE_PATH").ok();
     let current_exe = std::env::current_exe().ok();
     resolve_bridge_binary_from(
         current_exe.as_deref(),
-        Path::new(env!("CARGO_MANIFEST_DIR")),
+        dev_checkout_dir(),
         explicit.as_deref(),
     )
 }
@@ -116,7 +130,7 @@ fn exe_is_in_app_bundle(exe: &Path) -> bool {
 
 pub fn resolve_bridge_binary_from(
     exe_path: Option<&Path>,
-    manifest_dir: &Path,
+    manifest_dir: Option<&Path>,
     explicit_env: Option<&str>,
 ) -> Result<PathBuf, BridgeError> {
     if let Some(explicit) = explicit_env {
@@ -126,7 +140,7 @@ pub fn resolve_bridge_binary_from(
         }
     }
 
-    let dev_bin = manifest_dir.parent().and_then(|repo_root| {
+    let dev_bin = manifest_dir.and_then(Path::parent).and_then(|repo_root| {
         let candidate = repo_root
             .join("native-bridge")
             .join("bin")
