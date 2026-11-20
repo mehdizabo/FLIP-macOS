@@ -90,6 +90,7 @@ IMAGE TOOLS (pass to --to; the result keeps the image's format and gets a suffix
   FLIP_H FLIP_V                                Mirror horizontally / vertically\n  \
   SCALE_50 SCALE_25 SCALE_1080P SCALE_720P     Resize (1080P/720P set the shorter side, never upscale)\n  \
   SCALE_1MB                                    Shrink until the file is under 1 MB\n  \
+  REDACT                                       Cover IBANs, cards, emails, phone numbers and tax codes read by OCR (always check the result)\n  \
   PALETTE                                      Colour palette strip with hex codes\n  \
   STRIP_EXIF                                   Remove EXIF/GPS and other metadata\n\n\
 EXAMPLES:\n  \

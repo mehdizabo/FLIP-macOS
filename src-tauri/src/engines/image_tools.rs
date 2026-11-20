@@ -1,4 +1,4 @@
-//! Image tools ("Strumenti"): crop, rotate/flip, scale, palette and metadata removal.
+//! Image tools ("Strumenti"): crop, rotate/flip, scale, palette, metadata removal and redaction.
 //!
 //! Tools are ordinary action tokens (`CROP_9_16`, `ROTATE_RIGHT`, `SCALE_1080P`, `PALETTE`,
 //! `STRIP_EXIF`, ...) that flow through the same job pipeline as format conversions: they stage their
@@ -8,10 +8,11 @@
 
 use crate::core::policy::{ext_lower, IMAGE_EXTS};
 use crate::engines::image::decode_via_bridge_or_rust;
+use crate::engines::redact::{self, Region};
 use crate::engines::{bridge, EngineError};
 use ::image::codecs::jpeg::JpegEncoder;
 use ::image::imageops::FilterType;
-use ::image::{DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Rgb, RgbImage};
+use ::image::{DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Rgb, RgbImage, Rgba};
 use std::fs::{self, File};
 use std::io::BufWriter;
 use std::path::Path;
@@ -62,6 +63,7 @@ pub enum ImageTool {
     FlipHorizontal,
     FlipVertical,
     Scale(Scale),
+    Redact,
     Palette,
     StripMetadata,
 }
@@ -82,6 +84,7 @@ pub const ALL_TOOL_TOKENS: &[&str] = &[
     "SCALE_1080P",
     "SCALE_720P",
     "SCALE_1MB",
+    "REDACT",
     "PALETTE",
     "STRIP_EXIF",
 ];
@@ -103,6 +106,7 @@ impl ImageTool {
             "SCALE_1080P" => Self::Scale(Scale::ShorterSide(1080)),
             "SCALE_720P" => Self::Scale(Scale::ShorterSide(720)),
             "SCALE_1MB" => Self::Scale(Scale::MaxBytes(ONE_MB_BYTES)),
+            "REDACT" => Self::Redact,
             "PALETTE" => Self::Palette,
             "STRIP_EXIF" => Self::StripMetadata,
             _ => return None,
@@ -125,6 +129,7 @@ impl ImageTool {
             Self::Scale(Scale::ShorterSide(1080)) => "SCALE_1080P",
             Self::Scale(Scale::ShorterSide(_)) => "SCALE_720P",
             Self::Scale(Scale::MaxBytes(_)) => "SCALE_1MB",
+            Self::Redact => "REDACT",
             Self::Palette => "PALETTE",
             Self::StripMetadata => "STRIP_EXIF",
         }
@@ -147,6 +152,7 @@ impl ImageTool {
             Self::Scale(Scale::ShorterSide(1080)) => "-1080p",
             Self::Scale(Scale::ShorterSide(_)) => "-720p",
             Self::Scale(Scale::MaxBytes(_)) => "-under-1mb",
+            Self::Redact => "-redacted",
             Self::Palette => "-palette",
             Self::StripMetadata => "-clean",
         }
@@ -703,6 +709,100 @@ pub fn strip_webp(data: &[u8]) -> Result<Vec<u8>, EngineError> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Redaction ("Oscura")
+// ---------------------------------------------------------------------------------------------
+
+/// Covers every region with opaque black, padded by `max(2 px, 0.3 × box height)` per side and
+/// clamped to the image. Only the box pixels are touched, so the cost is the covered area.
+pub fn paint_regions(img: &DynamicImage, regions: &[Region]) -> DynamicImage {
+    if img.color().has_alpha() {
+        let mut out = img.to_rgba8();
+        for (x0, y0, x1, y1) in region_rects(regions, out.width(), out.height()) {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    out.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+                }
+            }
+        }
+        DynamicImage::ImageRgba8(out)
+    } else {
+        let mut out = img.to_rgb8();
+        for (x0, y0, x1, y1) in region_rects(regions, out.width(), out.height()) {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    out.put_pixel(x, y, Rgb([0, 0, 0]));
+                }
+            }
+        }
+        DynamicImage::ImageRgb8(out)
+    }
+}
+
+/// Pixel rectangles `(x0, y0, x1, y1)` of the padded regions, right/bottom exclusive, clamped to the
+/// image bounds.
+fn region_rects(regions: &[Region], w: u32, h: u32) -> Vec<(u32, u32, u32, u32)> {
+    let wf = f64::from(w);
+    let hf = f64::from(h);
+    regions
+        .iter()
+        .map(|region| {
+            let left = region.x * wf;
+            let top = region.y * hf;
+            let right = (region.x + region.w) * wf;
+            let bottom = (region.y + region.h) * hf;
+            let pad = 2.0_f64.max(0.3 * (bottom - top));
+            (
+                (left - pad).floor().clamp(0.0, wf) as u32,
+                (top - pad).floor().clamp(0.0, hf) as u32,
+                (right + pad).ceil().clamp(0.0, wf) as u32,
+                (bottom + pad).ceil().clamp(0.0, hf) as u32,
+            )
+        })
+        .collect()
+}
+
+/// The bridge reports boxes for the upright image; covering a differently-shaped image would put the
+/// black boxes in the wrong place, so a mismatch is refused rather than guessed.
+fn ensure_same_aspect(img_w: u32, img_h: u32, ocr_w: u32, ocr_h: u32) -> Result<(), EngineError> {
+    let valid = img_w > 0 && img_h > 0 && ocr_w > 0 && ocr_h > 0;
+    let close = valid && {
+        let img_ratio = f64::from(img_w) / f64::from(img_h);
+        let ocr_ratio = f64::from(ocr_w) / f64::from(ocr_h);
+        ((img_ratio - ocr_ratio) / img_ratio.max(ocr_ratio)).abs() <= 0.01
+    };
+    if close {
+        return Ok(());
+    }
+    Err(EngineError::ConversionFailed(format!(
+        "OCR boxes are {ocr_w}x{ocr_h} but the image is {img_w}x{img_h}: refusing to cover the wrong areas"
+    )))
+}
+
+fn redact_image(
+    img: &DynamicImage,
+    source: &Path,
+    cancel: &Arc<AtomicBool>,
+) -> Result<DynamicImage, EngineError> {
+    let value = bridge::ocr_boxes(source, Some(cancel))?;
+    let ocr: redact::OcrBoxes = serde_json::from_value(value).map_err(|e| {
+        EngineError::ConversionFailed(format!("Unreadable OCR result from the bridge: {e}"))
+    })?;
+    let (img_w, img_h) = img.dimensions();
+    ensure_same_aspect(img_w, img_h, ocr.width, ocr.height)?;
+    let regions = redact::find_sensitive(&ocr);
+    if regions.is_empty() {
+        return Err(EngineError::ConversionFailed(
+            "No sensitive data was recognised. Nothing was written: check the image yourself before sharing it."
+                .to_string(),
+        ));
+    }
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EngineError::Cancelled);
+    }
+    Ok(paint_regions(img, &regions))
+}
+
+// ---------------------------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------------------------
 
@@ -796,6 +896,7 @@ pub fn apply(
                 img.resize_exact(nw, nh, FilterType::Lanczos3)
             }
         }
+        ImageTool::Redact => redact_image(&img, source, cancel)?,
         ImageTool::Palette => {
             let colors = dominant_colors(&img, PALETTE_COLORS);
             if colors.is_empty() {
@@ -813,10 +914,15 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engines::redact::SensitiveKind;
     use ::image::Rgba;
 
     fn solid(w: u32, h: u32, rgba: [u8; 4]) -> DynamicImage {
         DynamicImage::ImageRgba8(ImageBuffer::from_pixel(w, h, Rgba(rgba)))
+    }
+
+    fn region(x: f64, y: f64, w: f64, h: f64) -> Region {
+        Region { kind: SensitiveKind::Iban, x, y, w, h }
     }
 
     #[test]
@@ -862,6 +968,77 @@ mod tests {
         assert!(shared.contains(&"ROTATE_RIGHT") && !shared.contains(&"STRIP_EXIF"));
         // One non-image empties the selection's tools entirely.
         assert!(tools_for_paths(&["/a/x.jpg", "/a/doc.pdf"]).is_empty());
+    }
+
+    #[test]
+    fn redact_is_a_token_with_its_own_suffix_and_the_source_format() {
+        assert_eq!(ImageTool::parse("REDACT"), Some(ImageTool::Redact));
+        assert_eq!(ImageTool::parse(" redact "), Some(ImageTool::Redact));
+        assert_eq!(ImageTool::Redact.token(), "REDACT");
+        assert_eq!(ImageTool::Redact.suffix(), "-redacted");
+        assert_eq!(ImageTool::Redact.output_format("png"), "PNG");
+        assert_eq!(ImageTool::Redact.output_format("jpg"), "JPG");
+        assert_eq!(ImageTool::Redact.output_format("gif"), "PNG");
+        let position = ALL_TOOL_TOKENS
+            .iter()
+            .position(|t| *t == "REDACT")
+            .expect("REDACT is in the token list");
+        assert_eq!(ALL_TOOL_TOKENS[position - 1], "SCALE_1MB");
+        assert_eq!(ALL_TOOL_TOKENS[position + 1], "PALETTE");
+    }
+
+    #[test]
+    fn redact_is_offered_for_every_image_extension_only() {
+        for ext in IMAGE_EXTS {
+            assert!(tools_for_ext(ext).contains(&"REDACT"), "{ext}");
+        }
+        assert!(!tools_for_ext("pdf").contains(&"REDACT"));
+        assert!(!tools_for_ext("mp3").contains(&"REDACT"));
+    }
+
+    #[test]
+    fn paint_regions_blacks_the_padded_box_and_leaves_the_rest_untouched() {
+        let img = solid(100, 100, [255, 255, 255, 255]);
+        // Box 20..40 x 30..40: 20x10 px, padded by max(2, 0.3 * 10) = 3 px per side.
+        let out = paint_regions(&img, &[region(0.20, 0.30, 0.20, 0.10)]).to_rgba8();
+        for (x, y) in [(17, 27), (20, 30), (39, 39), (42, 42)] {
+            assert_eq!(out.get_pixel(x, y).0, [0, 0, 0, 255], "({x},{y}) is inside");
+        }
+        for (x, y) in [(16, 27), (43, 27), (17, 26), (20, 43)] {
+            assert_eq!(out.get_pixel(x, y).0, [255, 255, 255, 255], "({x},{y}) is outside");
+        }
+    }
+
+    #[test]
+    fn paint_regions_clamps_to_the_image_edges() {
+        let img = solid(100, 100, [255, 255, 255, 255]);
+        let regions = [region(0.0, 0.0, 0.01, 0.01), region(0.95, 0.95, 0.20, 0.20)];
+        let out = paint_regions(&img, &regions).to_rgba8();
+        for (x, y) in [(0, 0), (2, 2), (89, 89), (99, 99)] {
+            assert_eq!(out.get_pixel(x, y).0, [0, 0, 0, 255], "({x},{y}) is clamped into the box");
+        }
+        for (x, y) in [(20, 20), (88, 99), (99, 88)] {
+            assert_eq!(out.get_pixel(x, y).0, [255, 255, 255, 255], "({x},{y}) is outside");
+        }
+    }
+
+    #[test]
+    fn paint_regions_fills_opaque_black_where_the_image_has_alpha() {
+        let img = solid(50, 40, [10, 20, 30, 128]);
+        let out = paint_regions(&img, &[region(0.1, 0.1, 0.2, 0.2)]).to_rgba8();
+        assert_eq!(out.get_pixel(15, 12).0, [0, 0, 0, 255], "covered pixels become opaque black");
+        assert_eq!(out.get_pixel(49, 39).0, [10, 20, 30, 128], "the rest keeps its colour and alpha");
+    }
+
+    #[test]
+    fn redact_refuses_ocr_boxes_for_a_differently_shaped_image() {
+        assert!(ensure_same_aspect(1200, 800, 1200, 800).is_ok());
+        assert!(ensure_same_aspect(1200, 800, 600, 400).is_ok(), "same ratio, other size");
+        assert!(ensure_same_aspect(1200, 800, 1200, 796).is_ok(), "within 1 %");
+        assert!(ensure_same_aspect(1200, 800, 800, 1200).is_err(), "swapped axes");
+        assert!(ensure_same_aspect(1200, 800, 1200, 760).is_err(), "more than 1 % off");
+        assert!(ensure_same_aspect(0, 0, 10, 10).is_err());
+        assert!(ensure_same_aspect(1200, 800, 0, 0).is_err());
     }
 
     #[test]
