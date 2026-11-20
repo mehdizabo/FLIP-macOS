@@ -1,5 +1,7 @@
 # 05 · Specifica "New File"
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 Al Mac manca un "Nuovo ▸" nel Finder come quello di Windows. FLIP lo aggiunge in **tre punti**: la ruota (modalità Idle · New), il menu della menu bar e il menu contestuale del Finder (Finder Sync Extension, Fase 5).
 
 ## 1. Dove viene creato il file

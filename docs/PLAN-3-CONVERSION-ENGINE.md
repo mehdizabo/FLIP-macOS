@@ -1,5 +1,7 @@
 # PLAN 3 · Fase 4: motore di conversione, step 51–70
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 Obiettivo: parità funzionale con FLIP Windows 0.5.1 (tabella del README) più le aggiunte native di `04-CONVERSION-MATRIX.md`.
 
 ## Nucleo (`FlipCore`)

@@ -4,6 +4,30 @@ All notable changes to **FLIP for macOS** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Smart vs Raw / Keep-Code conversion mode** toggle in the Wheel, Batch window and CLI; the `R` key toggles it globally, also during a Finder drag and in idle mode.
+
+### Changed
+
+- **Wheel redesigned as a Logi Options+-style actions ring** of circular bubbles on Apple Liquid Glass optics, with 120 fps magnetic spring physics (`wheelPhysics.ts`) and a circular icon-well hub. This supersedes the chamfered sectors and `68 px` QuickLook hub described under `0.1.0`.
+
+### Fixed
+
+- Drag: cursor jumping, hover flicker, hardened drag trigger, spring/WKWebView sync, and an `Esc` race that left the overlay open.
+- Native `NSWindow` transparency is enforced on the wheel overlay.
+- Dev/rebuild: arm64 bridge `SIGKILL` (137) after rebuilding `flip-macos-bridge`.
+- Create New: Finder inline rename now receives `Return` via `cghidEventTap` after activation; the front Finder window is preferred and `open -R` is the reveal fallback.
+- Documents: canvas-only HTML pages convert to text/Markdown instead of an empty result.
+- Privacy audit handles NUL-delimited filenames and punctuation-delimited paths.
+
+### Security & Privacy
+
+- Release binaries no longer embed the build machine's checkout path or consult the source tree for the bridge and tick sound (debug builds keep the fallback; unbundled release runs can set `FLIP_BRIDGE_PATH`).
+- `~/Library/Logs/FLIP/events.jsonl` redacts home directories and per-user temp paths to `~` when each line is written, not only when diagnostics are exported.
+
 ## [0.1.0] - 2026-11-18
 
 Initial open-source release of **FLIP for macOS** (Apple Silicon `arm64`, macOS 15.0+ Sequoia / macOS 26 Tahoe / macOS 27 Golden Gate).

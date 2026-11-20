@@ -1,5 +1,7 @@
 # PLAN 5 · Fase 6: qualità e rilascio, step 88–98
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 **S88. Suite di test automatici.** Unit (FlipCore), golden file per ogni coppia della matrice (fixture in `Tests/Fixtures`, comprese quelle di FLIP Windows), test di integrazione per i motori opzionali (saltati se il motore manca), snapshot della ruota.
 → *Copertura ≥ 80% su FlipCore e FlipEngines; CI verde.*
 

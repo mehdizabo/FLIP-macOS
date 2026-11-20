@@ -115,3 +115,13 @@ This checklist covers manual live-desktop QA on **macOS 27.2.1 (`26B131`) Golden
 - [ ] **Expanded Create New File (`YAML`, `TOML`, `XML`, `Blank PDF`)**: Invoke New File Mode -> Page 2 (`More ▸`) or Menu Bar `New File` submenu -> create `Untitled.yaml`, `Untitled.toml`, `Untitled.xml`, and `Untitled.pdf` (A4 blank PDF) with Finder inline rename.
 - [ ] **Raycast Script Commands (`integrations/raycast/`)**: Add `integrations/raycast` as a Script Commands directory in Raycast -> trigger **Open FLIP Wheel**, **Convert File with FLIP**, and **New File with FLIP** against active Finder context.
 - [ ] **Privacy Audit & Clean Source Export**: Run `./scripts/audit-repository.sh` and `./scripts/export-source.sh --dry-run` before publishing source or release artifacts.
+
+## 14. Actions-Ring Redesign, Magnetic Physics, Smart/Raw & Log Privacy (post-`0.1.0`)
+> Sections 2–3 quote the `0.1.0` wheel dimensions (`68 px` hub, `210 px` ring). The ring was redesigned afterwards: judge hub and ring as rendered, and treat `src/wheelGeometry.ts` as the source of truth for sizes.
+
+- [ ] **Magnetic feel**: Open the wheel and move the cursor slowly, then quickly, across the bubbles. Bubbles lean toward the cursor and settle without jitter or runaway oscillation, on a 60 Hz and (if available) a ProMotion display. While dragging a file the cursor must never jump.
+- [ ] **`R` Smart/Raw toggle**: Press `R` with the wheel open during a Finder drag and again in idle mode (window focused). The mode indicator flips each time; converting a code file in **Raw** keeps the code verbatim, in **Smart** it is converted.
+- [ ] **`Esc` and repeated reopen**: Press `Esc` immediately after the wheel appears (drag and idle): it closes at once. Open and dismiss the wheel 20+ times in a row; it must appear at the cursor every time with no stuck overlay.
+- [ ] **Keys during a drag**: While a Finder drag keeps the wheel open, check whether `Tab`, `1`–`8`, arrows and `Enter` reach the wheel (the window is not key in drag mode); record the result.
+- [ ] **Bridge rebuild in dev**: Rebuild `native-bridge`, run `pnpm tauri dev`, and confirm the bridge is not killed (`SIGKILL`/exit 137) and Esc still closes the overlay.
+- [ ] **Log privacy**: Trigger a failed conversion, then run `grep -c "/Users/" ~/Library/Logs/FLIP/events.jsonl` (use `.previous` too); the count must be `0` for lines written by this build.

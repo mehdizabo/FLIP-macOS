@@ -1,5 +1,7 @@
 # PLAN 1 · Fase 0 (spike e decisioni) + Fase 1 (fondamenta), step 01–22
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 Formato di ogni step: **cosa** → *criterio di completamento*.
 
 ## Fase 0: decisioni e spike tecnici (prima di scrivere la UI vera)

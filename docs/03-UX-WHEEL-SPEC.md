@@ -1,5 +1,7 @@
 # 03 · Specifica UX della ruota
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 Riferimento visivo: **Logi Options+ "Actions Ring"** e gli overlay di sistema di macOS 26 (Liquid Glass). La ruota deve sembrare **parte di macOS**, non un'app di terze parti.
 
 ## 1. Modalità e attivazione

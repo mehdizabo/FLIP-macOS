@@ -1,5 +1,7 @@
 # PLAN 2 · Fase 2 (input globale) + Fase 3 (ruota), step 23–50
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 ## Fase 2: trigger e input globale (`FlipInput`)
 
 **S23. DragSessionMonitor.** Servizio `@MainActor` che espone `isDragging`, `draggedFileURLs` e `cursorLocation` (Combine/AsyncStream), basato sullo spike S03. Ignora i drag che non contengono file.

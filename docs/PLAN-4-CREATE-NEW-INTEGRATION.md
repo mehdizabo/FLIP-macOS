@@ -1,5 +1,7 @@
 # PLAN 4 · Fase 5: New File e integrazione di sistema, step 71–87
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 ## New File (vedi 05-CREATE-NEW-SPEC)
 
 **S71. CreateNewEngine: modello.** `NewFileKind` (id, nome, UTType, icona, generatore, disponibilità) con un registro dei tipi predefiniti e dei template utente.

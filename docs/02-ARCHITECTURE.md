@@ -1,5 +1,7 @@
 # 02 · Architettura
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 ## Stack
 
 - **Swift 6** (strict concurrency), **SwiftUI** per la UI e **AppKit** per pannelli, event tap, drag & drop e menu bar.

@@ -1,5 +1,7 @@
 # 06 · Registro dei rischi
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 | ID | Rischio | Prob. | Impatto | Mitigazione | Step |
 |---|---|---|---|---|---|
 | R1 | Il tasto premuto durante un drag del Finder non arriva all'hotkey Carbon (il Finder è in un tracking loop) | Media | Alto | Spike con Carbon **e** CGEventTap; il tap a livello `kCGSessionEventTap` vede comunque gli eventi | S03–S04 |

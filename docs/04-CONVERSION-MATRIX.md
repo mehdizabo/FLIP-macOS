@@ -1,5 +1,7 @@
 # 04 · Matrice delle conversioni
 
+> **Documento storico di pianificazione.** Descrive il piano iniziale del porting (Swift/SwiftUI nativo) e non l'implementazione attuale. L'architettura vigente (Tauri v2 + Rust + bridge Swift) è in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) e [`DECISIONS.md`](DECISIONS.md).
+
 Legenda motore: **N** = nativo Apple · **L** = libreria inclusa (SPM) · **FF** = FFmpeg opzionale · **PD** = Pandoc opzionale · **APP** = app Apple via AppleScript (opzionale).
 Regola invariata da Windows: il formato del sorgente non compare mai tra le uscite. Con più file, le uscite sono l'**intersezione** dei formati compatibili.
 
