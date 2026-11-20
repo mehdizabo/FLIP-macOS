@@ -140,6 +140,14 @@ export const UI_ICONS = {
     `<g ${STROKE_ATTRS}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 14l3-3 3 3"/><path d="M12 11v6"/></g>`,
     18,
   ),
+  transcribe: svg(
+    `<g ${STROKE_ATTRS}><path d="M4 5h16a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-6l-4 4v-4H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z"/><path d="M7 10.5v1"/><path d="M9.5 9v4"/><path d="M12 8v6"/><path d="M14.5 9v4"/><path d="M17 10.5v1"/></g>`,
+    18,
+  ),
+  pdfa: svg(
+    `<g ${STROKE_ATTRS}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h5"/><path d="M14 3v5h5v4"/><circle cx="16" cy="16" r="3.5"/><path d="M14.4 16l1.1 1.1 2.1-2.2"/></g>`,
+    18,
+  ),
   zip: svg(
     `<g ${STROKE_ATTRS}><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M11 4v16"/><path d="M11 8h2.5M11 11h2.5M11 14h2.5"/></g>`,
     18,
@@ -283,6 +291,20 @@ export function getFormatMeta(format: string, lang = "en"): FormatMeta {
         title: t(lang, "wheel.actionOptimizePdf"),
         accent: "#FF9F0A",
         iconSvg: UI_ICONS.optimizePdf,
+      };
+    case "PDFA":
+      return {
+        shortLabel: "PDF/A",
+        title: t(lang, "wheel.actionPdfA"),
+        accent: "#30D158",
+        iconSvg: UI_ICONS.pdfa,
+      };
+    case "TRANSCRIBE":
+      return {
+        shortLabel: "To text",
+        title: t(lang, "wheel.actionTranscribe"),
+        accent: "#5AC8FA",
+        iconSvg: UI_ICONS.transcribe,
       };
     case "ZIP":
       return {

@@ -106,6 +106,8 @@ export const EN_STRINGS = {
   "wheel.actionCombinePdf": "Combine into PDF",
   "wheel.actionAnimateGif": "Animate into GIF",
   "wheel.actionMergePdf": "Merge PDFs",
+  "wheel.actionTranscribe": "Transcribe to text",
+  "wheel.actionPdfA": "Convert to PDF/A (archive)",
 
   // VoiceOver Live Announcements
   "vo.moreOptions": "More options, page {page}, sector {sector} of {total}",
@@ -276,6 +278,10 @@ export const EN_STRINGS = {
   "settings.engines.autoDetect": "Auto-detect",
   "settings.engines.installFfmpeg": "Install via Homebrew: <code>brew install ffmpeg</code>",
   "settings.engines.installPandoc": "Install via Homebrew: <code>brew install pandoc</code>",
+  "settings.engines.whisperLabel": "Whisper (transcription)",
+  "settings.engines.installWhisper": "Install via Homebrew: <code>brew install whisper-cpp</code>, then put <code>ggml-small.bin</code> (about 470 MB) in <code>~/Library/Application Support/FLIP/models/</code>. The repository's <code>scripts/install-whisper.sh</code> does both.",
+  "settings.engines.whisperModelMissing": "Whisper binary found, but the model <code>ggml-small.bin</code> is missing. Put it in <code>~/Library/Application Support/FLIP/models/</code>.",
+  "settings.engines.whisperBinaryMissing": "Model <code>ggml-small.bin</code> found, but the <code>whisper-cli</code> binary is missing. Install it with <code>brew install whisper-cpp</code>.",
   "settings.engines.qaTitle": "Finder Quick Actions, URL Scheme & CLI",
   "settings.engines.qaSub": "Integrate FLIP with Finder context Quick Actions, <code>flip://</code> URLs, and Terminal",
   "settings.engines.qaLabel": "Finder Quick Actions",
@@ -546,6 +552,8 @@ export const IT_STRINGS: Record<TranslationKey, string> = {
   "wheel.actionCombinePdf": "Unisci in PDF",
   "wheel.actionAnimateGif": "Anima in GIF",
   "wheel.actionMergePdf": "Unisci PDF",
+  "wheel.actionTranscribe": "Trascrivi in testo",
+  "wheel.actionPdfA": "Converti in PDF/A (archivio)",
 
   // VoiceOver Live Announcements
   "vo.moreOptions": "Altre opzioni, pagina {page}, settore {sector} di {total}",
@@ -716,6 +724,10 @@ export const IT_STRINGS: Record<TranslationKey, string> = {
   "settings.engines.autoDetect": "Rilevamento automatico",
   "settings.engines.installFfmpeg": "Installa via Homebrew: <code>brew install ffmpeg</code>",
   "settings.engines.installPandoc": "Installa via Homebrew: <code>brew install pandoc</code>",
+  "settings.engines.whisperLabel": "Whisper (trascrizione)",
+  "settings.engines.installWhisper": "Installa via Homebrew: <code>brew install whisper-cpp</code>, poi metti <code>ggml-small.bin</code> (circa 470 MB) in <code>~/Library/Application Support/FLIP/models/</code>. Lo script <code>scripts/install-whisper.sh</code> del repository fa entrambe le cose.",
+  "settings.engines.whisperModelMissing": "Binario Whisper trovato, ma manca il modello <code>ggml-small.bin</code>. Mettilo in <code>~/Library/Application Support/FLIP/models/</code>.",
+  "settings.engines.whisperBinaryMissing": "Modello <code>ggml-small.bin</code> trovato, ma manca il binario <code>whisper-cli</code>. Installalo con <code>brew install whisper-cpp</code>.",
   "settings.engines.qaTitle": "Azioni Rapide Finder, Schema URL e CLI",
   "settings.engines.qaSub": "Integra FLIP con le Azioni Rapide del Finder, gli URL <code>flip://</code> e il Terminale",
   "settings.engines.qaLabel": "Azioni Rapide Finder",

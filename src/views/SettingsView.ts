@@ -703,6 +703,17 @@ export function mountSettingsView(root: HTMLElement): () => void {
         : t(l, "settings.engines.qaNotInstalled");
     const cliLinked = Boolean(quickActions?.cliSymlinkPath);
     const cliExe = quickActions?.cliExecutable ?? "/Applications/FLIP.app/Contents/MacOS/flip";
+    const whisperBin = engines?.whisper ?? null;
+    const whisperModel = engines?.whisperModel ?? null;
+    const whisperReady = whisperBin !== null && whisperModel !== null;
+    const whisperDesc =
+      whisperBin !== null && whisperModel !== null
+        ? escapeHtml(whisperBin)
+        : whisperBin !== null
+          ? t(l, "settings.engines.whisperModelMissing")
+          : whisperModel !== null
+            ? t(l, "settings.engines.whisperBinaryMissing")
+            : t(l, "settings.engines.installWhisper");
 
     return `
       <section class="glass-card">
@@ -796,6 +807,12 @@ export function mountSettingsView(root: HTMLElement): () => void {
             <div class="setting-desc">${engines?.pandoc ? escapeHtml(engines.pandoc) : t(l, "settings.engines.installPandoc")}</div>
           </div>
           <input type="text" class="mac-input" id="pref-pandocPath" placeholder="${escapeHtml(t(l, "settings.engines.autoDetect"))}" value="${escapeHtml(prefs.pandocPath ?? "")}" />
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.engines.whisperLabel"))} ${whisperReady ? `<span class="status-pill is-ok" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.detected"))}</span>` : `<span class="status-pill is-warn" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.notFound"))}</span>`}</div>
+            <div class="setting-desc">${whisperDesc}</div>
+          </div>
         </div>
       </section>
 

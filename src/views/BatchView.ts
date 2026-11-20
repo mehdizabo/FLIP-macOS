@@ -277,6 +277,10 @@ export function mountBatchView(root: HTMLElement): () => void {
           return t(l, "wheel.actionRemoveBg");
         case "OPTIMIZE_PDF":
           return t(l, "wheel.actionOptimizePdf");
+        case "PDFA":
+          return t(l, "wheel.actionPdfA");
+        case "TRANSCRIBE":
+          return t(l, "wheel.actionTranscribe");
         default:
           return getFormatMeta(fmt, l).shortLabel;
       }

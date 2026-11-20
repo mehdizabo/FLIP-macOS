@@ -1238,6 +1238,8 @@ function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): 
     ffmpeg: "/opt/homebrew/bin/ffmpeg",
     ffprobe: "/opt/homebrew/bin/ffprobe",
     pandoc: null,
+    whisper: "/opt/homebrew/bin/whisper-cli",
+    whisperModel: "/Users/demo/Library/Application Support/FLIP/models/ggml-small.bin",
     bridge: "/Applications/FLIP.app/Contents/Resources/flip-macos-bridge",
     pages: false,
     numbers: false,
@@ -2751,6 +2753,128 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     await flushMicrotasks();
     expect(harness.calls.some((c) => c.cmd === "uninstall_finder_quick_actions")).toBe(true);
     expect(root.querySelector("#btn-uninstall-quick-actions")).toBeNull();
+    });
+  });
+
+  test("WheelView: shows the TRANSCRIBE and PDFA bubbles only when the selection offers them", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      const audioState: WheelStatePayload = {
+        mode: "convert",
+        isDrag: false,
+        files: ["/tmp/interview.mp3"],
+        compatibleFormats: ["MP3", "WAV", "TRANSCRIBE"],
+        batchActions: [],
+        toolActions: [],
+        availabilityMessage: "",
+        family: "audio",
+        targetFolder: "/tmp",
+        originX: 220,
+        originY: 220,
+      };
+      const pdfState: WheelStatePayload = {
+        mode: "convert",
+        isDrag: false,
+        files: ["/tmp/contract.pdf"],
+        compatibleFormats: ["PNG", "JPG", "TXT", "DOCX", "OPTIMIZE_PDF", "PDFA"],
+        batchActions: [],
+        toolActions: [],
+        availabilityMessage: "",
+        family: "pdf",
+        targetFolder: "/tmp",
+        originX: 220,
+        originY: 220,
+      };
+      harness.setCommandOverride("get_wheel_state", () => audioState);
+      const dispose = mountWheelView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      const sectorLabels = () =>
+        Array.from(root.querySelectorAll(".wheel-sector-group")).map(
+          (el) => el.textContent ?? "",
+        );
+
+      expect(sectorLabels().some((label) => label.includes("To text"))).toBe(true);
+      expect(sectorLabels().some((label) => label.includes("PDF/A"))).toBe(false);
+
+      harness.emitEvent("wheel:state", { ...audioState, compatibleFormats: ["MP3", "WAV", "FLAC"] });
+      await flushMicrotasks();
+      expect(sectorLabels().some((label) => label.includes("To text"))).toBe(false);
+
+      harness.emitEvent("wheel:state", pdfState);
+      await flushMicrotasks();
+      expect(sectorLabels().some((label) => label.includes("PDF/A"))).toBe(true);
+      expect(sectorLabels().some((label) => label.includes("To text"))).toBe(false);
+
+      harness.emitEvent("wheel:state", {
+        ...pdfState,
+        compatibleFormats: ["PNG", "JPG", "TXT", "DOCX", "OPTIMIZE_PDF"],
+      });
+      await flushMicrotasks();
+      expect(sectorLabels().some((label) => label.includes("PDF/A"))).toBe(false);
+    });
+  });
+
+  test("SettingsView: Engines tab shows the Whisper install hint, which part is missing, and the binary path", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      const engineFixture = (
+        whisper: string | null,
+        whisperModel: string | null,
+      ): EngineStatus => ({
+        ffmpeg: "/opt/homebrew/bin/ffmpeg",
+        ffprobe: "/opt/homebrew/bin/ffprobe",
+        pandoc: null,
+        whisper,
+        whisperModel,
+        bridge: "/Applications/FLIP.app/Contents/Resources/flip-macos-bridge",
+        pages: false,
+        numbers: false,
+        keynote: false,
+        nativeFrameworks: {
+          imageIO: true,
+          pdfKit: true,
+          visionOcr: true,
+          avFoundation: true,
+        },
+      });
+      harness.setCommandOverride("get_engine_status", () => engineFixture(null, null));
+      const dispose = mountSettingsView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      root.querySelector<HTMLButtonElement>('.nav-item[data-tab="engines"]')!.click();
+      await flushMicrotasks();
+
+      const mainText = () => root.querySelector("#settings-main")?.textContent ?? "";
+      const whisperRowText = () =>
+        Array.from(root.querySelectorAll(".setting-row"))
+          .map((row) => row.textContent ?? "")
+          .find((text) => text.includes("Whisper (transcription)")) ?? "";
+      expect(mainText()).toContain("Whisper (transcription)");
+      expect(whisperRowText()).toContain("brew install whisper-cpp");
+      expect(whisperRowText()).toContain("ggml-small.bin");
+      expect(whisperRowText()).toContain("scripts/install-whisper.sh");
+
+      harness.setCommandOverride("get_engine_status", () =>
+        engineFixture("/opt/homebrew/bin/whisper-cli", null),
+      );
+      root.querySelector<HTMLButtonElement>("#btn-refresh-diagnostics")!.click();
+      await flushMicrotasks();
+      expect(whisperRowText()).toContain("Whisper binary found");
+      expect(whisperRowText()).toContain("ggml-small.bin");
+      expect(whisperRowText()).not.toContain("brew install whisper-cpp");
+      expect(whisperRowText()).toContain("Not Found");
+
+      harness.setCommandOverride("get_engine_status", () =>
+        engineFixture("/opt/homebrew/bin/whisper-cli", "/models/ggml-small.bin"),
+      );
+      root.querySelector<HTMLButtonElement>("#btn-refresh-diagnostics")!.click();
+      await flushMicrotasks();
+      expect(whisperRowText()).toContain("/opt/homebrew/bin/whisper-cli");
+      expect(whisperRowText()).toContain("Detected");
+      expect(whisperRowText()).not.toContain("brew install whisper-cpp");
     });
   });
 
