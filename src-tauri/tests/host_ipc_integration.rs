@@ -142,6 +142,10 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
         pages: true,
         numbers: false,
         keynote: false,
+        whisper: Some(PathBuf::from("/opt/homebrew/bin/whisper-cli")),
+        whisper_model: Some(PathBuf::from(
+            "/Users/test/Library/Application Support/FLIP/models/ggml-small.bin",
+        )),
         native_frameworks: NativeFrameworksStatus {
             image_io: true,
             pdf_kit: true,
@@ -154,6 +158,12 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
     assert_eq!(ev["nativeFrameworks"]["pdfKit"], true);
     assert_eq!(ev["nativeFrameworks"]["visionOcr"], true);
     assert_eq!(ev["nativeFrameworks"]["avFoundation"], true);
+    assert_eq!(ev["whisper"], "/opt/homebrew/bin/whisper-cli");
+    assert_eq!(
+        ev["whisperModel"],
+        "/Users/test/Library/Application Support/FLIP/models/ggml-small.bin"
+    );
+    assert!(ev.get("whisper").is_some() && ev.get("whisperModel").is_some());
 
     let new_kinds = NewFileKindsResponse {
         kinds: vec![NewFileKindInfo {
