@@ -99,3 +99,6 @@ da un test Rust che incorpora le tabelle di `Policy.cs`.
 | Tasto `T` anche durante il drag (`Monitor.swift` → `monitor.rs` → `wheel:toggle-face`) | Compilato, **non provato dal vivo** | `swiftc -typecheck`, `clippy -D warnings`, test IPC host (elenco eventi TS↔Rust). Vedi `ACCEPTANCE.md` §14 "Tools during a Finder drag". |
 | Contratto TS↔Rust | Fatto | Test `imageTools.test.ts`: la lista dei token e i suffissi TS devono coincidere con `ALL_TOOL_TOKENS` / `ImageTool::suffix` in Rust. |
 | Oscura (oscuramento dati sensibili con OCR Vision), Whisper (trascrizione), PDF/A-2b, Aura overlay, anteprima Space | **Non fatti** | Oscura richiede un nuovo comando del bridge Swift (box OCR); Whisper e PDF/A richiedono scelte di Capo (modello, dipendenze esterne: `whisper-cpp`, Ghostscript). Tobii saltato (su macOS esiste il Dwell Control di sistema). |
+
+Le tre ondate che restano (Oscura; Whisper e PDF/A; Aura e anteprima Spazio), con divisione dei compiti, contratti,
+arresti obbligati e valori predefiniti delle domande aperte, sono in [`05-0.6-NEXT-WAVES.md`](05-0.6-NEXT-WAVES.md).
