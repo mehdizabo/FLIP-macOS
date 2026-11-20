@@ -5,8 +5,10 @@ pub mod data;
 pub mod document;
 pub mod image;
 pub mod image_tools;
+pub mod redact;
 pub mod media;
 pub mod pdf;
+
 
 use crate::core::logging::log_event;
 use crate::core::naming::format_extension;
