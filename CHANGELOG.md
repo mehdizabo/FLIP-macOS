@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   - The wheel's top bar gets a **Tools / Formats** switch; `T` flips faces (also during a Finder drag, forwarded by the bridge's event tap like `R`). Crop, Rotate and Scale open a sub-page of presets with an "up" slot; during a drag, hovering a group for 300 ms opens it like `More ▸`.
   - EN/IT titles, VoiceOver labels and parity tests that keep the TypeScript token list identical to the Rust one.
 - **Redact / Oscura** (image tool): on-device OCR finds IBANs, card numbers, emails, phone numbers and tax codes and covers them with opaque black boxes, writing `<name>-redacted.<ext>` in the source format with no EXIF. The original is never touched, and if nothing sensitive is recognised an error is shown and no file is written; the label always tells the user to check the result.
+- **Transcribe** (optional, local): an audio or video file becomes a `.txt` transcript with `whisper.cpp` and the multilingual `ggml-small.bin` model, with the spoken language detected automatically. The bubble appears only when `whisper-cli` (or the older `whisper-cpp`), the model and FFmpeg are installed; `scripts/install-whisper.sh` installs the first two after an explicit confirmation; `FLIP_DISABLE_WHISPER=1` turns it off.
 - Parity guard: a Rust test embeds the original FLIP's extension/output tables and fails if this port stops supporting any input extension or output of the original (today: 0 missing; the port is a superset).
 
 ### Changed

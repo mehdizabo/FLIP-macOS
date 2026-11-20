@@ -66,6 +66,10 @@ The native Swift helper (`flip-macos-bridge`) dynamically links Apple's system f
 |---|---|---|
 | **FFmpeg / ffprobe** | `LGPL-2.1-or-later` or `GPL-2.0-or-later` (depending on user build flags) | **Not bundled.** Optional user installation (e.g., `brew install ffmpeg` or custom path in Settings). |
 | **Pandoc** | `GPL-2.0-or-later` | **Not bundled.** Optional user installation (e.g., `brew install pandoc` or custom path in Settings). |
+| **whisper.cpp** (`whisper-cli`, older name `whisper-cpp`) | `MIT` according to its upstream repository; check the upstream license text | **Not bundled.** Optional user installation (e.g., `brew install whisper-cpp` or `scripts/install-whisper.sh`). |
+| **OpenAI Whisper model weights, ggml format** (`ggml-small.bin`) | `MIT` according to their upstream repositories; check the upstream license text | **Not bundled.** Downloaded by the user into `~/Library/Application Support/FLIP/models/` (e.g., with `scripts/install-whisper.sh`). |
 | **Apple Pages / Numbers / Keynote** | Proprietary (Apple) | **Not bundled.** Optional user installation invoked only via local Apple Events when present. |
+
+**whisper.cpp** (the `whisper-cli` command line tool, plus FFmpeg used to decode the audio) and the **OpenAI Whisper model weights in ggml format** (`ggml-small.bin`) are only downloaded by the user, never bundled or redistributed by FLIP. Both are stated as MIT according to their upstream repositories; review the upstream license text before redistributing them.
 
 If you distribute compiled binaries (`FLIP.app` or `.dmg`), retain this notice file and ensure compliance with the license terms (including `Apache-2.0` and `MPL-2.0` notice obligations) for all compiled dependencies in the binary bundle.
