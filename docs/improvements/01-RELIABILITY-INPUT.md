@@ -86,8 +86,8 @@ interagiscono (è stato necessario sbloccare `isHoveringControl` in tre punti).
 ## REL-06 · Tasti in modalità drag: tabella unica (Impatto M · Sforzo M)
 
 **Problema [Inferenza].** In drag mode la finestra non è key (`focusable: false`, voluto per non interrompere il drag di
-Finder), quindi il listener DOM `keydown` non riceve nulla. `Esc` e `R` funzionano perché intercettati dall'event tap in
-`Monitor.swift`; `Tab` (cambio modalità), `1`–`8`, frecce ed `Enter` **probabilmente no** in drag. Oggi ogni tasto richiede
+Finder), quindi il listener DOM `keydown` non riceve nulla. `Esc`, `R` e (dal ramo `feat/0.6-tools`) `T` (cambio faccia Formati/Strumenti, `keyCode 17` → `toggle_face`) funzionano perché
+intercettati dall'event tap in `Monitor.swift`; `Tab` (cambio modalità), `1`–`8`, frecce ed `Enter` **probabilmente no** in drag. Oggi ogni tasto richiede
 codice in Swift, in `monitor.rs`, in `ipc.ts` e in `WheelView.ts`.
 
 **Proposta.** Tabella unica in Swift `wheelKeybindings: [UInt16: String]` (`53→escape`, `15→toggle_raw`, `48→toggle_mode`,

@@ -85,3 +85,17 @@ Ogni voce ha un commit e una prova; "prova rossa" = il test nuovo fallisce senza
 | QA-03 | Minimo | `5734e9e` | `concurrency` con `cancel-in-progress` e `audit-repository.sh` in CI (passa in locale; `actionlint` pulito salvo un SC2012 già presente). Non fatti: split `verify`/`package`, `cargo audit`, pin degli action, rimozione dello step `tauri-cli` (serve ancora: `build-macos.sh` usa `cargo tauri build`). Non eseguibile senza un push. |
 | QA-04 | Rimandato | — | È una scelta di Capo (npm vs pnpm): il lavoro locale è in pnpm, la CI e il lockfile tracciato in npm. `pnpm-workspace.yaml` contiene ancora il segnaposto `allowBuilds: esbuild: set this to true or false` e non va committato così. |
 | REL-01, REL-02, REL-05, SEC-02, PERF-03, PERF-05 | Non iniziati | — | Sprint 2–3. |
+
+## 7. Novità 0.6 "Aura" portate nel port (ramo `feat/0.6-tools`, 2026-11-20)
+
+Dal video del FLIP originale 0.6: gli **strumenti immagine** e la **seconda faccia della ruota**. La rimozione dello sfondo
+c'era già; la parità delle estensioni con l'originale è verificata (0 mancanti, il port è un sovrainsieme) e ora protetta
+da un test Rust che incorpora le tabelle di `Policy.cs`.
+
+| Voce | Stato | Prova |
+|---|---|---|
+| Motore strumenti (`engines/image_tools.rs`): ritaglio 9:16 · 4:5 · 1:1 · 16:9, ruota/specchia, scala 50 % · 25 % · 1080p · 720p · sotto 1 MB, palette, rimozione EXIF/GPS | Fatto | 14 test unitari + 9 di integrazione (dimensioni esatte, pixel in posizione dopo rotazione/specchio, `<1 MB`, EXIF assente e immagine ancora dritta, PNG `tEXt` pulito con CRC valido, nessuna sovrascrittura, originale intatto). Prova a mano con la CLI reale su una foto 6016×6016: crop `3384×6016` (9:16 esatto), 1080p `1080×1080`, sotto-1MB `883 KB`, palette PNG con 6 colori e codici hex corretti. |
+| Faccia "Strumenti" della ruota (`T`, interruttore nella barra, Ritaglia/Ruota/Scala come sotto-pagine con slot "su", dwell in drag) | Fatto, **non visto dal vivo** | e2e `WheelView: Tools face…` (con prova rossa: rompendo l'apertura dei gruppi il test fallisce), `tsc`, 77 test bun, `vite build`. Il layout reale della barra a tre pulsanti e dei sei/otto bubble **non è stato guardato**: il pannello browser integrato è stato rifiutato. |
+| Tasto `T` anche durante il drag (`Monitor.swift` → `monitor.rs` → `wheel:toggle-face`) | Compilato, **non provato dal vivo** | `swiftc -typecheck`, `clippy -D warnings`, test IPC host (elenco eventi TS↔Rust). Vedi `ACCEPTANCE.md` §14 "Tools during a Finder drag". |
+| Contratto TS↔Rust | Fatto | Test `imageTools.test.ts`: la lista dei token e i suffissi TS devono coincidere con `ALL_TOOL_TOKENS` / `ImageTool::suffix` in Rust. |
+| Oscura (oscuramento dati sensibili con OCR Vision), Whisper (trascrizione), PDF/A-2b, Aura overlay, anteprima Space | **Non fatti** | Oscura richiede un nuovo comando del bridge Swift (box OCR); Whisper e PDF/A richiedono scelte di Capo (modello, dipendenze esterne: `whisper-cpp`, Ghostscript). Tobii saltato (su macOS esiste il Dwell Control di sistema). |

@@ -9,6 +9,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Added
 
 - **Smart vs Raw / Keep-Code conversion mode** toggle in the Wheel, Batch window and CLI; the `R` key toggles it globally, also during a Finder drag and in idle mode.
+- **Image Tools** (the original FLIP 0.6 "Aura" tools, adapted to the port), available from the CLI (`--to CROP_9_16`, …) and from a new **Tools face** of the Wheel for any selection of images:
+  - **Crop** to `9:16` (Reel), `4:5`, `1:1` or `16:9` (centred, exact ratio), **Rotate** 90° left/right and 180°, **Flip** horizontally/vertically, **Scale** to 50 %, 25 %, 1080p, 720p (never upscales) or **under 1 MB**, **Colour palette** (a strip of the dominant colours, as PNG) and **Remove EXIF & location** (lossless for JPEG and PNG; the camera orientation is baked into the pixels first).
+  - Tools keep the source format, write `<name>-crop-9x16.jpg`-style results through the same atomic, never-overwrite staging as conversions, and never touch the original.
+  - The wheel's top bar gets a **Tools / Formats** switch; `T` flips faces (also during a Finder drag, forwarded by the bridge's event tap like `R`). Crop, Rotate and Scale open a sub-page of presets with an "up" slot; during a drag, hovering a group for 300 ms opens it like `More ▸`.
+  - EN/IT titles, VoiceOver labels and parity tests that keep the TypeScript token list identical to the Rust one.
+- Parity guard: a Rust test embeds the original FLIP's extension/output tables and fails if this port stops supporting any input extension or output of the original (today: 0 missing; the port is a superset).
 
 ### Changed
 

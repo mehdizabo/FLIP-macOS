@@ -11,6 +11,7 @@ FLIP brings a fast, cursor-centered radial actions wheel (inspired by Logi Optio
 ## Features
 
 - **Enhanced Liquid Glass Radial Wheel**: Translucent layered glass sectors, directional specular rim highlights, spring transitions, QuickLook center hub thumbnail, `Convert` / `New File` mode pill (`Tab`), radial progress arc with percentage readout, **VoiceOver live announcer**, **English / Italiano (`EN` / `IT`) UI switcher** (`Settings → General`), acoustic tick (`flip-tick.wav`), Force Touch trackpad haptics, and a live **Test Wheel Sound & Haptics** preview button.
+- **Image Tools (second wheel face, `T`)**: for any selection of images the wheel also offers **Crop** (`9:16` Reel, `4:5`, `1:1`, `16:9`), **Rotate / Flip**, **Scale** (50 %, 25 %, 1080p, 720p, under 1 MB), **colour palette** extraction and **EXIF / location removal** — each writes a new file next to the original (`photo-crop-9x16.jpg`), keeps the source format and never overwrites anything. Also available from the CLI: `flip convert photo.jpg --to CROP_9_16,SCALE_1080P` (`flip --help` lists every tool).
 - **Accessory Menu Bar App & Single-Instance IPC**: Lives cleanly in the macOS menu bar (`LSUIElement`) with zero Dock clutter (`Open FLIP Wheel`, `New File in Finder Folder…`, `Batch / Multiple Formats…`, `Settings & Shortcuts…`, `Open Templates Folder`, `Reveal Diagnostic Logs`, `Quit FLIP`). Enforces single-instance exclusivity via `flock` + local Unix domain socket IPC (`flip-instance.sock`, mode `0600`) so Finder Quick Actions, `flip://` URLs, and CLI control commands drive the active instance seamlessly.
 - **Batch & Multi-Format Converter**: Convert multiple files into one or more output formats simultaneously (`Shift+Click` any sector, click `Multi` in the hub, or open from the menu bar).
 - **Zero-Overwrite Naming**:
@@ -27,7 +28,7 @@ FLIP brings a fast, cursor-centered radial actions wheel (inspired by Logi Optio
 | **Idle + Keyboard** | `Option+Shift+Space` (configurable) | Opens at your cursor anywhere on macOS. If Finder has selected files, opens in **Convert** mode; otherwise opens in **New File** mode targeting the active Finder folder (`~/Desktop` fallback). Press `Tab` to switch modes. |
 | **Mouse Button (Optional)** | Disabled (optional `Btn 2` / `3` / `4`) | Hold-and-release support for middle or side mouse buttons (Logi / multi-button mice). |
 
-Wheel navigation also supports arrow keys, number keys `1`–`8`, `Enter`/`Space`, `Tab` (switch Convert / New File), `Esc` (cancel active conversion or dismiss), and 300 ms drag-dwell over `More ▸` / `Back ◂` when more than 7 formats exist.
+Wheel navigation also supports arrow keys, number keys `1`–`8`, `Enter`/`Space`, `Tab` (switch Convert / New File), `R` (Smart / Raw), `T` (Formats / Tools, images only), `Esc` (cancel active conversion or dismiss), and 300 ms drag-dwell over `More ▸` / `Back ◂` when more than 7 formats exist (and over Crop / Rotate / Scale on the Tools face).
 
 ---
 
