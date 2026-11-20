@@ -307,3 +307,137 @@ fn inspection_offers_tools_only_when_every_selected_file_is_an_image() {
     assert!(inspect_paths_with_prefs(&[path(&pdf)], &prefs).tool_actions.is_empty());
     assert!(inspect_paths_with_prefs(&[], &prefs).tool_actions.is_empty());
 }
+
+fn redact_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
+}
+
+/// Boxes of the fixture's sensitive values, normalised to the upright image.
+fn expected_redact_boxes() -> Vec<[f64; 4]> {
+    let raw = fs::read_to_string(redact_fixture("redact-sample.expected.json")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| {
+            let b = entry["box"].as_array().unwrap();
+            assert_eq!(b.len(), 4, "{entry}");
+            [
+                b[0].as_f64().unwrap(),
+                b[1].as_f64().unwrap(),
+                b[2].as_f64().unwrap(),
+                b[3].as_f64().unwrap(),
+            ]
+        })
+        .collect()
+}
+
+fn pixel_rect(w: u32, h: u32, [x, y, bw, bh]: [f64; 4]) -> (u32, u32, u32, u32) {
+    let wf = f64::from(w);
+    let hf = f64::from(h);
+    (
+        (x * wf).floor().max(0.0) as u32,
+        (y * hf).floor().max(0.0) as u32,
+        ((x + bw) * wf).ceil().clamp(0.0, wf) as u32,
+        ((y + bh) * hf).ceil().clamp(0.0, hf) as u32,
+    )
+}
+
+fn mean_luminance(img: &image::RgbImage, x0: u32, y0: u32, x1: u32, y1: u32) -> f64 {
+    let mut sum = 0.0;
+    let mut count = 0u64;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let [r, g, b] = img.get_pixel(x, y).0;
+            sum += 0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b);
+            count += 1;
+        }
+    }
+    assert!(count > 0, "box ({x0},{y0})-({x1},{y1}) is empty");
+    sum / count as f64
+}
+
+fn dark_pixels(img: &image::RgbImage, x0: u32, y0: u32, x1: u32, y1: u32) -> u64 {
+    let mut dark = 0u64;
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let [r, g, b] = img.get_pixel(x, y).0;
+            let luma = 0.299 * f64::from(r) + 0.587 * f64::from(g) + 0.114 * f64::from(b);
+            if luma < 100.0 {
+                dark += 1;
+            }
+        }
+    }
+    dark
+}
+
+fn dir_entries(dir: &Path) -> std::collections::BTreeSet<PathBuf> {
+    fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().path()).collect()
+}
+
+#[test]
+fn redact_covers_the_sensitive_values_in_a_png_and_keeps_the_uncovered_text() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("redact-sample.png");
+    fs::copy(redact_fixture("redact-sample.png"), &src).unwrap();
+    let before = sha(&src);
+
+    let out = only_output(&src, "REDACT");
+    assert_eq!(file_name(&out), "redact-sample-redacted.png");
+    assert_eq!(out.parent(), Some(dir.path()), "the result sits next to the source");
+    assert_eq!(sha(&src), before, "the original is never modified");
+
+    let after = image::open(&out).unwrap().to_rgb8();
+    assert_eq!(after.dimensions(), (1200, 800));
+    for expected in expected_redact_boxes() {
+        let (x0, y0, x1, y1) = pixel_rect(after.width(), after.height(), expected);
+        let mean = mean_luminance(&after, x0, y0, x1, y1);
+        assert!(mean < 10.0, "{expected:?} is not covered: mean luminance {mean:.1}");
+    }
+
+    // The "Invoice 12/03/2025 total …" line below the last covered box keeps its dark text.
+    let band_top = (0.74 * f64::from(after.height())) as u32;
+    let band_bottom = (0.95 * f64::from(after.height())) as u32;
+    let invoice_ink = dark_pixels(&after, 0, band_top, after.width(), band_bottom);
+    assert!(invoice_ink > 50, "the uncovered Invoice line must still show its text ({invoice_ink} dark px)");
+}
+
+#[test]
+fn redact_applies_upright_boxes_to_an_exif_rotated_jpeg_and_writes_no_exif() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("redact-sample-rot6.jpg");
+    fs::copy(redact_fixture("redact-sample-rot6.jpg"), &src).unwrap();
+    let before = sha(&src);
+
+    let out = only_output(&src, "REDACT");
+    assert_eq!(file_name(&out), "redact-sample-rot6-redacted.jpg");
+    assert_eq!(sha(&src), before, "the original is never modified");
+
+    let bytes = fs::read(&out).unwrap();
+    assert!(!bytes.windows(4).any(|w| w == b"Exif"), "the result carries no EXIF");
+    assert_eq!(flip_lib::engines::image_tools::jpeg_exif_orientation(&bytes), None);
+
+    let after = image::open(&out).unwrap().to_rgb8();
+    assert_eq!(after.dimensions(), (1200, 800), "upright: the stored rotation is baked in");
+    for expected in expected_redact_boxes() {
+        let (x0, y0, x1, y1) = pixel_rect(after.width(), after.height(), expected);
+        let mean = mean_luminance(&after, x0, y0, x1, y1);
+        assert!(mean < 10.0, "{expected:?} is not covered in upright space: mean {mean:.1}");
+    }
+}
+
+#[test]
+fn redact_refuses_an_image_without_sensitive_text_and_writes_nothing() {
+    let dir = tempdir().unwrap();
+    let src = dir.path().join("plain.png");
+    DynamicImage::ImageRgb8(ImageBuffer::from_pixel(320, 240, Rgb([200u8, 200, 200])))
+        .save(&src)
+        .unwrap();
+    let before = dir_entries(dir.path());
+
+    let res = run(&src, "REDACT");
+    assert!(res.error.is_some(), "no sensitive data must be an error");
+    assert!(res.outputs.is_empty());
+    assert_eq!(dir_entries(dir.path()), before, "no file is written next to the source");
+}
