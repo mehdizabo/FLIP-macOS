@@ -77,6 +77,10 @@ pub struct DetectedTools {
     pub pages: bool,
     pub numbers: bool,
     pub keynote: bool,
+    /// The whisper.cpp command line binary (`whisper-cli`), when installed.
+    pub whisper: Option<PathBuf>,
+    /// The multilingual `ggml-small.bin` model file, when present in the app support folder.
+    pub whisper_model: Option<PathBuf>,
 }
 
 impl DetectedTools {
@@ -87,6 +91,8 @@ impl DetectedTools {
             pages: self.pages,
             numbers: self.numbers,
             keynote: self.keynote,
+            // Transcription needs all three parts: the binary, the model and ffmpeg.
+            whisper: self.whisper.is_some() && self.whisper_model.is_some() && self.ffmpeg.is_some(),
         }
     }
 }
@@ -144,6 +150,25 @@ pub fn detect_tools_with(
     };
     let bridge = bridge::resolve_bridge_binary().ok();
 
+    // `FLIP_DISABLE_WHISPER=1` hides both the binary and the model, the same way the other flags do.
+    let disable_whisper = env_flag_enabled(get_env("FLIP_DISABLE_WHISPER").as_deref());
+    let whisper = if disable_whisper {
+        None
+    } else {
+        // Homebrew renamed the binary between whisper.cpp versions, so accept both names.
+        find_tool(None, "whisper-cli").or_else(|| find_tool(None, "whisper-cpp"))
+    };
+    let whisper_model = if disable_whisper {
+        None
+    } else {
+        let model = transcribe::model_path();
+        if model.is_file() {
+            Some(model)
+        } else {
+            None
+        }
+    };
+
     DetectedTools {
         ffmpeg,
         ffprobe,
@@ -152,6 +177,8 @@ pub fn detect_tools_with(
         pages: Path::new("/Applications/Pages.app").exists(),
         numbers: Path::new("/Applications/Numbers.app").exists(),
         keynote: Path::new("/Applications/Keynote.app").exists(),
+        whisper,
+        whisper_model,
     }
 }
 
@@ -430,6 +457,20 @@ pub fn validate_output_with_mode(
                 return Err(EngineError::ValidationFailed(
                     path.display().to_string(),
                     "Invalid XLSX archive missing xl/workbook.xml".to_string(),
+                ));
+            }
+        }
+        "TRANSCRIBE" => {
+            let raw = fs::read_to_string(path).map_err(|e| {
+                EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    format!("Transcript is not valid UTF-8 text: {e}"),
+                )
+            })?;
+            if raw.trim().is_empty() {
+                return Err(EngineError::ValidationFailed(
+                    path.display().to_string(),
+                    "Transcript is empty".to_string(),
                 ));
             }
         }
@@ -1026,6 +1067,42 @@ fn convert_raw_text_unit(
     Ok(Some(outputs_vec))
 }
 
+/// Transcribes one audio or video file; every tool arrives from `DetectedTools`, nothing is searched.
+fn convert_transcribe_unit(
+    source: &Path,
+    staging: &JobStaging,
+    tools: &DetectedTools,
+    cancel: &Arc<AtomicBool>,
+    unit_progress: &dyn Fn(u8),
+) -> Result<Vec<PathBuf>, EngineError> {
+    let whisper_cli = tools.whisper.as_deref().ok_or_else(|| {
+        EngineError::Unsupported(
+            "Transcribe needs the whisper.cpp command line tool (whisper-cli), which is not installed."
+                .to_string(),
+        )
+    })?;
+    let model = tools.whisper_model.as_deref().ok_or_else(|| {
+        EngineError::Unsupported(format!(
+            "Transcribe needs the model file `{}`, which is missing.",
+            transcribe::model_path().display()
+        ))
+    })?;
+    let ffmpeg = tools.ffmpeg.as_deref().ok_or_else(|| {
+        EngineError::Unsupported(
+            "Transcribe needs FFmpeg to decode the audio, and it is not installed.".to_string(),
+        )
+    })?;
+
+    let out = staging.staged_path(&format!("output.{}", format_extension("TRANSCRIBE")));
+    let engine_tools = transcribe::TranscribeTools {
+        whisper_cli,
+        model,
+        ffmpeg,
+    };
+    transcribe::transcribe(source, &out, &engine_tools, staging.dir(), cancel, unit_progress)?;
+    Ok(vec![out])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn convert_standard_unit(
     source: &Path,
@@ -1059,6 +1136,11 @@ fn convert_standard_unit(
         data::convert(source, format, &out, staging.dir(), &prefs.pdf_page_size, cancel)?;
         Ok(vec![out])
     } else if is_media_ext(ext) {
+        if format == "TRANSCRIBE" {
+            // The whole job holds the global conversion gate, so a long transcription blocks other
+            // conversions until it finishes. That is intentional: one external tool at a time.
+            return convert_transcribe_unit(source, staging, tools, cancel, unit_progress);
+        }
         let out = staging.staged_path(&format!("output.{}", format_extension(format)));
         media::convert(source, format, &out, tools, cancel, unit_progress)?;
         Ok(vec![out])
@@ -1260,6 +1342,167 @@ mod tests {
         assert!(tools.pandoc.is_none());
         assert!(find_tool(Some("none"), "ffmpeg").is_none());
         assert!(find_tool(Some("disabled"), "pandoc").is_none());
+    }
+
+    #[test]
+    fn detect_tools_with_honors_whisper_disable_flag() {
+        let disabled = detect_tools_with(None, &|key| match key {
+            "FLIP_DISABLE_WHISPER" => Some("1".to_string()),
+            _ => None,
+        });
+        assert!(disabled.whisper.is_none());
+        assert!(disabled.whisper_model.is_none());
+
+        // Without the flag the result mirrors what this machine actually has.
+        let enabled = detect_tools_with(None, &|_| None);
+        let expected_binary =
+            find_tool(None, "whisper-cli").or_else(|| find_tool(None, "whisper-cpp"));
+        assert_eq!(enabled.whisper.is_some(), expected_binary.is_some());
+        assert_eq!(enabled.whisper_model.is_some(), transcribe::model_path().is_file());
+    }
+
+    #[test]
+    fn whisper_capability_needs_binary_model_and_ffmpeg() {
+        let base = DetectedTools {
+            ffmpeg: Some(PathBuf::from("/opt/homebrew/bin/ffmpeg")),
+            ffprobe: None,
+            pandoc: None,
+            bridge: None,
+            pages: false,
+            numbers: false,
+            keynote: false,
+            whisper: Some(PathBuf::from("/opt/homebrew/bin/whisper-cli")),
+            whisper_model: Some(PathBuf::from("/tmp/ggml-small.bin")),
+        };
+        assert!(base.capabilities().whisper);
+
+        let mut no_binary = base.clone();
+        no_binary.whisper = None;
+        assert!(!no_binary.capabilities().whisper);
+
+        let mut no_model = base.clone();
+        no_model.whisper_model = None;
+        assert!(!no_model.capabilities().whisper);
+
+        let mut no_ffmpeg = base.clone();
+        no_ffmpeg.ffmpeg = None;
+        assert!(!no_ffmpeg.capabilities().whisper);
+    }
+
+    #[test]
+    fn convert_single_unit_routes_transcribe_through_fake_tools() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fakes = dir.path().join("fakes");
+        fs::create_dir(&fakes).unwrap();
+
+        // Fake ffmpeg: decoding writes a stub file to its last argument; `volumedetect` reports
+        // a loud enough peak and writes nothing.
+        let ffmpeg = fakes.join("ffmpeg");
+        fs::write(
+            &ffmpeg,
+            "#!/bin/sh\ncase \"$*\" in\n  *volumedetect*)\n    printf '[Parsed_volumedetect_0 @ 0x0] max_volume: -12.0 dB\\n' >&2\n    exit 0 ;;\nesac\nfor last do :; done\nprintf 'RIFFfake' > \"$last\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&ffmpeg, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // Fake whisper-cli: writes the transcript next to the `-of` prefix.
+        let whisper = fakes.join("whisper-cli");
+        fs::write(
+            &whisper,
+            "#!/bin/sh\nprefix=\"\"\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -of) prefix=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nprintf 'Hello from the fake whisper.\\n' > \"$prefix.txt\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&whisper, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let model = fakes.join("ggml-small.bin");
+        fs::write(&model, b"fake-model-bytes").unwrap();
+
+        let source = dir.path().join("meeting.m4a");
+        fs::write(&source, b"fake audio bytes").unwrap();
+
+        let tools = DetectedTools {
+            ffmpeg: Some(ffmpeg),
+            ffprobe: None,
+            pandoc: None,
+            bridge: None,
+            pages: false,
+            numbers: false,
+            keynote: false,
+            whisper: Some(whisper),
+            whisper_model: Some(model),
+        };
+        let caps = tools.capabilities();
+        assert!(caps.whisper);
+
+        let prefs = AppPreferences::default();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let outputs_vec = convert_single_unit(
+            &source,
+            "TRANSCRIBE",
+            &prefs,
+            &tools,
+            &caps,
+            &cancel,
+            false,
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(outputs_vec.len(), 1);
+        assert_eq!(
+            outputs_vec[0].file_name().and_then(|n| n.to_str()),
+            Some("meeting.txt")
+        );
+        assert_eq!(
+            fs::read_to_string(&outputs_vec[0]).unwrap(),
+            "Hello from the fake whisper.\n"
+        );
+        assert!(validate_output(&outputs_vec[0], "TRANSCRIBE").is_ok());
+
+        // A missing model must be a clean Unsupported error, never a panic.
+        let mut without_model = tools.clone();
+        without_model.whisper_model = None;
+        let staging = JobStaging::create(dir.path()).unwrap();
+        let err = convert_standard_unit(
+            &source,
+            "m4a",
+            "TRANSCRIBE",
+            &staging,
+            &prefs,
+            &without_model,
+            &cancel,
+            &|_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(err, EngineError::Unsupported(_)), "{err}");
+        staging.cleanup().unwrap();
+    }
+
+    #[test]
+    fn validate_output_checks_transcribe_utf8_and_non_blank() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let good = dir.path().join("good.txt");
+        fs::write(&good, "Ciao, questo è un transcript.\n").unwrap();
+        assert!(validate_output(&good, "TRANSCRIBE").is_ok());
+
+        let blank = dir.path().join("blank.txt");
+        fs::write(&blank, "  \n\t\n").unwrap();
+        let blank_err = validate_output(&blank, "TRANSCRIBE").unwrap_err();
+        assert!(blank_err.to_string().contains("Transcript is empty"), "{blank_err}");
+
+        let empty = dir.path().join("empty.txt");
+        fs::write(&empty, b"").unwrap();
+        assert!(validate_output(&empty, "TRANSCRIBE").is_err());
+
+        let invalid = dir.path().join("invalid.txt");
+        fs::write(&invalid, [0xFF, 0xFE, 0x00, 0x41]).unwrap();
+        let invalid_err = validate_output(&invalid, "TRANSCRIBE").unwrap_err();
+        assert!(
+            invalid_err.to_string().contains("not valid UTF-8"),
+            "{invalid_err}"
+        );
     }
 
     #[test]

@@ -61,6 +61,8 @@ pub struct EngineCapabilities {
     pub pages: bool,
     pub numbers: bool,
     pub keynote: bool,
+    /// Transcription is offered only when whisper binary, model and ffmpeg are all present.
+    pub whisper: bool,
 }
 
 impl EngineCapabilities {
@@ -75,6 +77,7 @@ impl EngineCapabilities {
             pages: true,
             numbers: true,
             keynote: true,
+            whisper: true,
         }
     }
 }
@@ -161,18 +164,36 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
         }
         e if AUDIO_ALL_EXTS.contains(&e) => {
             if caps.ffmpeg {
-                vec!["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"]
+                let mut out = vec![
+                    "MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC",
+                ];
+                if caps.whisper {
+                    out.push("TRANSCRIBE");
+                }
+                out
             } else if AUDIO_NATIVE_EXTS.contains(&e) {
-                vec!["M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF"]
+                let mut out = vec!["M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF"];
+                if caps.whisper {
+                    out.push("TRANSCRIBE");
+                }
+                out
             } else {
                 vec![]
             }
         }
         e if VIDEO_ALL_EXTS.contains(&e) => {
             if caps.ffmpeg {
-                vec!["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"]
+                let mut out = vec!["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"];
+                if caps.whisper {
+                    out.push("TRANSCRIBE");
+                }
+                out
             } else if VIDEO_NATIVE_EXTS.contains(&e) {
-                vec!["MP4", "MOV", "M4V", "M4A", "WAV", "GIF"]
+                let mut out = vec!["MP4", "MOV", "M4V", "M4A", "WAV", "GIF"];
+                if caps.whisper {
+                    out.push("TRANSCRIBE");
+                }
+                out
             } else {
                 vec![]
             }
@@ -382,6 +403,7 @@ pub fn order_formats(
             "OGG",
             "OPUS",
             "AAC",
+            "TRANSCRIBE",
             "MKV",
             "WEBM",
             "AVI",
@@ -870,6 +892,70 @@ mod tests {
             assert!(mp4_ff.contains(needed), "missing {needed}");
         }
         assert!(!mp4_ff.contains("MP4"));
+    }
+
+    #[test]
+    fn transcribe_is_offered_for_media_only_with_whisper() {
+        let without = EngineCapabilities {
+            ffmpeg: true,
+            ..Default::default()
+        };
+        let with = EngineCapabilities {
+            ffmpeg: true,
+            whisper: true,
+            ..Default::default()
+        };
+
+        for ext in ["mp3", "m4a", "mp4", "mkv"] {
+            let file = format!("clip.{ext}");
+            let off = outputs(&[file.as_str()], &without);
+            let on = outputs(&[file.as_str()], &with);
+            assert!(
+                !off.contains(&"TRANSCRIBE".to_string()),
+                "{file} offers TRANSCRIBE without whisper: {off:?}"
+            );
+            assert!(
+                on.contains(&"TRANSCRIBE".to_string()),
+                "{file} misses TRANSCRIBE with whisper: {on:?}"
+            );
+            let mut base = on.clone();
+            base.retain(|f| f != "TRANSCRIBE");
+            assert_eq!(base, off, "{file} changed its other targets");
+        }
+
+        for ext in ["png", "jpg", "txt", "docx", "pdf", "json", "zip"] {
+            let file = format!("file.{ext}");
+            assert!(
+                !outputs(&[file.as_str()], &with).contains(&"TRANSCRIBE".to_string()),
+                "{file} must never offer TRANSCRIBE"
+            );
+        }
+
+        // A mixed selection is an intersection: the image has no TRANSCRIBE, so neither has the job.
+        let mixed = outputs(&["clip.mp3", "photo.jpg"], &with);
+        assert!(
+            !mixed.contains(&"TRANSCRIBE".to_string()),
+            "mixed selection offered TRANSCRIBE: {mixed:?}"
+        );
+
+        assert!(outputs(&["clip.m4a"], &EngineCapabilities::all())
+            .contains(&"TRANSCRIBE".to_string()));
+    }
+
+    #[test]
+    fn transcribe_sits_after_aac_in_the_global_fallback_order() {
+        let available = vec![
+            "AAC".to_string(),
+            "MKV".to_string(),
+            "TRANSCRIBE".to_string(),
+            "ZIP".to_string(),
+        ];
+        let ordered = order_formats(&available, None, None);
+        let aac = ordered.iter().position(|f| f == "AAC").unwrap();
+        let transcribe = ordered.iter().position(|f| f == "TRANSCRIBE").unwrap();
+        let mkv = ordered.iter().position(|f| f == "MKV").unwrap();
+        assert_eq!(transcribe, aac + 1, "ordered={ordered:?}");
+        assert!(transcribe < mkv, "ordered={ordered:?}");
     }
 
     #[test]

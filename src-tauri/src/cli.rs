@@ -93,9 +93,12 @@ IMAGE TOOLS (pass to --to; the result keeps the image's format and gets a suffix
   REDACT                                       Cover IBANs, cards, emails, phone numbers and tax codes read by OCR (always check the result)\n  \
   PALETTE                                      Colour palette strip with hex codes\n  \
   STRIP_EXIF                                   Remove EXIF/GPS and other metadata\n\n\
+MEDIA TOOLS (pass to --to):\n  \
+  TRANSCRIBE                                   Transcribe an audio or video file to a .txt file, on device\n                                               (needs whisper.cpp and the ggml-small.bin model)\n\n\
 EXAMPLES:\n  \
   flip convert photo.heic --to PNG,JPG\n  \
   flip convert photo.jpg --to CROP_1_1,SCALE_1080P\n  \
+  flip convert song.m4a --to TRANSCRIBE\n  \
   flip new md --in ~/Desktop\n  \
   flip new folder --in ~/Documents --no-rename\n  \
   flip wheel --mode convert photo.heic\n  \
@@ -1024,6 +1027,7 @@ fn preview_format_short_label(fmt: &str) -> &str {
     match fmt {
         "REMOVE_BG" => "No BG",
         "OPTIMIZE_PDF" => "Optimize",
+        "TRANSCRIBE" => "To text",
         "COMBINE_PDF" => "Combine",
         "ANIMATE_GIF" => "GIF+",
         "MERGE_PDF" => "Merge PDF",
@@ -1548,6 +1552,17 @@ mod tests {
                 raw: false,
             }
         );
+        // Transcription is a plain token for `--to`, and the help names it.
+        assert_eq!(
+            parse_cli_args(["flip", "convert", "song.m4a", "--to", "TRANSCRIBE"]).unwrap(),
+            CliCommand::Convert {
+                files: vec![PathBuf::from("song.m4a")],
+                formats: vec!["TRANSCRIBE".to_string()],
+                raw: false,
+            }
+        );
+        assert!(help_text().contains("TRANSCRIBE"));
+        assert_eq!(preview_format_short_label("TRANSCRIBE"), "To text");
         assert_eq!(
             parse_cli_args(["flip", "convert", "a.png", "-t", ".jpg", "--to", "webp,jpg"])
                 .unwrap(),

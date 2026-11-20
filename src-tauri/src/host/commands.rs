@@ -53,6 +53,10 @@ pub struct EngineStatusPayload {
     pub pages: bool,
     pub numbers: bool,
     pub keynote: bool,
+    /// The whisper.cpp binary, or null when it is not installed.
+    pub whisper: Option<PathBuf>,
+    /// The `ggml-small.bin` model file, or null when it is missing.
+    pub whisper_model: Option<PathBuf>,
     pub native_frameworks: NativeFrameworksStatus,
 }
 
@@ -589,6 +593,8 @@ pub async fn get_engine_status(state: State<'_, Arc<HostState>>) -> Result<Engin
         pages: tools.pages,
         numbers: tools.numbers,
         keynote: tools.keynote,
+        whisper: tools.whisper,
+        whisper_model: tools.whisper_model,
         native_frameworks: NativeFrameworksStatus {
             image_io: true,
             pdf_kit: true,

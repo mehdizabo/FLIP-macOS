@@ -119,17 +119,21 @@ pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
     );
     map.insert(
         "audio".to_string(),
-        vec!["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+        vec![
+            "MP3", "M4A", "WAV", "TRANSCRIBE", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
     );
     map.insert(
         "video".to_string(),
-        vec!["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"]
-            .into_iter()
-            .map(String::from)
-            .collect(),
+        vec![
+            "MP4", "MOV", "GIF", "TRANSCRIBE", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect(),
     );
     map
 }
@@ -366,6 +370,32 @@ mod tests {
         assert!(prefs.preferred_formats["image"].contains(&"ICNS".to_string()));
         assert!(prefs.preferred_formats["image"].contains(&"TXT".to_string()));
         assert!(prefs.preferred_formats["audio"].contains(&"CAF".to_string()));
+    }
+
+    #[test]
+    fn transcribe_is_fourth_in_the_audio_and_video_preferred_lists() {
+        let map = default_preferred_formats();
+        assert_eq!(map["audio"][3], "TRANSCRIBE");
+        assert_eq!(map["video"][3], "TRANSCRIBE");
+        assert_eq!(&map["audio"][0..3], &["MP3", "M4A", "WAV"]);
+        assert_eq!(&map["video"][0..3], &["MP4", "MOV", "GIF"]);
+    }
+
+    #[test]
+    fn saved_preferences_get_transcribe_appended_at_the_end() {
+        // No migration: an older list keeps its order and the new token is backfilled last.
+        let mut prefs = AppPreferences::default();
+        prefs
+            .preferred_formats
+            .insert("audio".to_string(), vec!["WAV".into(), "MP3".into()]);
+        prefs.sanitize();
+        let audio = &prefs.preferred_formats["audio"];
+        assert_eq!(&audio[0..2], &["WAV", "MP3"]);
+        let transcribe = audio.iter().position(|f| f == "TRANSCRIBE").unwrap();
+        assert!(transcribe >= 2, "TRANSCRIBE must come after the saved order: {audio:?}");
+        let aac = audio.iter().position(|f| f == "AAC").unwrap();
+        assert!(transcribe < aac, "TRANSCRIBE must precede AAC: {audio:?}");
+        assert_eq!(audio.last().map(String::as_str), Some("AAC"));
     }
 
     #[test]

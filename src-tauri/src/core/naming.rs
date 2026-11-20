@@ -23,6 +23,7 @@ pub fn format_extension(format: &str) -> String {
         "AIF" => "aiff".to_string(),
         "REMOVE_BG" => "png".to_string(),
         "OPTIMIZE_PDF" => "pdf".to_string(),
+        "TRANSCRIBE" => "txt".to_string(),
         "ZIP" => "zip".to_string(),
         "UNZIP" => String::new(),
         other => other.to_ascii_lowercase(),
@@ -198,6 +199,21 @@ mod tests {
         let name = p.file_name().unwrap().to_str().unwrap();
         assert!(name.len() <= 255, "filename exceeded 255 bytes: {}", name.len());
         assert!(name.ends_with("-p001 2.png"));
+    }
+
+    #[test]
+    fn transcribe_outputs_use_txt_extension() {
+        assert_eq!(format_extension("TRANSCRIBE"), "txt");
+        assert_eq!(format_extension(" transcribe "), "txt");
+
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("interview.m4a");
+        fs::write(&src, b"audio").unwrap();
+        let p = next_available_conversion_path(dir.path(), &src, None, "TRANSCRIBE").unwrap();
+        assert_eq!(p.file_name().unwrap().to_str().unwrap(), "interview.txt");
+        fs::write(&p, b"first").unwrap();
+        let p2 = next_available_conversion_path(dir.path(), &src, None, "TRANSCRIBE").unwrap();
+        assert_eq!(p2.file_name().unwrap().to_str().unwrap(), "interview 2.txt");
     }
 
     #[test]
