@@ -2769,4 +2769,89 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     expect(harness.calls.some((c) => c.cmd === "open_window" && c.args.label === "settings")).toBe(true);
     });
   });
+
+  // File names are arbitrary user data and error messages echo them back; the views build HTML strings
+  // with innerHTML, so every interpolation must be escaped. Breaking out of a text or attribute context
+  // would create an element or an `on*` handler, which the shim's HTML parser would materialise.
+  const HOSTILE_NAME = `"><img src=x onerror=alert(1)><svg onload=alert(2)>'<b onmouseover=alert(3)>`;
+
+  function findInjectedMarkup(rootEl: unknown): string[] {
+    const hits: string[] = [];
+    const walk = (node: ShimNode): void => {
+      if (node.nodeType === 1) {
+        const el = node as ShimElement;
+        const tag = el.tagName.toLowerCase();
+        if (["script", "iframe", "object", "embed"].includes(tag)) hits.push(`<${tag}>`);
+        if (tag === "img" && el.getAttribute("src") === "x") hits.push("<img src=x>");
+        for (const name of (el as any)._attrs.keys() as Iterable<string>) {
+          if (name.toLowerCase().startsWith("on")) hits.push(`${tag}[${name}]`);
+        }
+      }
+      node.childNodes.forEach(walk);
+    };
+    walk(rootEl as ShimNode);
+    return hits;
+  }
+
+  test("BatchView: hostile file names and conversion errors are rendered as text, never as markup", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const hostilePath = `/tmp/${HOSTILE_NAME}/${HOSTILE_NAME}.png`;
+      const harness = installTauriHarness(win);
+      harness.setCommandOverride("execute_conversion", async () => ({
+        success: false,
+        results: [
+          { source: hostilePath, format: "JPG", outputs: [], error: `failed: ${HOSTILE_NAME}` },
+        ],
+        error: `failed: ${HOSTILE_NAME}`,
+      }));
+      const dispose = mountBatchView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      root.querySelector<HTMLButtonElement>("#batch-clear-files")!.click();
+      await flushMicrotasks();
+      root.querySelector<HTMLInputElement>("#batch-path-input")!.value = hostilePath;
+      root.querySelector<HTMLButtonElement>("#batch-add-path")!.click();
+      await flushMicrotasks();
+
+      const fileList = root.querySelector("#batch-file-list")!;
+      expect(fileList.textContent).toContain(HOSTILE_NAME);
+      expect(findInjectedMarkup(root)).toEqual([]);
+
+      root.querySelector<HTMLButtonElement>("#batch-select-all")!.click();
+      await flushMicrotasks();
+      root.querySelector<HTMLButtonElement>("#batch-run-btn")!.click();
+      await flushMicrotasks();
+
+      const results = root.querySelector("#batch-results-list")!;
+      expect(results.querySelectorAll(".batch-result-row").length).toBeGreaterThan(0);
+      expect(results.textContent).toContain(`failed: ${HOSTILE_NAME}`);
+      expect(findInjectedMarkup(root)).toEqual([]);
+    });
+  });
+
+  test("WheelView: a hostile conversion error message is rendered as text in the Error Hub, never as markup", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      harness.setCommandOverride("execute_conversion", async () => ({
+        success: false,
+        results: [{ source: "/tmp/spec.pdf", format: "DOCX", outputs: [], error: `failed: ${HOSTILE_NAME}` }],
+        error: `failed: ${HOSTILE_NAME}`,
+      }));
+      const dispose = mountWheelView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      const firstSector = root.querySelector(
+        '.wheel-sector-group[data-slot-index="0"]',
+      ) as unknown as ShimElement;
+      firstSector.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }));
+      await flushMicrotasks();
+
+      expect(root.querySelector(".wheel-hub-subtitle.is-error")?.textContent).toContain(
+        `failed: ${HOSTILE_NAME}`,
+      );
+      expect(findInjectedMarkup(root)).toEqual([]);
+    });
+  });
 });
