@@ -46,10 +46,7 @@ describe("image tool tokens: Rust and TypeScript stay in lock-step", () => {
   });
 
   test("suffixes mirror the Rust ImageTool::suffix table", () => {
-    const rustTokens = rustTokenList("ALL_TOOL_TOKENS");
     for (const token of IMAGE_TOOL_TOKENS) {
-      // REDACT's suffix reaches the Rust engine with P3; until then mirror the tokens it knows.
-      if (!rustTokens.includes(token)) continue;
       // Every suffix the TS side advertises must be literally present in the Rust engine.
       expect(RUST_SOURCE).toContain(`"${toolOutputSuffix(token)}"`);
     }
