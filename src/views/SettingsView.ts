@@ -714,6 +714,11 @@ export function mountSettingsView(root: HTMLElement): () => void {
           : whisperModel !== null
             ? t(l, "settings.engines.whisperBinaryMissing")
             : t(l, "settings.engines.installWhisper");
+    const ghostscriptBin = engines?.ghostscript ?? null;
+    const ghostscriptDesc =
+      ghostscriptBin !== null
+        ? escapeHtml(ghostscriptBin)
+        : t(l, "settings.engines.installGhostscript");
 
     return `
       <section class="glass-card">
@@ -812,6 +817,12 @@ export function mountSettingsView(root: HTMLElement): () => void {
           <div>
             <div class="setting-label">${escapeHtml(t(l, "settings.engines.whisperLabel"))} ${whisperReady ? `<span class="status-pill is-ok" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.detected"))}</span>` : `<span class="status-pill is-warn" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.notFound"))}</span>`}</div>
             <div class="setting-desc">${whisperDesc}</div>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.engines.ghostscriptLabel"))} ${ghostscriptBin !== null ? `<span class="status-pill is-ok" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.detected"))}</span>` : `<span class="status-pill is-warn" style="margin-left:6px"><span class="status-dot"></span>${escapeHtml(t(l, "settings.engines.notFound"))}</span>`}</div>
+            <div class="setting-desc">${ghostscriptDesc}</div>
           </div>
         </div>
       </section>

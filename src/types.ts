@@ -76,6 +76,8 @@ export interface DetectedTools {
   pandoc: string | null;
   whisper: string | null;
   whisperModel: string | null;
+  /** Absolute path of the `gs` binary used for PDF/A, or null when it is not installed. */
+  ghostscript: string | null;
   bridge: string | null;
   pages: boolean;
   numbers: boolean;

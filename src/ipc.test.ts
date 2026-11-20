@@ -486,4 +486,55 @@ describe("Frontend IPC surface & contract alignment", () => {
       else g.isTauri = prevIsTauri;
     }
   });
+
+  test("getEngineStatus keeps ghostscript from the mock and from nested and flat raw payloads, and turns a missing field into null", async () => {
+    const g = globalThis as Record<string, unknown>;
+    const prevWindow = g.window;
+    const prevIsTauri = g.isTauri;
+    const toolsBase = {
+      ffmpeg: null,
+      ffprobe: null,
+      pandoc: null,
+      whisper: null,
+      whisperModel: null,
+      bridge: null,
+      pages: false,
+      numbers: false,
+      keynote: false,
+    };
+    const withRaw = (raw: unknown) => {
+      g.window = { __TAURI_INTERNALS__: { invoke: async () => raw } };
+      return getEngineStatus();
+    };
+    try {
+      delete g.isTauri;
+      g.window = { location: { hash: "" } };
+      const mock = await getEngineStatus();
+      expect(mock.ghostscript).toBe("/opt/homebrew/bin/gs");
+
+      g.isTauri = true;
+      // Nested payload (`tools`) with a path.
+      const nested = await withRaw({ tools: { ...toolsBase, ghostscript: "/usr/local/bin/gs" } });
+      expect(nested.ghostscript).toBe("/usr/local/bin/gs");
+      // Nested payload with an explicit null.
+      const nestedNull = await withRaw({ tools: { ...toolsBase, ghostscript: null } });
+      expect(nestedNull.ghostscript).toBeNull();
+      // Nested payload from an older Rust build that does not send the field: null, never undefined.
+      const nestedMissing = await withRaw({ tools: { ...toolsBase } });
+      expect(nestedMissing.ghostscript).toBeNull();
+
+      // Flat payload with a path, with null, and without the field.
+      const flat = await withRaw({ ...toolsBase, ghostscript: "/opt/homebrew/bin/gs" });
+      expect(flat.ghostscript).toBe("/opt/homebrew/bin/gs");
+      const flatNull = await withRaw({ ...toolsBase, ghostscript: null });
+      expect(flatNull.ghostscript).toBeNull();
+      const flatMissing = await withRaw({ ...toolsBase });
+      expect(flatMissing.ghostscript).toBeNull();
+      expect("ghostscript" in flatMissing).toBe(true);
+    } finally {
+      g.window = prevWindow;
+      if (prevIsTauri === undefined) delete g.isTauri;
+      else g.isTauri = prevIsTauri;
+    }
+  });
 });
