@@ -12,6 +12,7 @@ func printUsage() {
       permissions [--prompt-ax] [--open-ax] [--open-automation] [--open-input-monitoring]
       thumbnail <path> [size]
       ocr <image-path> [out-txt-path]
+      ocr-boxes <image-path>
       convert-pdf render <pdf> <out-dir> <format> [dpi]
       convert-pdf extract-text <pdf> <out-txt>
       convert-pdf from-images <out-pdf> <img1> [<img2>...]
@@ -104,6 +105,14 @@ func runCLI() {
         do {
             let outPath = args.count >= 3 ? args[2] : nil
             writeJSON(try MediaAndDocs.ocrImageFile(path: args[1], outTxtPath: outPath))
+        } catch {
+            failExit(error.localizedDescription)
+        }
+
+    case "ocr-boxes":
+        guard args.count >= 2 else { failExit("ocr-boxes requires <image-path>") }
+        do {
+            writeJSON(try MediaAndDocs.ocrBoxes(path: args[1]))
         } catch {
             failExit(error.localizedDescription)
         }

@@ -171,6 +171,120 @@ enum MediaAndDocs {
         return accurateText
     }
 
+    /// One entry per whitespace-separated word, in Vision reading order, with the box converted to
+    /// normalised top-left origin coordinates in the display (EXIF-oriented) image space.
+    private static func wordBoxes(for candidate: VNRecognizedText) -> [[String: Any]] {
+        let text = candidate.string
+        var words: [[String: Any]] = []
+        var index = text.startIndex
+        while index < text.endIndex {
+            while index < text.endIndex && text[index].isWhitespace {
+                index = text.index(after: index)
+            }
+            guard index < text.endIndex else { break }
+            let start = index
+            while index < text.endIndex && !text[index].isWhitespace {
+                index = text.index(after: index)
+            }
+            let wordRange = start..<index
+            guard let observation = try? candidate.boundingBox(for: wordRange) else { continue }
+            let box = observation.boundingBox
+            // Vision's origin is bottom-left; the contract wants top-left.
+            let y = 1.0 - (box.origin.y + box.size.height)
+            words.append([
+                "text": String(text[start..<index]),
+                "box": [box.origin.x, y, box.size.width, box.size.height]
+            ])
+        }
+        return words
+    }
+
+    private static func performRecognizeWordBoxes(
+        cgImage: CGImage,
+        orientation: CGImagePropertyOrientation,
+        level: VNRequestTextRecognitionLevel,
+        usesLanguageCorrection: Bool
+    ) throws -> [[[String: Any]]] {
+        var recognizedLines: [[[String: Any]]] = []
+        var visionError: Error?
+
+        let request = VNRecognizeTextRequest { req, err in
+            if let err = err {
+                visionError = err
+                return
+            }
+            guard let observations = req.results as? [VNRecognizedTextObservation] else { return }
+            for obs in observations {
+                guard let top = obs.topCandidates(1).first else { continue }
+                let words = wordBoxes(for: top)
+                if !words.isEmpty {
+                    recognizedLines.append(words)
+                }
+            }
+        }
+        request.recognitionLevel = level
+        request.usesLanguageCorrection = usesLanguageCorrection
+        if #available(macOS 13.0, *) {
+            request.automaticallyDetectsLanguage = true
+        }
+        // In CLI / non-windowed helper processes, ANE/GPU compute stages can stall.
+        // Force the CPU compute device cleanly via macOS 14+ ComputeStage APIs.
+        if #available(macOS 14.0, *) {
+            if let stageDevices = try? request.supportedComputeStageDevices {
+                for (stage, devices) in stageDevices {
+                    if let cpuDevice = devices.first(where: {
+                        if case .cpu = $0 { return true }
+                        return false
+                    }) {
+                        request.setComputeDevice(cpuDevice, for: stage)
+                    }
+                }
+            }
+        } else {
+            request.usesCPUOnly = true
+        }
+
+        let handler = VNImageRequestHandler(cgImage: cgImage, orientation: orientation, options: [:])
+        try handler.perform([request])
+        if let err = visionError {
+            throw err
+        }
+        return recognizedLines
+    }
+
+    private static func recognizeWordBoxes(
+        cgImage: CGImage,
+        orientation: CGImagePropertyOrientation
+    ) throws -> [[[String: Any]]] {
+        // Language correction rewrites codes ("0" -> "O"), which would make a redaction tool miss
+        // an IBAN or a tax code: keep it off and take the recogniser's raw words.
+        let accurateLines = try performRecognizeWordBoxes(
+            cgImage: cgImage,
+            orientation: orientation,
+            level: .accurate,
+            usesLanguageCorrection: false
+        )
+        let hasText = accurateLines.contains { line in
+            line.contains { word in
+                let text = word["text"] as? String ?? ""
+                return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+        }
+        if hasText {
+            return accurateLines
+        }
+        // Same retry as recognizeText: .accurate can return nothing on smaller body text.
+        if let upscaled = upscale2xForOCR(cgImage) {
+            return try performRecognizeWordBoxes(
+                cgImage: upscaled,
+                orientation: orientation,
+                level: .accurate,
+                usesLanguageCorrection: false
+            )
+        }
+        return accurateLines
+    }
+
     private static func sanitizeSVGForOfflineRasterization(_ svg: String) -> String {
         var out = svg
         let stripPatterns = [
@@ -351,6 +465,29 @@ enum MediaAndDocs {
             try Data(text.utf8).write(to: URL(fileURLWithPath: outTxtPath), options: .atomic)
         }
         return ["ok": true, "text": text, "characters": text.count]
+    }
+
+    static func ocrBoxes(path: String) throws -> [String: Any] {
+        let (decodedImg, rawOrientation, _) = try decodeCGImageAndProps(path: path)
+        let isSvg = URL(fileURLWithPath: path).pathExtension.lowercased() == "svg"
+        let cgImg = isSvg
+            ? (normalizeOrientedImage(decodedImg, orientation: 1, flattenAlpha: true) ?? decodedImg)
+            : decodedImg
+
+        let cgOrientation = CGImagePropertyOrientation(rawValue: rawOrientation) ?? .up
+        let lines = try recognizeWordBoxes(cgImage: cgImg, orientation: cgOrientation)
+
+        // The pipeline works on the stored pixels; the reported size is the upright one.
+        let swapAxes = rawOrientation >= 5 && rawOrientation <= 8
+        let width = swapAxes ? cgImg.height : cgImg.width
+        let height = swapAxes ? cgImg.width : cgImg.height
+
+        return [
+            "ok": true,
+            "width": width,
+            "height": height,
+            "lines": lines.map { ["words": $0] }
+        ]
     }
 
     // MARK: - PDFKit + Vision OCR
