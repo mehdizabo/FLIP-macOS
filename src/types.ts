@@ -74,6 +74,8 @@ export interface DetectedTools {
   ffmpeg: string | null;
   ffprobe: string | null;
   pandoc: string | null;
+  whisper: string | null;
+  whisperModel: string | null;
   bridge: string | null;
   pages: boolean;
   numbers: boolean;

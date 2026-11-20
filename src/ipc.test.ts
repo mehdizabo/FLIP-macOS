@@ -422,4 +422,68 @@ describe("Frontend IPC surface & contract alignment", () => {
     expect(defaultPreferences().preferredFormats.data).toContain("XLSX");
     expect(defaultPreferences().preferredFormats.data.slice(0, 7)).toContain("XLSX");
   });
+
+  test("getEngineStatus keeps whisper and whisperModel from the mock and from raw payloads", async () => {
+    const g = globalThis as Record<string, unknown>;
+    const prevWindow = g.window;
+    const prevIsTauri = g.isTauri;
+    try {
+      delete g.isTauri;
+      g.window = { location: { hash: "" } };
+      const mock = await getEngineStatus();
+      expect(mock.whisper).toBe("/opt/homebrew/bin/whisper-cli");
+      expect(mock.whisperModel).toContain("ggml-small.bin");
+
+      g.isTauri = true;
+      g.window = {
+        __TAURI_INTERNALS__: {
+          invoke: async (cmd: string) => {
+            expect(cmd).toBe("get_engine_status");
+            return {
+              tools: {
+                ffmpeg: "/usr/local/bin/ffmpeg",
+                ffprobe: null,
+                pandoc: null,
+                whisper: "/usr/local/bin/whisper-cli",
+                whisperModel: "/Users/demo/Library/Application Support/FLIP/models/ggml-small.bin",
+                bridge: "/opt/flip-macos-bridge",
+                pages: false,
+                numbers: false,
+                keynote: false,
+              },
+            };
+          },
+        },
+      };
+      const nested = await getEngineStatus();
+      expect(nested.whisper).toBe("/usr/local/bin/whisper-cli");
+      expect(nested.whisperModel).toBe(
+        "/Users/demo/Library/Application Support/FLIP/models/ggml-small.bin",
+      );
+
+      g.window = {
+        __TAURI_INTERNALS__: {
+          invoke: async () => ({
+            ffmpeg: null,
+            ffprobe: null,
+            pandoc: null,
+            whisper: null,
+            whisperModel: "/models/ggml-small.bin",
+            bridge: null,
+            pages: true,
+            numbers: false,
+            keynote: false,
+          }),
+        },
+      };
+      const flat = await getEngineStatus();
+      expect(flat.whisper).toBeNull();
+      expect(flat.whisperModel).toBe("/models/ggml-small.bin");
+      expect(flat.pages).toBe(true);
+    } finally {
+      g.window = prevWindow;
+      if (prevIsTauri === undefined) delete g.isTauri;
+      else g.isTauri = prevIsTauri;
+    }
+  });
 });

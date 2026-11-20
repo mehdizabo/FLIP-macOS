@@ -118,6 +118,7 @@ export function defaultPreferences(): AppPreferences {
         "TXT",
         "DOCX",
         "OPTIMIZE_PDF",
+        "PDFA",
         "MD",
         "HTML",
         "RTF",
@@ -146,8 +147,8 @@ export function defaultPreferences(): AppPreferences {
         "RST",
       ],
       data: ["JSON", "YAML", "TOML", "CSV", "XLSX", "XML", "MD", "HTML", "PDF", "TXT"],
-      audio: ["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"],
-      video: ["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"],
+      audio: ["MP3", "M4A", "WAV", "TRANSCRIBE", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"],
+      video: ["MP4", "MOV", "GIF", "TRANSCRIBE", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"],
     },
     newFileVisibleKinds: ["folder", "txt", "md", "rtf", "docx", "xlsx", "html", "clipboard"],
     recentConversions: [],
@@ -330,7 +331,7 @@ function mockTargetsForExt(
   if (AUDIO_EXTS.has(ext)) {
     if (hasFfmpeg) {
       return {
-        targets: ["MP3", "M4A", "WAV", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"],
+        targets: ["MP3", "M4A", "WAV", "TRANSCRIBE", "FLAC", "AIFF", "ALAC", "CAF", "OGG", "OPUS", "AAC"],
         family: "audio",
       };
     }
@@ -344,7 +345,7 @@ function mockTargetsForExt(
   }
   if (VIDEO_EXTS.has(ext)) {
     if (hasFfmpeg) {
-      return { targets: ["MP4", "MOV", "GIF", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"], family: "video" };
+      return { targets: ["MP4", "MOV", "GIF", "TRANSCRIBE", "M4A", "MP3", "WAV", "MKV", "WEBM", "AVI", "M4V"], family: "video" };
     }
     if (ext === "mp4" || ext === "mov" || ext === "m4v") {
       return { targets: ["MP4", "MOV", "M4V", "M4A", "WAV", "GIF"], family: "video" };
@@ -359,6 +360,7 @@ function mockTargetsForExt(
       "HEIC",
       "TIFF",
       "OPTIMIZE_PDF",
+      "PDFA",
       "TXT",
       "DOCX",
       "MD",
@@ -661,8 +663,10 @@ export async function executeConversion(
             out = `${dirname(src)}/${stem}${toolOutputSuffix(token)}.${toolOutputExtension(token, srcExt)}`;
           } else if (fmt === "REMOVE_BG") {
             out = srcExt === "png" ? `${dirname(src)}/${stem} 2.png` : `${dirname(src)}/${stem}.png`;
-          } else if (fmt === "OPTIMIZE_PDF") {
+          } else if (fmt === "OPTIMIZE_PDF" || fmt === "PDFA") {
             out = `${dirname(src)}/${stem} 2.pdf`;
+          } else if (fmt === "TRANSCRIBE") {
+            out = `${dirname(src)}/${stem}.txt`;
           } else {
             out = `${dirname(src)}/${stem}.${fmt.toLowerCase()}`;
           }
@@ -830,6 +834,8 @@ export async function getEngineStatus(): Promise<EngineStatus> {
       ffmpeg: "/opt/homebrew/bin/ffmpeg",
       ffprobe: "/opt/homebrew/bin/ffprobe",
       pandoc: null,
+      whisper: "/opt/homebrew/bin/whisper-cli",
+      whisperModel: "/Users/demo/Library/Application Support/FLIP/models/ggml-small.bin",
       bridge: "/Applications/FLIP.app/Contents/Resources/flip-macos-bridge",
       pages: true,
       numbers: true,
@@ -843,15 +849,23 @@ export async function getEngineStatus(): Promise<EngineStatus> {
     };
   }
   const raw = await invoke<Partial<EngineStatus> & { tools?: DetectedTools }>("get_engine_status");
-  const base: DetectedTools = raw.tools ?? {
-    ffmpeg: raw.ffmpeg ?? null,
-    ffprobe: raw.ffprobe ?? null,
-    pandoc: raw.pandoc ?? null,
-    bridge: raw.bridge ?? null,
-    pages: Boolean(raw.pages),
-    numbers: Boolean(raw.numbers),
-    keynote: Boolean(raw.keynote),
-  };
+  const base: DetectedTools = raw.tools
+    ? {
+        ...raw.tools,
+        whisper: raw.tools.whisper ?? null,
+        whisperModel: raw.tools.whisperModel ?? null,
+      }
+    : {
+        ffmpeg: raw.ffmpeg ?? null,
+        ffprobe: raw.ffprobe ?? null,
+        pandoc: raw.pandoc ?? null,
+        whisper: raw.whisper ?? null,
+        whisperModel: raw.whisperModel ?? null,
+        bridge: raw.bridge ?? null,
+        pages: Boolean(raw.pages),
+        numbers: Boolean(raw.numbers),
+        keynote: Boolean(raw.keynote),
+      };
   return {
     ...base,
     nativeFrameworks: raw.nativeFrameworks ?? {
