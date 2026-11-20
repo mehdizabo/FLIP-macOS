@@ -836,6 +836,7 @@ export async function getEngineStatus(): Promise<EngineStatus> {
       pandoc: null,
       whisper: "/opt/homebrew/bin/whisper-cli",
       whisperModel: "/Users/demo/Library/Application Support/FLIP/models/ggml-small.bin",
+      ghostscript: "/opt/homebrew/bin/gs",
       bridge: "/Applications/FLIP.app/Contents/Resources/flip-macos-bridge",
       pages: true,
       numbers: true,
@@ -854,6 +855,7 @@ export async function getEngineStatus(): Promise<EngineStatus> {
         ...raw.tools,
         whisper: raw.tools.whisper ?? null,
         whisperModel: raw.tools.whisperModel ?? null,
+        ghostscript: raw.tools.ghostscript ?? null,
       }
     : {
         ffmpeg: raw.ffmpeg ?? null,
@@ -861,6 +863,7 @@ export async function getEngineStatus(): Promise<EngineStatus> {
         pandoc: raw.pandoc ?? null,
         whisper: raw.whisper ?? null,
         whisperModel: raw.whisperModel ?? null,
+        ghostscript: raw.ghostscript ?? null,
         bridge: raw.bridge ?? null,
         pages: Boolean(raw.pages),
         numbers: Boolean(raw.numbers),

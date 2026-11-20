@@ -1240,6 +1240,7 @@ function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): 
     pandoc: null,
     whisper: "/opt/homebrew/bin/whisper-cli",
     whisperModel: "/Users/demo/Library/Application Support/FLIP/models/ggml-small.bin",
+    ghostscript: "/opt/homebrew/bin/gs",
     bridge: "/Applications/FLIP.app/Contents/Resources/flip-macos-bridge",
     pages: false,
     numbers: false,
@@ -2828,6 +2829,7 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
         pandoc: null,
         whisper,
         whisperModel,
+        ghostscript: null,
         bridge: "/Applications/FLIP.app/Contents/Resources/flip-macos-bridge",
         pages: false,
         numbers: false,
@@ -2875,6 +2877,63 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
       expect(whisperRowText()).toContain("/opt/homebrew/bin/whisper-cli");
       expect(whisperRowText()).toContain("Detected");
       expect(whisperRowText()).not.toContain("brew install whisper-cpp");
+    });
+  });
+
+  test("SettingsView: Engines tab shows the Ghostscript (PDF/A) row ready with its path, and not ready with the install hint and the licence note", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      const engineFixture = (ghostscript: string | null): EngineStatus => ({
+        ffmpeg: "/opt/homebrew/bin/ffmpeg",
+        ffprobe: "/opt/homebrew/bin/ffprobe",
+        pandoc: null,
+        whisper: null,
+        whisperModel: null,
+        ghostscript,
+        bridge: "/Applications/FLIP.app/Contents/Resources/flip-macos-bridge",
+        pages: false,
+        numbers: false,
+        keynote: false,
+        nativeFrameworks: {
+          imageIO: true,
+          pdfKit: true,
+          visionOcr: true,
+          avFoundation: true,
+        },
+      });
+      harness.setCommandOverride("get_engine_status", () => engineFixture(null));
+      const dispose = mountSettingsView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      root.querySelector<HTMLButtonElement>('.nav-item[data-tab="engines"]')!.click();
+      await flushMicrotasks();
+
+      const ghostscriptRowText = () =>
+        Array.from(root.querySelectorAll(".setting-row"))
+          .map((row) => row.textContent ?? "")
+          .find((text) => text.includes("Ghostscript (PDF/A)")) ?? "";
+      expect(root.querySelector("#settings-main")?.textContent ?? "").toContain("Ghostscript (PDF/A)");
+      // Not ready (null): warning pill, install hint, and the note that it is separate and not shipped.
+      expect(ghostscriptRowText()).toContain("Not Found");
+      expect(ghostscriptRowText()).not.toContain("Detected");
+      expect(ghostscriptRowText()).toContain("brew install ghostscript");
+      expect(ghostscriptRowText()).toContain("scripts/install-ghostscript.sh");
+      expect(ghostscriptRowText()).toContain("--yes");
+      expect(ghostscriptRowText()).toContain("Needed only for PDF/A");
+      expect(ghostscriptRowText()).toContain("separate program");
+      expect(ghostscriptRowText()).toContain("AGPL");
+
+      // Ready (a path): ok pill and the path, no install hint.
+      harness.setCommandOverride("get_engine_status", () => engineFixture("/opt/homebrew/bin/gs"));
+      root.querySelector<HTMLButtonElement>("#btn-refresh-diagnostics")!.click();
+      await flushMicrotasks();
+      expect(ghostscriptRowText()).toContain("/opt/homebrew/bin/gs");
+      expect(ghostscriptRowText()).toContain("Detected");
+      expect(ghostscriptRowText()).not.toContain("Not Found");
+      expect(ghostscriptRowText()).not.toContain("brew install ghostscript");
+      expect(ghostscriptRowText()).not.toContain("Needed only for PDF/A");
+      expect(ghostscriptRowText()).not.toContain("AGPL");
     });
   });
 
