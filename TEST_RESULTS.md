@@ -5,6 +5,24 @@ Commit Scope: Steps A–P complete (native `ZIP`/`UNZIP`, Apple Vision `REMOVE_B
 
 ---
 
+## 0. Re-verification after Sprint 1 (2026-11-20, branch `sprint-1`)
+
+Sections 1 onward are the `0.1.0` record and keep their original numbers. On the same host this run re-verified the automated suites on the tip of `sprint-1`; each exit code was read, not inferred.
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | exit `0` |
+| `bun test` | **66 pass, 0 fail**, `2,905` `expect()` calls (5 files; was `59` before Sprint 1) |
+| `vite build` (frontend production bundle) | exit `0`, JS `216 KB` (gzip `56 KB`), CSS `34 KB` |
+| `cargo clippy --all-targets -- -D warnings` | exit `0` |
+| `cargo test` | exit `0`: lib `76` (+ `1` ignored), `engines_integration` `21`, `host_ipc_integration` `9`, `stress_and_perf` `2` (`108` pass) |
+| `scripts/audit-repository.sh` | `PASS` (129 tracked files) |
+| Release binary (`cargo build --release --features tauri/custom-protocol`) | `10,774,976` bytes (was `21,022,992`); `0` embedded checkout paths; CLI `md -> EPUB -> TXT` roundtrip OK |
+
+Not executed here: any live WindowServer/GUI check, including the wheel feel with a high-polling mouse (see `ACCEPTANCE.md` section 14), the CSP on a release-like build, and `.app`/`.dmg` packaging.
+
+---
+
 ## 1. Host Environment & OS Compatibility Matrix
 
 Verified host hardware & OS:

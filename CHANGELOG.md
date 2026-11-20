@@ -23,6 +23,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Documents: canvas-only HTML pages convert to text/Markdown instead of an empty result.
 - Privacy audit handles NUL-delimited filenames and punctuation-delimited paths.
 
+- Wheel physics: pointer events closer than 2 ms to the previous step no longer advance the spring by a fixed 6 ms (a 1 kHz pointer made the spring run ~60x faster than real time); the elapsed time is accumulated instead.
+
+### Performance
+
+- Release binary halved (21.0 MB to 10.8 MB): thin-LTO release profile (`codegen-units = 1`, `strip`) and `tokio` limited to `rt-multi-thread` + `time`. A clean release build takes about twice as long.
+
 ### Security & Privacy
 
 - Release binaries no longer embed the build machine's checkout path or consult the source tree for the bridge and tick sound (debug builds keep the fallback; unbundled release runs can set `FLIP_BRIDGE_PATH`).
