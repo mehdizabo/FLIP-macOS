@@ -1910,7 +1910,7 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     expect(faceBtn.getAttribute("aria-pressed")).toBe("false");
     expect(labels()).toContain("PNG");
 
-    // T switches to the Tools face: Crop, Rotate, Scale, Remove BG, Palette, EXIF
+    // T switches to the Tools face: Crop, Rotate, Scale, Remove BG, Redact, Palette, EXIF
     win.dispatchEvent(new KeyboardEvent("keydown", { key: "t" }));
     await flushMicrotasks();
     expect(faceBtn.getAttribute("aria-pressed")).toBe("true");
@@ -1921,6 +1921,7 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
       t("en", "wheel.toolGroup.rotate"),
       t("en", "wheel.toolGroup.scale"),
       "No BG",
+      "Redact",
       "Palette",
       "No EXIF",
     ]);
@@ -1933,7 +1934,7 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     // Up returns to the first page of tools
     await click(4);
     expect(labels()[0]).toBe(t("en", "wheel.toolGroup.crop"));
-    expect(labels().length).toBe(6);
+    expect(labels().length).toBe(7);
 
     // Rotate -> 90° right runs the tool token through the normal conversion path
     await click(1);
@@ -1985,6 +1986,25 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     await flushMicrotasks();
     expect(faceBtn.style.display).toBe("none");
     expect(labels()).toEqual(["MD", "TXT"]);
+
+    // Redact is a bubble only when toolActions offers it (a selection of images always does)
+    harness.emitEvent("wheel:state", {
+      mode: "convert",
+      files: ["/tmp/again.jpg"],
+      isDrag: false,
+      compatibleFormats: ["PNG"],
+      batchActions: [],
+      toolActions: IMAGE_TOOL_TOKENS.filter((token) => token !== "REDACT"),
+      availabilityMessage: "",
+      family: "image",
+      targetFolder: "/tmp",
+      originX: 220,
+      originY: 220,
+    });
+    await flushMicrotasks();
+    win.dispatchEvent(new KeyboardEvent("keydown", { key: "t" }));
+    await flushMicrotasks();
+    expect(labels()).not.toContain("Redact");
     });
   });
 

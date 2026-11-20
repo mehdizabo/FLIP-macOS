@@ -188,6 +188,10 @@ export const UI_ICONS = {
     `<g ${STROKE_ATTRS}><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/><path d="M4 4l16 16"/></g>`,
     18,
   ),
+  redact: svg(
+    `<g ${STROKE_ATTRS}><rect x="4" y="3" width="16" height="18" rx="3"/><rect x="7.5" y="7.5" width="9" height="2.2" rx="1.1" fill="currentColor" stroke="none"/><rect x="7.5" y="11.5" width="6" height="2.2" rx="1.1" fill="currentColor" stroke="none"/><rect x="7.5" y="15.5" width="8" height="2.2" rx="1.1" fill="currentColor" stroke="none"/></g>`,
+    18,
+  ),
 };
 
 type ToolIconKey =
@@ -199,7 +203,8 @@ type ToolIconKey =
   | "flipV"
   | "scale"
   | "palette"
-  | "exif";
+  | "exif"
+  | "redact";
 
 interface ToolVisual {
   icon: ToolIconKey;
@@ -223,6 +228,7 @@ const TOOL_VISUALS: Record<ImageToolToken, ToolVisual> = {
   SCALE_1080P: { icon: "scale", shortLabel: "1080p", accent: "#30D158" },
   SCALE_720P: { icon: "scale", shortLabel: "720p", accent: "#30D158" },
   SCALE_1MB: { icon: "scale", shortLabel: "<1 MB", accent: "#30D158" },
+  REDACT: { icon: "redact", shortLabel: "Redact", accent: "#FF453A" },
   PALETTE: { icon: "palette", shortLabel: "Palette", accent: "#BF5AF2" },
   STRIP_EXIF: { icon: "exif", shortLabel: "No EXIF", accent: "#64D2FF" },
 };
