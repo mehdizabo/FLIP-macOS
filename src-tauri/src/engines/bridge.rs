@@ -378,6 +378,12 @@ pub fn ocr(
     run_bridge_json(&args, 90, cancel)
 }
 
+pub fn ocr_boxes(image: &Path, cancel: Option<&Arc<AtomicBool>>) -> Result<Value, BridgeError> {
+    let args = vec!["ocr-boxes".to_string(), image.to_string_lossy().into_owned()];
+    // Same cold-start allowance as `ocr`: the first Vision initialisation can take ~30s.
+    run_bridge_json(&args, 90, cancel)
+}
+
 pub fn convert_image(
     input: &Path,
     format: &str,
@@ -626,5 +632,101 @@ mod tests {
             samples[0],
             samples[samples.len() - 1]
         );
+    }
+
+    fn fixture_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+    }
+
+    fn union_box(boxes: &[[f64; 4]]) -> [f64; 4] {
+        let min_x = boxes.iter().map(|b| b[0]).fold(f64::INFINITY, f64::min);
+        let min_y = boxes.iter().map(|b| b[1]).fold(f64::INFINITY, f64::min);
+        let max_x = boxes
+            .iter()
+            .map(|b| b[0] + b[2])
+            .fold(f64::NEG_INFINITY, f64::max);
+        let max_y = boxes
+            .iter()
+            .map(|b| b[1] + b[3])
+            .fold(f64::NEG_INFINITY, f64::max);
+        [min_x, min_y, max_x - min_x, max_y - min_y]
+    }
+
+    fn intersection_over_expected(expected: [f64; 4], got: [f64; 4]) -> f64 {
+        let left = expected[0].max(got[0]);
+        let top = expected[1].max(got[1]);
+        let right = (expected[0] + expected[2]).min(got[0] + got[2]);
+        let bottom = (expected[1] + expected[3]).min(got[1] + got[3]);
+        let inter = (right - left).max(0.0) * (bottom - top).max(0.0);
+        let area = expected[2] * expected[3];
+        if area <= 0.0 {
+            0.0
+        } else {
+            inter / area
+        }
+    }
+
+    fn box_from_json(value: &Value) -> [f64; 4] {
+        let b = value.as_array().expect("box array");
+        [
+            b[0].as_f64().expect("x"),
+            b[1].as_f64().expect("y"),
+            b[2].as_f64().expect("w"),
+            b[3].as_f64().expect("h"),
+        ]
+    }
+
+    #[test]
+    fn ocr_boxes_finds_the_fixture_values_in_upright_and_exif6_space() {
+        let dir = fixture_dir();
+        let expected_raw = std::fs::read_to_string(dir.join("redact-sample.expected.json"))
+            .expect("redact-sample.expected.json is committed");
+        let expected: Value = serde_json::from_str(&expected_raw).expect("valid expected json");
+        let expected = expected.as_array().expect("expected values array");
+
+        for name in ["redact-sample.png", "redact-sample-rot6.jpg"] {
+            let value = ocr_boxes(&dir.join(name), None).unwrap_or_else(|err| {
+                panic!("{name}: ocr-boxes failed ({err}); build the bridge with ./native-bridge/build.sh")
+            });
+            assert_eq!(value["ok"].as_bool(), Some(true), "{name}: {value}");
+            assert_eq!(value["width"].as_u64(), Some(1200), "{name}: upright width");
+            assert_eq!(value["height"].as_u64(), Some(800), "{name}: upright height");
+
+            let empty = Vec::new();
+            let lines = value["lines"].as_array().unwrap_or(&empty);
+            for entry in expected {
+                let text = entry["text"].as_str().expect("expected text");
+                let words: Vec<&str> = text.split_whitespace().collect();
+                let expected_box = box_from_json(&entry["box"]);
+
+                let mut recognised: Option<[f64; 4]> = None;
+                'search: for line in lines {
+                    let line_words = line["words"].as_array().expect("line words");
+                    for window in line_words.windows(words.len()) {
+                        let joined = window
+                            .iter()
+                            .map(|w| w["text"].as_str().expect("word text"))
+                            .collect::<Vec<_>>()
+                            .join("");
+                        if joined == words.join("") {
+                            let boxes: Vec<[f64; 4]> =
+                                window.iter().map(|w| box_from_json(&w["box"])).collect();
+                            recognised = Some(union_box(&boxes));
+                            break 'search;
+                        }
+                    }
+                }
+
+                let got = recognised
+                    .unwrap_or_else(|| panic!("{name}: words of {text:?} were not recognised"));
+                let ratio = intersection_over_expected(expected_box, got);
+                assert!(
+                    ratio >= 0.6,
+                    "{name}: {text:?} overlap {ratio:.3} (expected {expected_box:?}, got {got:?})"
+                );
+            }
+        }
     }
 }
