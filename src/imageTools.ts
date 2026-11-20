@@ -21,6 +21,7 @@ export const IMAGE_TOOL_TOKENS = [
   "SCALE_1080P",
   "SCALE_720P",
   "SCALE_1MB",
+  "REDACT",
   "PALETTE",
   "STRIP_EXIF",
 ] as const;
@@ -66,6 +67,7 @@ const SUFFIXES: Record<ImageToolToken, string> = {
   SCALE_1080P: "-1080p",
   SCALE_720P: "-720p",
   SCALE_1MB: "-under-1mb",
+  REDACT: "-redacted",
   PALETTE: "-palette",
   STRIP_EXIF: "-clean",
 };
@@ -104,7 +106,7 @@ export type ToolEntry =
 
 /**
  * First page of the Tools face, in the order of the original FLIP:
- * Crop, Rotate, Scale, Background, Palette, EXIF, ZIP. Entries the selection cannot use are omitted.
+ * Crop, Rotate, Scale, Background, Redact, Palette, EXIF, ZIP. Entries the selection cannot use are omitted.
  */
 export function buildToolEntries(
   toolActions: readonly string[] | undefined,
@@ -119,6 +121,7 @@ export function buildToolEntries(
     if (tokens.length > 0) entries.push({ kind: "group", id: group.id, tokens: [...tokens] });
   }
   if (compatibleFormats.includes("REMOVE_BG")) entries.push({ kind: "leaf", token: "REMOVE_BG" });
+  if (available.has("REDACT")) entries.push({ kind: "leaf", token: "REDACT" });
   if (available.has("PALETTE")) entries.push({ kind: "leaf", token: "PALETTE" });
   if (available.has("STRIP_EXIF")) entries.push({ kind: "leaf", token: "STRIP_EXIF" });
   if (compatibleFormats.includes("ZIP") || batchActions.includes("ZIP")) {

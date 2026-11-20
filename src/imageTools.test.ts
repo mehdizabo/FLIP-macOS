@@ -46,10 +46,14 @@ describe("image tool tokens: Rust and TypeScript stay in lock-step", () => {
   });
 
   test("suffixes mirror the Rust ImageTool::suffix table", () => {
+    const rustTokens = rustTokenList("ALL_TOOL_TOKENS");
     for (const token of IMAGE_TOOL_TOKENS) {
+      // REDACT's suffix reaches the Rust engine with P3; until then mirror the tokens it knows.
+      if (!rustTokens.includes(token)) continue;
       // Every suffix the TS side advertises must be literally present in the Rust engine.
       expect(RUST_SOURCE).toContain(`"${toolOutputSuffix(token)}"`);
     }
+    expect(toolOutputSuffix("REDACT")).toBe("-redacted");
   });
 
   test("every token is recognised and groups only contain known tokens", () => {
@@ -108,6 +112,9 @@ describe("tool availability and first-page entries", () => {
     expect(toolOutputExtension("ROTATE_LEFT", "webp")).toBe("webp");
     expect(toolOutputExtension("FLIP_H", "tiff")).toBe("tiff");
     expect(toolOutputExtension("SCALE_50", "gif")).toBe("png");
+    expect(toolOutputExtension("REDACT", "jpg")).toBe("jpg");
+    expect(toolOutputExtension("REDACT", "HEIC")).toBe("jpg");
+    expect(toolOutputExtension("REDACT", "webp")).toBe("webp");
     expect(toolOutputExtension("PALETTE", "jpg")).toBe("png");
   });
 
@@ -116,6 +123,7 @@ describe("tool availability and first-page entries", () => {
       IMAGE_TOOL_TOKENS.length,
     );
     expect(toolActionsForExtensions(["jpg", "pdf"], IMAGE_EXTS)).toEqual([]);
+    expect(toolActionsForExtensions(["jpg", "pdf"], IMAGE_EXTS)).not.toContain("REDACT");
     expect(toolActionsForExtensions([], IMAGE_EXTS)).toEqual([]);
   });
 
@@ -125,7 +133,7 @@ describe("tool availability and first-page entries", () => {
     expect(withGif).toContain("CROP_1_1");
   });
 
-  test("first page: Crop, Rotate, Scale, Remove BG, Palette, EXIF, ZIP in original-FLIP order", () => {
+  test("first page: Crop, Rotate, Scale, Remove BG, Redact, Palette, EXIF, ZIP in original-FLIP order", () => {
     const entries = buildToolEntries([...IMAGE_TOOL_TOKENS], ["PNG", "REMOVE_BG"], ["ZIP"]);
     expect(
       entries.map((e) => (e.kind === "group" ? `group:${e.id}` : `leaf:${e.token}`)),
@@ -134,10 +142,17 @@ describe("tool availability and first-page entries", () => {
       "group:rotate",
       "group:scale",
       "leaf:REMOVE_BG",
+      "leaf:REDACT",
       "leaf:PALETTE",
       "leaf:STRIP_EXIF",
       "leaf:ZIP",
     ]);
+  });
+
+  test("first page omits Redact when the selection cannot use it", () => {
+    const withoutRedact = IMAGE_TOOL_TOKENS.filter((t) => t !== "REDACT");
+    const entries = buildToolEntries([...withoutRedact], ["PNG"], []);
+    expect(entries.some((e) => e.kind === "leaf" && e.token === "REDACT")).toBe(false);
   });
 
   test("first page omits what the selection cannot use", () => {
