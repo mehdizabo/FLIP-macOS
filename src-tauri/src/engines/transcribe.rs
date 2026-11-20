@@ -43,6 +43,11 @@ const WHISPER_TIMEOUT_SECS: u64 = 4 * 60 * 60;
 /// Pause between checks on the running whisper-cli child (also the cancel reaction time).
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// Peak level (dB) at or below which the decoded audio counts as silence. Whisper invents text for
+/// silent input (measured with whisper.cpp 1.9.5: the word "you"), and none of its flags removes
+/// that, so such files are refused before whisper-cli runs.
+const SILENCE_PEAK_DB: f64 = -50.0;
+
 /// Decode `source` with ffmpeg, run whisper-cli, write the transcript to `out_txt`. Errors: `EngineError`.
 pub fn transcribe(
     source: &Path,
@@ -63,6 +68,11 @@ pub fn transcribe(
 
     let result: Result<(), EngineError> = (|| {
         decode_to_wav(source, &wav, tools.ffmpeg, cancel, unit_progress)?;
+        if peak_level_db(tools.ffmpeg, &wav, cancel)?.is_some_and(|peak| peak <= SILENCE_PEAK_DB) {
+            return Err(EngineError::ConversionFailed(
+                "No speech was recognised in this file. Nothing was written.".to_string(),
+            ));
+        }
         run_whisper(&out_prefix, &wav, tools, cancel, unit_progress)?;
 
         let raw = std::fs::read_to_string(&transcript_file).map_err(|e| {
@@ -123,6 +133,38 @@ fn decode_to_wav(
         .map_err(ffmpeg_error)?;
     unit_progress(30);
     Ok(())
+}
+
+/// Highest sample level of `wav` in dB, from ffmpeg's `volumedetect`. `None` when it cannot be
+/// measured: the check is a safeguard, so whisper-cli still gets the file in that case.
+fn peak_level_db(
+    ffmpeg: &Path,
+    wav: &Path,
+    cancel: &Arc<AtomicBool>,
+) -> Result<Option<f64>, EngineError> {
+    let args = vec![
+        "-hide_banner".to_string(),
+        "-nostdin".to_string(),
+        "-i".to_string(),
+        wav.to_string_lossy().into_owned(),
+        "-af".to_string(),
+        "volumedetect".to_string(),
+        "-f".to_string(),
+        "null".to_string(),
+        "-".to_string(),
+    ];
+    match bridge::run_external_command(ffmpeg, &args, None, FFMPEG_TIMEOUT_SECS, Some(cancel)) {
+        Ok((_, stderr)) => Ok(parse_max_volume(&stderr)),
+        Err(BridgeError::Cancelled) => Err(EngineError::Cancelled),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The `max_volume: -12.3 dB` value of ffmpeg's `volumedetect` report (`-inf` for pure silence).
+fn parse_max_volume(report: &str) -> Option<f64> {
+    let line = report.lines().find(|l| l.contains("max_volume:"))?;
+    let value = line.split("max_volume:").nth(1)?.trim().trim_end_matches("dB");
+    value.trim().parse::<f64>().ok()
 }
 
 fn ffmpeg_error(err: BridgeError) -> EngineError {
@@ -329,10 +371,22 @@ mod tests {
     }
 
     fn fake_ffmpeg(args_log: Option<&Path>) -> String {
+        fake_ffmpeg_with_peak(args_log, Some("-12.0"))
+    }
+
+    /// A fake ffmpeg: decoding writes a stub WAV to its last argument; the `volumedetect` call
+    /// prints the given peak level (nothing at all for `None`) and writes no file. Calls are logged
+    /// in append mode so a test can see every invocation.
+    fn fake_ffmpeg_with_peak(args_log: Option<&Path>, peak_db: Option<&str>) -> String {
         let log = args_log
-            .map(|p| format!("printf '%s\\n' \"$@\" > '{}'\n", p.display()))
+            .map(|p| format!("printf '%s\\n' \"$@\" >> '{}'\n", p.display()))
             .unwrap_or_default();
-        format!("#!/bin/sh\n{log}for last do :; done\nprintf 'RIFFfake' > \"$last\"\n")
+        let report = peak_db
+            .map(|db| format!("printf '[Parsed_volumedetect_0 @ 0x0] max_volume: {db} dB\\n' >&2\n"))
+            .unwrap_or_default();
+        format!(
+            "#!/bin/sh\n{log}case \"$*\" in\n  *volumedetect*)\n{report}    exit 0 ;;\nesac\nfor last do :; done\nprintf 'RIFFfake' > \"$last\"\n"
+        )
     }
 
     fn fake_whisper_writing(content_file: &Path) -> String {
@@ -653,5 +707,61 @@ printf 'Testo.\n' > "$prefix.txt"
         let path = model_path();
         assert!(path.ends_with(Path::new("Library/Application Support/FLIP/models/ggml-small.bin")));
         assert_eq!(path.file_name().and_then(|n| n.to_str()), Some(MODEL_FILE_NAME));
+    }
+
+    #[test]
+    fn silent_audio_is_refused_before_whisper_runs() {
+        let e = env();
+        let ffmpeg = fake_tool(&e.bin, "ffmpeg", &fake_ffmpeg_with_peak(None, Some("-91.0")));
+        let ran = e.work.parent().unwrap().join("whisper-ran");
+        let whisper = fake_tool(
+            &e.bin,
+            "whisper-cli",
+            &format!("#!/bin/sh\ntouch '{}'\n", ran.display()),
+        );
+        let tools = TranscribeTools {
+            whisper_cli: &whisper,
+            model: &e.model,
+            ffmpeg: &ffmpeg,
+        };
+        let err = transcribe(&e.source, &e.out, &tools, &e.work, &no_cancel(), &|_| {}).unwrap_err();
+
+        assert!(err.to_string().contains("No speech was recognised"), "{err}");
+        assert!(!ran.exists(), "whisper-cli must not run on silent audio");
+        assert!(!e.out.exists());
+        assert!(!e.work.join("transcribe-input.wav").exists());
+    }
+
+    #[test]
+    fn quiet_speech_and_unmeasurable_audio_still_reach_whisper() {
+        for peak in [Some("-40.0"), None] {
+            let e = env();
+            let ffmpeg = fake_tool(&e.bin, "ffmpeg", &fake_ffmpeg_with_peak(None, peak));
+            let content = e.work.parent().unwrap().join("whisper-out.txt");
+            fs::write(&content, "Parlato.\n").unwrap();
+            let whisper = fake_tool(&e.bin, "whisper-cli", &fake_whisper_writing(&content));
+            let tools = TranscribeTools {
+                whisper_cli: &whisper,
+                model: &e.model,
+                ffmpeg: &ffmpeg,
+            };
+            transcribe(&e.source, &e.out, &tools, &e.work, &no_cancel(), &|_| {}).unwrap();
+            assert_eq!(fs::read_to_string(&e.out).unwrap(), "Parlato.\n", "peak {peak:?}");
+        }
+    }
+
+    #[test]
+    fn parse_max_volume_reads_ffmpeg_reports() {
+        assert_eq!(
+            parse_max_volume("[Parsed_volumedetect_0 @ 0x6000] max_volume: -91.0 dB\n"),
+            Some(-91.0)
+        );
+        assert_eq!(
+            parse_max_volume("n_samples: 1\nmean_volume: -20.1 dB\nmax_volume: -3.5 dB\n"),
+            Some(-3.5)
+        );
+        assert_eq!(parse_max_volume("max_volume: -inf dB"), Some(f64::NEG_INFINITY));
+        assert_eq!(parse_max_volume("no report here"), None);
+        assert_eq!(parse_max_volume("max_volume: loud dB"), None);
     }
 }
