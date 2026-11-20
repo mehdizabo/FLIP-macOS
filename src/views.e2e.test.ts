@@ -1075,8 +1075,9 @@ function installDomShim(): { document: ShimDocument; window: any; root: HTMLElem
     clearTimeout: globalThis.clearTimeout.bind(globalThis),
     setInterval: globalThis.setInterval.bind(globalThis),
     clearInterval: globalThis.clearInterval.bind(globalThis),
+    // Like a browser, frame timestamps share the `performance.now()` timeline that pointer events use.
     requestAnimationFrame: (cb: (t: number) => void) =>
-      globalThis.setTimeout(() => cb(Date.now()), 0),
+      globalThis.setTimeout(() => cb(performance.now()), 0),
     cancelAnimationFrame: (id: number) => globalThis.clearTimeout(id),
     addEventListener: winTarget.addEventListener.bind(winTarget),
     removeEventListener: winTarget.removeEventListener.bind(winTarget),
@@ -1166,6 +1167,21 @@ interface TauriHarness {
     cmd: string,
     fn: (args: Record<string, any>) => unknown | Promise<unknown>,
   ) => void;
+}
+
+/** Controllable `performance.now()`: lets a test state how much time passed between pointer events. */
+function installAdvanceableClock(): { advance: (ms: number) => void; restore: () => void } {
+  const original = performance.now;
+  let skewMs = 0;
+  performance.now = () => original.call(performance) + skewMs;
+  return {
+    advance: (ms: number) => {
+      skewMs += ms;
+    },
+    restore: () => {
+      performance.now = original;
+    },
+  };
 }
 
 function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): TauriHarness {
@@ -2304,6 +2320,12 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     const shellEl = root.querySelector<HTMLElement>("#wheel-shell")!;
     const hubTetherEl = root.querySelector<HTMLElement>("#wheel-hub-tether")!;
 
+    // A pointer event closer than ~2 ms to the previous physics step is folded into the next step, so
+    // state that one frame has passed since mount before expecting an immediate reaction.
+    const clock = installAdvanceableClock();
+    cleanups.push(clock.restore);
+    clock.advance(20);
+
     // Trigger active pointer move so tether opacity > 0 and physics rAF is scheduled
     harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });
     expect(Number(hubTetherEl.style.opacity || "0")).toBeGreaterThan(0);
@@ -2356,6 +2378,11 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     const groupsBefore = Array.from(root.querySelectorAll<HTMLElement>(".wheel-sector-group"));
     expect(pucksBefore.length).toBe(8);
     expect(groupsBefore.length).toBe(8);
+
+    // One frame passes since the last physics step (see the clock note in the wheel:escape test).
+    const clock = installAdvanceableClock();
+    cleanups.push(clock.restore);
+    clock.advance(20);
 
     // Hover slot 2 before deferred get_preferences resolves
     harness.emitEvent("wheel:pointer-move", { localX: 344, localY: 220 });

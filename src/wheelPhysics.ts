@@ -11,6 +11,28 @@ export const REST_SCALE = 1.0;
 export const PROX_MAX_SCALE = 1.09;
 export const ACTIVE_SCALE = 1.18;
 
+/** Step assumed for the first pointer event after the physics loop was idle (no previous timestamp). */
+export const FIRST_STEP_DT_SEC = 0.016;
+/** Longest interval a single spring step may integrate; longer gaps (stalls) are clamped. */
+export const MAX_STEP_DT_SEC = 0.032;
+/** Pointer events closer together than this are folded into the next step instead of stepping early. */
+export const MIN_EVENT_STEP_SEC = 0.002;
+
+/**
+ * How much simulated time a pointer event may add to the spring field, or `null` to skip the step.
+ *
+ * The spring must never run faster than the real clock: with a 1 kHz pointing device, stepping a fixed
+ * minimum on every event would integrate several times the elapsed time. When the previous step is too
+ * recent the event returns `null` and the caller leaves its timestamp untouched, so the elapsed time
+ * accumulates into the next step (the next event or animation frame).
+ */
+export function resolveEventStepDt(lastStepMs: number, nowMs: number): number | null {
+  if (!(lastStepMs > 0)) return FIRST_STEP_DT_SEC;
+  const elapsedSec = (nowMs - lastStepMs) / 1000;
+  if (!(elapsedSec >= MIN_EVENT_STEP_SEC)) return null;
+  return Math.min(MAX_STEP_DT_SEC, elapsedSec);
+}
+
 const SETTLE_POS_EPS = 0.002;
 const SETTLE_VEL_EPS = 0.01;
 const TETHER_INNER_DEADZONE = 20;

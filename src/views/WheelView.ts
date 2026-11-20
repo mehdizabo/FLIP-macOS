@@ -64,6 +64,7 @@ import {
 } from "../wheelGeometry";
 import {
   createWheelSpringField,
+  resolveEventStepDt,
   type WheelSpringField,
   type WheelSpringStepResult,
 } from "../wheelPhysics";
@@ -531,8 +532,13 @@ export function mountWheelView(root: HTMLElement): () => void {
       return;
     }
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
-    const rawDt = physicsLastTs > 0 ? (now - physicsLastTs) / 1000 : 0.016;
-    const dt = rawDt < 0.002 ? 0.006 : Math.min(0.032, rawDt);
+    const dt = resolveEventStepDt(physicsLastTs, now);
+    if (dt === null) {
+      // Too soon after the previous step: keep `physicsLastTs` so the elapsed time accumulates into
+      // the next step instead of letting the spring outrun the clock on high-rate pointers.
+      schedulePhysicsLoop();
+      return;
+    }
     physicsLastTs = now;
     const initial = springField.step(dt);
     applySpringFrame(initial);

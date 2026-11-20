@@ -4,10 +4,14 @@ import {
   type BubbleCenter,
   computeMagneticTarget,
   createWheelSpringField,
+  FIRST_STEP_DT_SEC,
   MAGNETIC_MAX_PULL,
   MAGNETIC_RADIUS,
+  MAX_STEP_DT_SEC,
+  MIN_EVENT_STEP_SEC,
   PROX_MAX_SCALE,
   REST_SCALE,
+  resolveEventStepDt,
 } from "./wheelPhysics";
 
 const HUB_CENTER: BubbleCenter = { cx: 220, cy: 220 };
@@ -297,5 +301,71 @@ describe("createWheelSpringField", () => {
       expect(b.lightY).toBe(20);
       expect(b.lightAngleDeg).toBe(-45);
     }
+  });
+});
+
+describe("resolveEventStepDt (pointer events must not outrun the clock)", () => {
+  test("the first step after idle assumes one frame; a missing or invalid timestamp counts as idle", () => {
+    expect(resolveEventStepDt(0, 5000)).toBe(FIRST_STEP_DT_SEC);
+    expect(resolveEventStepDt(Number.NaN, 5000)).toBe(FIRST_STEP_DT_SEC);
+    expect(resolveEventStepDt(-1, 5000)).toBe(FIRST_STEP_DT_SEC);
+  });
+
+  test("events closer than the minimum interval are skipped, not rounded up to a fixed step", () => {
+    const last = 1000;
+    expect(resolveEventStepDt(last, last)).toBeNull();
+    expect(resolveEventStepDt(last, last + 0.1)).toBeNull();
+    expect(resolveEventStepDt(last, last + MIN_EVENT_STEP_SEC * 1000 - 0.01)).toBeNull();
+    const dt = resolveEventStepDt(last, last + 4);
+    expect(dt).not.toBeNull();
+    expect(dt!).toBeCloseTo(0.004, 10);
+  });
+
+  test("a stall is clamped to the maximum step; clock skew and NaN never produce a step", () => {
+    expect(resolveEventStepDt(1000, 1000 + 5000)).toBe(MAX_STEP_DT_SEC);
+    expect(resolveEventStepDt(1000, 900)).toBeNull();
+    expect(resolveEventStepDt(1000, Number.NaN)).toBeNull();
+    expect(resolveEventStepDt(1000, Number.POSITIVE_INFINITY)).toBe(MAX_STEP_DT_SEC);
+  });
+
+  test("1000 pointer events within 100 ms integrate at most 100 ms of spring time, without dropping time", () => {
+    const startMs = 1000;
+    let lastStepMs = startMs;
+    let simulatedSec = 0;
+    let steps = 0;
+    for (let i = 1; i <= 1000; i += 1) {
+      const nowMs = startMs + i * 0.1;
+      const dt = resolveEventStepDt(lastStepMs, nowMs);
+      if (dt !== null) {
+        simulatedSec += dt;
+        lastStepMs = nowMs;
+        steps += 1;
+      }
+    }
+    expect(simulatedSec).toBeLessThanOrEqual(0.1 + 1e-9);
+    expect(simulatedSec).toBeGreaterThan(0.09);
+    expect(steps).toBeLessThanOrEqual(Math.ceil(0.1 / MIN_EVENT_STEP_SEC));
+  });
+
+  test("the spring field driven by a 1 kHz pointer converges exactly like one driven at the frame rate", () => {
+    const centers = createEightBubbleCenters();
+    const drive = (eventIntervalMs: number): { tx: number; scale: number } => {
+      const field = createWheelSpringField(centers, HUB_CENTER);
+      field.setPointer(330, 210, 2);
+      let lastStepMs = 1000;
+      let frame = field.step(FIRST_STEP_DT_SEC);
+      for (let t = eventIntervalMs; t <= 300; t += eventIntervalMs) {
+        const dt = resolveEventStepDt(lastStepMs, 1000 + t);
+        if (dt !== null) {
+          frame = field.step(dt);
+          lastStepMs = 1000 + t;
+        }
+      }
+      return { tx: frame.bubbles[2].tx, scale: frame.bubbles[2].scale };
+    };
+    const slow = drive(8);
+    const fast = drive(0.1);
+    expect(Math.abs(fast.tx - slow.tx)).toBeLessThan(0.5);
+    expect(Math.abs(fast.scale - slow.scale)).toBeLessThan(0.01);
   });
 });
