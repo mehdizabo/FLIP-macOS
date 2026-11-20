@@ -2,6 +2,12 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { emit, listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { normalizeLanguage } from "./i18n";
+import {
+  isImageToolToken,
+  toolActionsForExtensions,
+  toolOutputExtension,
+  toolOutputSuffix,
+} from "./imageTools";
 import type {
   AppPreferences,
   ConversionCompletePayload,
@@ -402,6 +408,7 @@ export function inspectFilesLocally(
       files: [],
       compatibleFormats: [],
       batchActions: [],
+      toolActions: [],
       availabilityMessage: "Drop local files here",
       family: null,
     };
@@ -446,6 +453,7 @@ export function inspectFilesLocally(
     files: paths,
     compatibleFormats,
     batchActions,
+    toolActions: toolActionsForExtensions(exts, IMAGE_EXTS),
     availabilityMessage,
     family: primaryFamily,
   };
@@ -486,6 +494,7 @@ export async function getWheelState(): Promise<WheelStatePayload> {
         files,
         compatibleFormats: inspected.compatibleFormats,
         batchActions: inspected.batchActions,
+        toolActions: inspected.toolActions,
         availabilityMessage: inspected.availabilityMessage,
         family: inspected.family,
       };
@@ -506,6 +515,7 @@ export async function getWheelState(): Promise<WheelStatePayload> {
         files,
         compatibleFormats: inspected.compatibleFormats,
         batchActions: inspected.batchActions,
+        toolActions: inspected.toolActions,
         availabilityMessage: inspected.availabilityMessage,
         family: inspected.family,
       };
@@ -533,6 +543,7 @@ export async function openWheelMode(mode: WheelMode, files: string[]): Promise<W
       files: [...files],
       compatibleFormats: inspected.compatibleFormats,
       batchActions: inspected.batchActions,
+      toolActions: inspected.toolActions,
       availabilityMessage: inspected.availabilityMessage,
       family: inspected.family,
     };
@@ -561,6 +572,7 @@ export async function inspectFiles(paths: string[]): Promise<InspectFilesResult>
     files: raw.files ?? paths,
     compatibleFormats: raw.compatibleFormats ?? raw.formats ?? [],
     batchActions: raw.batchActions ?? [],
+    toolActions: raw.toolActions ?? [],
     availabilityMessage: raw.availabilityMessage ?? "",
     family: raw.family ?? null,
   };
@@ -644,6 +656,9 @@ export async function executeConversion(
           let out: string;
           if (fmt === "UNZIP") {
             out = `${dirname(src)}/${stem}`;
+          } else if (isImageToolToken(fmt)) {
+            const token = fmt.toUpperCase() as Parameters<typeof toolOutputSuffix>[0];
+            out = `${dirname(src)}/${stem}${toolOutputSuffix(token)}.${toolOutputExtension(token, srcExt)}`;
           } else if (fmt === "REMOVE_BG") {
             out = srcExt === "png" ? `${dirname(src)}/${stem} 2.png` : `${dirname(src)}/${stem}.png`;
           } else if (fmt === "OPTIMIZE_PDF") {

@@ -148,6 +148,8 @@ export interface InspectFilesResult {
   files: string[];
   compatibleFormats: string[];
   batchActions: string[];
+  /** Image tool tokens (crop, rotate, scale, palette, ...) valid for every selected file. */
+  toolActions?: string[];
   availabilityMessage: string;
   family?: FormatFamily | null;
 }
@@ -167,6 +169,7 @@ export interface WheelStatePayload {
   targetFolder: string;
   compatibleFormats: string[];
   batchActions: string[];
+  toolActions?: string[];
   originX: number;
   originY: number;
   availabilityMessage?: string;

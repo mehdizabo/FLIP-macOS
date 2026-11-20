@@ -111,6 +111,7 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
         target_folder: "/tmp".into(),
         compatible_formats: vec!["JPG".into()],
         batch_actions: vec![],
+        tool_actions: vec![],
         origin_x: 220.0,
         origin_y: 220.0,
         availability_message: String::new(),

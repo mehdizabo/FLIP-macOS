@@ -1,4 +1,5 @@
-import { t } from "./i18n";
+import { t, type TranslationKey } from "./i18n";
+import { isImageToolToken, type ImageToolToken, type ToolGroupId } from "./imageTools";
 
 export interface FormatMeta {
   shortLabel: string;
@@ -147,10 +148,121 @@ export const UI_ICONS = {
     `<g ${STROKE_ATTRS}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 15v-5"/><path d="M9.5 12.5L12 10l2.5 2.5"/></g>`,
     18,
   ),
+  tools: svg(
+    `<g ${STROKE_ATTRS}><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.4 2.4-2.1-.5-.5-2.1z"/></g>`,
+    14,
+  ),
+  crop: svg(
+    `<g ${STROKE_ATTRS}><path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M2 6h14a2 2 0 0 1 2 2v14"/></g>`,
+    18,
+  ),
+  rotateRight: svg(
+    `<g ${STROKE_ATTRS}><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></g>`,
+    18,
+  ),
+  rotateLeft: svg(
+    `<g ${STROKE_ATTRS}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></g>`,
+    18,
+  ),
+  rotate180: svg(
+    `<g ${STROKE_ATTRS}><path d="M4 9a8 8 0 0 1 14-3"/><path d="M18 3v3h-3"/><path d="M20 15a8 8 0 0 1-14 3"/><path d="M6 21v-3h3"/></g>`,
+    18,
+  ),
+  flipH: svg(
+    `<g ${STROKE_ATTRS}><path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3"/><path d="M16 3h3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-3"/><path d="M12 2v2M12 8v2M12 14v2M12 20v2"/></g>`,
+    18,
+  ),
+  flipV: svg(
+    `<g ${STROKE_ATTRS}><path d="M3 8V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3"/><path d="M3 16v3a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/><path d="M2 12h2M8 12h2M14 12h2M20 12h2"/></g>`,
+    18,
+  ),
+  scale: svg(
+    `<g ${STROKE_ATTRS}><path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/></g>`,
+    18,
+  ),
+  palette: svg(
+    `<g ${STROKE_ATTRS}><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.43-.18-.83-.44-1.12-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.55-2.5 5.55-5.55C21.97 6.01 17.46 2 12 2z"/><circle cx="6.5" cy="12.5" r="1" fill="currentColor"/><circle cx="8.5" cy="7.5" r="1" fill="currentColor"/><circle cx="13.5" cy="6.5" r="1" fill="currentColor"/><circle cx="17.5" cy="10.5" r="1" fill="currentColor"/></g>`,
+    18,
+  ),
+  exif: svg(
+    `<g ${STROKE_ATTRS}><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/><path d="M4 4l16 16"/></g>`,
+    18,
+  ),
 };
+
+type ToolIconKey =
+  | "crop"
+  | "rotateRight"
+  | "rotateLeft"
+  | "rotate180"
+  | "flipH"
+  | "flipV"
+  | "scale"
+  | "palette"
+  | "exif";
+
+interface ToolVisual {
+  icon: ToolIconKey;
+  shortLabel: string;
+  accent: string;
+}
+
+/** Wheel look of every image-tool token (see `imageTools.ts`). Short labels are language neutral. */
+const TOOL_VISUALS: Record<ImageToolToken, ToolVisual> = {
+  CROP_9_16: { icon: "crop", shortLabel: "9:16", accent: "#FF9F0A" },
+  CROP_4_5: { icon: "crop", shortLabel: "4:5", accent: "#FF9F0A" },
+  CROP_1_1: { icon: "crop", shortLabel: "1:1", accent: "#FF9F0A" },
+  CROP_16_9: { icon: "crop", shortLabel: "16:9", accent: "#FF9F0A" },
+  ROTATE_RIGHT: { icon: "rotateRight", shortLabel: "90° R", accent: "#0A84FF" },
+  ROTATE_LEFT: { icon: "rotateLeft", shortLabel: "90° L", accent: "#0A84FF" },
+  ROTATE_180: { icon: "rotate180", shortLabel: "180°", accent: "#0A84FF" },
+  FLIP_H: { icon: "flipH", shortLabel: "Flip H", accent: "#0A84FF" },
+  FLIP_V: { icon: "flipV", shortLabel: "Flip V", accent: "#0A84FF" },
+  SCALE_50: { icon: "scale", shortLabel: "50%", accent: "#30D158" },
+  SCALE_25: { icon: "scale", shortLabel: "25%", accent: "#30D158" },
+  SCALE_1080P: { icon: "scale", shortLabel: "1080p", accent: "#30D158" },
+  SCALE_720P: { icon: "scale", shortLabel: "720p", accent: "#30D158" },
+  SCALE_1MB: { icon: "scale", shortLabel: "<1 MB", accent: "#30D158" },
+  PALETTE: { icon: "palette", shortLabel: "Palette", accent: "#BF5AF2" },
+  STRIP_EXIF: { icon: "exif", shortLabel: "No EXIF", accent: "#64D2FF" },
+};
+
+const TOOL_GROUP_VISUALS: Record<ToolGroupId, { icon: ToolIconKey; accent: string }> = {
+  crop: { icon: "crop", accent: "#FF9F0A" },
+  rotate: { icon: "rotateRight", accent: "#0A84FF" },
+  scale: { icon: "scale", accent: "#30D158" },
+};
+
+export function toolGroupKey(id: ToolGroupId): TranslationKey {
+  return `wheel.toolGroup.${id}` as TranslationKey;
+}
+
+export function toolTitleKey(token: ImageToolToken): TranslationKey {
+  return `wheel.tool.${token.toLowerCase()}` as TranslationKey;
+}
+
+/** Look of a tool group slot (Crop, Rotate, Scale) on the Tools face. */
+export function getToolGroupMeta(id: ToolGroupId, lang = "en"): FormatMeta {
+  const visual = TOOL_GROUP_VISUALS[id];
+  return {
+    shortLabel: t(lang, toolGroupKey(id)),
+    title: t(lang, toolGroupKey(id)),
+    accent: visual.accent,
+    iconSvg: UI_ICONS[visual.icon],
+  };
+}
 
 export function getFormatMeta(format: string, lang = "en"): FormatMeta {
   const key = format.trim().toUpperCase();
+  if (isImageToolToken(key)) {
+    const visual = TOOL_VISUALS[key];
+    return {
+      shortLabel: visual.shortLabel,
+      title: t(lang, toolTitleKey(key)),
+      accent: visual.accent,
+      iconSvg: UI_ICONS[visual.icon],
+    };
+  }
   switch (key) {
     case "REMOVE_BG":
       return {

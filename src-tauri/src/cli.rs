@@ -84,8 +84,17 @@ USAGE:\n  \
   flip quit                                    Quit running FLIP menu bar instance\n  \
   flip --help                                  Show this help message\n  \
   flip --version                               Show version information\n\n\
+IMAGE TOOLS (pass to --to; the result keeps the image's format and gets a suffix):\n  \
+  CROP_9_16 CROP_4_5 CROP_1_1 CROP_16_9        Centre crop to an aspect ratio\n  \
+  ROTATE_RIGHT ROTATE_LEFT ROTATE_180          Rotate\n  \
+  FLIP_H FLIP_V                                Mirror horizontally / vertically\n  \
+  SCALE_50 SCALE_25 SCALE_1080P SCALE_720P     Resize (1080P/720P set the shorter side, never upscale)\n  \
+  SCALE_1MB                                    Shrink until the file is under 1 MB\n  \
+  PALETTE                                      Colour palette strip with hex codes\n  \
+  STRIP_EXIF                                   Remove EXIF/GPS and other metadata\n\n\
 EXAMPLES:\n  \
   flip convert photo.heic --to PNG,JPG\n  \
+  flip convert photo.jpg --to CROP_1_1,SCALE_1080P\n  \
   flip new md --in ~/Desktop\n  \
   flip new folder --in ~/Documents --no-rename\n  \
   flip wheel --mode convert photo.heic\n  \

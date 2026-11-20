@@ -188,6 +188,19 @@ pub fn tools_for_ext(ext: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// Tool tokens that apply to *every* selected file (empty as soon as one file is not an image).
+pub fn tools_for_paths<P: AsRef<Path>>(paths: &[P]) -> Vec<&'static str> {
+    let mut shared: Option<Vec<&'static str>> = None;
+    for path in paths {
+        let tools = tools_for_ext(&ext_lower(path.as_ref()));
+        shared = Some(match shared {
+            None => tools,
+            Some(prev) => prev.into_iter().filter(|t| tools.contains(t)).collect(),
+        });
+    }
+    shared.unwrap_or_default()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Pixel geometry
 // ---------------------------------------------------------------------------------------------
@@ -834,6 +847,21 @@ mod tests {
             assert!(!tools_for_ext(ext).contains(&"STRIP_EXIF"), "{ext}");
             assert!(tools_for_ext(ext).contains(&"PALETTE"), "{ext}");
         }
+    }
+
+    #[test]
+    fn tools_for_a_selection_are_the_intersection_over_all_files() {
+        let none: [&str; 0] = [];
+        assert!(tools_for_paths(&none).is_empty());
+        let two_photos = ["/a/x.jpg", "/a/y.png"];
+        let shared = tools_for_paths(&two_photos);
+        assert!(shared.contains(&"CROP_1_1") && shared.contains(&"STRIP_EXIF"));
+        // GIF has no metadata to strip, so the shared list loses it but keeps the rest.
+        let with_gif = ["/a/x.jpg", "/a/anim.gif"];
+        let shared = tools_for_paths(&with_gif);
+        assert!(shared.contains(&"ROTATE_RIGHT") && !shared.contains(&"STRIP_EXIF"));
+        // One non-image empties the selection's tools entirely.
+        assert!(tools_for_paths(&["/a/x.jpg", "/a/doc.pdf"]).is_empty());
     }
 
     #[test]

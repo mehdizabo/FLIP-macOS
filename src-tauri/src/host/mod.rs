@@ -165,6 +165,9 @@ pub struct WheelStatePayload {
     pub target_folder: String,
     pub compatible_formats: Vec<String>,
     pub batch_actions: Vec<String>,
+    /// Image tool tokens (crop, rotate, scale, palette, ...) that apply to every selected file.
+    #[serde(default)]
+    pub tool_actions: Vec<String>,
     pub origin_x: f64,
     pub origin_y: f64,
     pub availability_message: String,
@@ -177,6 +180,9 @@ pub struct InspectFilesResult {
     pub files: Vec<String>,
     pub compatible_formats: Vec<String>,
     pub batch_actions: Vec<String>,
+    /// Image tool tokens (crop, rotate, scale, palette, ...) that apply to every selected file.
+    #[serde(default)]
+    pub tool_actions: Vec<String>,
     pub availability_message: String,
     pub family: Option<FormatFamily>,
 }
@@ -229,6 +235,7 @@ impl HostState {
                     target_folder: fallback,
                     compatible_formats: Vec::new(),
                     batch_actions: Vec::new(),
+                    tool_actions: Vec::new(),
                     origin_x: (WHEEL_WINDOW_SIZE / 2) as f64,
                     origin_y: (WHEEL_WINDOW_SIZE / 2) as f64,
                     availability_message: "Drop local files here".to_string(),
@@ -360,6 +367,7 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
             files: Vec::new(),
             compatible_formats: Vec::new(),
             batch_actions: Vec::new(),
+            tool_actions: Vec::new(),
             availability_message: "Drop local files here".to_string(),
             family: None,
         };
@@ -375,6 +383,10 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
                 .and_then(|p| family_for_ext(&ext_lower(p)));
             let ordered = order_formats(&raw_outputs, family, Some(prefs));
             let batches = batch_actions(&valid);
+            let tool_actions = crate::engines::image_tools::tools_for_paths(&valid)
+                .into_iter()
+                .map(String::from)
+                .collect();
             let msg = availability_message(&valid, &caps);
             InspectFilesResult {
                 files: valid
@@ -383,6 +395,7 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
                     .collect(),
                 compatible_formats: ordered,
                 batch_actions: batches,
+                tool_actions,
                 availability_message: msg,
                 family,
             }
@@ -391,6 +404,7 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
             files: paths.to_vec(),
             compatible_formats: Vec::new(),
             batch_actions: Vec::new(),
+            tool_actions: Vec::new(),
             availability_message: PolicyError::InvalidBatchCount.to_string(),
             family: None,
         },
@@ -398,6 +412,7 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
             files: paths.to_vec(),
             compatible_formats: Vec::new(),
             batch_actions: Vec::new(),
+            tool_actions: Vec::new(),
             availability_message: err.to_string(),
             family: None,
         },
@@ -530,6 +545,7 @@ pub fn present_wheel_at(
             files: Vec::new(),
             compatible_formats: Vec::new(),
             batch_actions: Vec::new(),
+            tool_actions: Vec::new(),
             availability_message: "Drop local files here".to_string(),
             family: None,
         }
@@ -561,6 +577,7 @@ pub fn present_wheel_at(
         target_folder: resolved_folder,
         compatible_formats: inspected.compatible_formats,
         batch_actions: inspected.batch_actions,
+        tool_actions: inspected.tool_actions,
         origin_x,
         origin_y,
         availability_message: inspected.availability_message,

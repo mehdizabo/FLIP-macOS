@@ -280,3 +280,30 @@ fn tools_never_overwrite_an_existing_result_and_reject_files_they_do_not_apply_t
     let no_meta = run(&gif, "STRIP_EXIF");
     assert!(no_meta.error.is_some(), "GIF carries no metadata: the tool does not apply");
 }
+
+#[test]
+fn inspection_offers_tools_only_when_every_selected_file_is_an_image() {
+    use flip_lib::host::inspect_paths_with_prefs;
+    let dir = tempdir().unwrap();
+    let jpg = dir.path().join("a.jpg");
+    let png = dir.path().join("b.png");
+    let pdf = dir.path().join("c.pdf");
+    write_jpeg(&jpg, &gradient(20, 20), 90);
+    gradient(20, 20).save(&png).unwrap();
+    fs::write(&pdf, b"%PDF-1.4\n%%EOF").unwrap();
+    let prefs = AppPreferences::default();
+    let path = |p: &Path| p.to_string_lossy().into_owned();
+
+    let one = inspect_paths_with_prefs(&[path(&jpg)], &prefs);
+    assert!(one.tool_actions.iter().any(|t| t == "CROP_1_1"), "{:?}", one.tool_actions);
+    assert!(one.tool_actions.iter().any(|t| t == "STRIP_EXIF"));
+    assert!(!one.compatible_formats.iter().any(|f| f.starts_with("CROP_")), "tools never leak into the format list");
+
+    let two = inspect_paths_with_prefs(&[path(&jpg), path(&png)], &prefs);
+    assert_eq!(two.tool_actions, one.tool_actions);
+
+    let mixed = inspect_paths_with_prefs(&[path(&jpg), path(&pdf)], &prefs);
+    assert!(mixed.tool_actions.is_empty());
+    assert!(inspect_paths_with_prefs(&[path(&pdf)], &prefs).tool_actions.is_empty());
+    assert!(inspect_paths_with_prefs(&[], &prefs).tool_actions.is_empty());
+}
