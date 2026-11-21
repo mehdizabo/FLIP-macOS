@@ -18,6 +18,7 @@ import type {
   EngineStatus,
   FeedbackKind,
   FormatFamily,
+  HapticIntensity,
   InspectFilesResult,
   NewFileKindInfo,
   NewFileKindsResponse,
@@ -89,11 +90,37 @@ export function formatError(err: unknown): string {
   }
 }
 
+export function normalizeHapticIntensity(raw?: string | null): HapticIntensity {
+  const cleaned = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  switch (cleaned) {
+    case "light":
+    case "1":
+    case "subtle":
+      return "light";
+    case "medium":
+    case "2":
+      return "medium";
+    case "firm":
+    case "3":
+    case "default":
+      return "firm";
+    case "strong":
+    case "4":
+    case "5":
+    case "max":
+      return "strong";
+    default:
+      return "firm";
+  }
+}
+
 export function defaultPreferences(): AppPreferences {
   return {
     version: 1,
     soundEnabled: true,
     hapticsEnabled: true,
+    hapticIntensity: "firm",
+    auraEnabled: true,
     notificationsEnabled: true,
     dragTrigger: "Down",
     idleShortcut: "Option+Shift+Space",
@@ -238,6 +265,8 @@ function saveMockPrefs(prefs: AppPreferences): void {
   }
 }
 
+const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns", "ico", "svg"]);
+
 let mockWheelState: WheelStatePayload = {
   mode: "convert",
   files: ["/Users/demo/Desktop/vacation-photo.heic"],
@@ -245,9 +274,12 @@ let mockWheelState: WheelStatePayload = {
   targetFolder: "/Users/demo/Desktop",
   compatibleFormats: ["PNG", "JPG", "WEBP", "PDF", "REMOVE_BG", "TIFF", "GIF", "BMP", "ZIP"],
   batchActions: [],
+  toolActions: toolActionsForExtensions(["heic"], IMAGE_EXTS),
   originX: 220,
   originY: 220,
   family: "image",
+  imageWidth: 4032,
+  imageHeight: 3024,
 };
 
 let mockPermissions: PermissionsStatus = {
@@ -268,7 +300,6 @@ let mockQuickActions: QuickActionsStatus = {
 
 let mockCancelRequested = false;
 
-const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "heic", "heif", "avif", "icns", "ico", "svg"]);
 const DATA_EXTS = new Set(["json", "yaml", "yml", "toml", "xml", "csv", "xlsx"]);
 export const AUDIO_NATIVE_EXTS = new Set(["wav", "aiff", "aif", "m4a", "aac", "alac", "caf", "flac", "mp3"]);
 const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff", "aif", "alac", "caf"]);
@@ -413,6 +444,8 @@ export function inspectFilesLocally(
       toolActions: [],
       availabilityMessage: "Drop local files here",
       family: null,
+      imageWidth: null,
+      imageHeight: null,
     };
   }
 
@@ -458,6 +491,8 @@ export function inspectFilesLocally(
     toolActions: toolActionsForExtensions(exts, IMAGE_EXTS),
     availabilityMessage,
     family: primaryFamily,
+    imageWidth: primaryFamily === "image" ? 4032 : null,
+    imageHeight: primaryFamily === "image" ? 3024 : null,
   };
 }
 
@@ -499,6 +534,8 @@ export async function getWheelState(): Promise<WheelStatePayload> {
         toolActions: inspected.toolActions,
         availabilityMessage: inspected.availabilityMessage,
         family: inspected.family,
+        imageWidth: inspected.imageWidth ?? null,
+        imageHeight: inspected.imageHeight ?? null,
       };
     } else if (demo === "new") {
       mockWheelState = {
@@ -507,6 +544,8 @@ export async function getWheelState(): Promise<WheelStatePayload> {
         files: [],
         compatibleFormats: [],
         batchActions: [],
+        imageWidth: null,
+        imageHeight: null,
       };
     } else if (demo === "many") {
       const files = ["/Users/demo/Documents/Quarterly-Report.pdf"];
@@ -520,6 +559,8 @@ export async function getWheelState(): Promise<WheelStatePayload> {
         toolActions: inspected.toolActions,
         availabilityMessage: inspected.availabilityMessage,
         family: inspected.family,
+        imageWidth: inspected.imageWidth ?? null,
+        imageHeight: inspected.imageHeight ?? null,
       };
     } else if (demo === "empty") {
       mockWheelState = {
@@ -529,6 +570,8 @@ export async function getWheelState(): Promise<WheelStatePayload> {
         compatibleFormats: [],
         batchActions: [],
         availabilityMessage: "Drop local files here",
+        imageWidth: null,
+        imageHeight: null,
       };
     }
     return { ...mockWheelState };
@@ -548,6 +591,8 @@ export async function openWheelMode(mode: WheelMode, files: string[]): Promise<W
       toolActions: inspected.toolActions,
       availabilityMessage: inspected.availabilityMessage,
       family: inspected.family,
+      imageWidth: inspected.imageWidth ?? null,
+      imageHeight: inspected.imageHeight ?? null,
     };
     emitMockEvent("wheel:state", mockWheelState);
     return { ...mockWheelState };
@@ -577,6 +622,8 @@ export async function inspectFiles(paths: string[]): Promise<InspectFilesResult>
     toolActions: raw.toolActions ?? [],
     availabilityMessage: raw.availabilityMessage ?? "",
     family: raw.family ?? null,
+    imageWidth: raw.imageWidth ?? null,
+    imageHeight: raw.imageHeight ?? null,
   };
 }
 
@@ -704,6 +751,76 @@ export async function executeConversion(
   return res;
 }
 
+export interface ManualCropRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export async function executeManualCrop(
+  paths: string[],
+  rect: ManualCropRect,
+): Promise<ConversionCompletePayload> {
+  if (!isTauriRuntime()) {
+    mockCancelRequested = false;
+    const steps = [24, 68, 96];
+    for (const pct of steps) {
+      if (mockCancelRequested) {
+        const cancelled: ConversionCompletePayload = {
+          success: false,
+          results: [],
+          error: "Conversion cancelled",
+        };
+        emitMockEvent("conversion:complete", cancelled);
+        return cancelled;
+      }
+      emitMockEvent<ConversionProgressPayload>("conversion:progress", {
+        percent: pct,
+        label: `${basename(paths[0] ?? "image")} → Manual Crop`,
+      });
+      await new Promise((r) => setTimeout(r, 80));
+    }
+
+    const results: ConversionResult[] = [];
+    const prefs = loadMockPrefs();
+    for (const src of paths) {
+      const stem = basename(src).replace(/\.[^.]+$/, "") || "output";
+      const outExt = toolOutputExtension("CROP_1_1", extLower(src));
+      const out = `${dirname(src)}/${stem}-cropped.${outExt}`;
+      results.push({ source: src, format: "CROP_MANUAL", outputs: [out], error: null });
+      prefs.recentConversions.unshift({
+        sourceName: basename(src),
+        targetFormat: "CROP_MANUAL",
+        outputPath: out,
+        timestampUtc: new Date().toISOString(),
+      });
+    }
+    prefs.recentConversions = prefs.recentConversions.slice(0, 10);
+    saveMockPrefs(prefs);
+    const payload: ConversionCompletePayload = { success: true, results, error: null };
+    emitMockEvent("conversion:complete", payload);
+    return payload;
+  }
+
+  const res = await invoke<ConversionCompletePayload | ConversionResult[]>("execute_manual_crop", {
+    paths,
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+  });
+  if (Array.isArray(res)) {
+    const failed = res.find((r) => Boolean(r.error));
+    return {
+      success: !failed,
+      results: res,
+      error: failed?.error ?? null,
+    };
+  }
+  return res;
+}
+
 export async function cancelConversion(): Promise<void> {
   if (!isTauriRuntime()) {
     mockCancelRequested = true;
@@ -795,26 +912,33 @@ function mergePreferredFormats(
 export async function getPreferences(): Promise<AppPreferences> {
   const defaults = defaultPreferences();
   if (!isTauriRuntime()) {
-    const mock = loadMockPrefs();
+    const raw = loadMockPrefs();
     return {
       ...defaults,
-      ...mock,
-      language: normalizeLanguage(mock.language),
-      preferredFormats: mergePreferredFormats(defaults.preferredFormats, mock.preferredFormats),
+      ...raw,
+      auraEnabled: typeof raw.auraEnabled === "boolean" ? raw.auraEnabled : defaults.auraEnabled,
+      hapticIntensity: normalizeHapticIntensity(raw.hapticIntensity),
+      language: normalizeLanguage(raw.language),
+      preferredFormats: mergePreferredFormats(defaults.preferredFormats, raw.preferredFormats),
     };
   }
-  const prefs = await invoke<Partial<AppPreferences>>("get_preferences");
+  const raw = await invoke<Partial<AppPreferences>>("get_preferences");
   return {
     ...defaults,
-    ...prefs,
-    language: normalizeLanguage(prefs.language),
-    preferredFormats: mergePreferredFormats(defaults.preferredFormats, prefs.preferredFormats),
+    ...raw,
+    auraEnabled: typeof raw.auraEnabled === "boolean" ? raw.auraEnabled : defaults.auraEnabled,
+    hapticIntensity: normalizeHapticIntensity(raw.hapticIntensity),
+    language: normalizeLanguage(raw.language),
+    preferredFormats: mergePreferredFormats(defaults.preferredFormats, raw.preferredFormats),
   };
 }
 
 export async function savePreferences(prefs: AppPreferences): Promise<AppPreferences> {
+  const defaults = defaultPreferences();
   const sanitized: AppPreferences = {
     ...prefs,
+    auraEnabled: typeof prefs.auraEnabled === "boolean" ? prefs.auraEnabled : defaults.auraEnabled,
+    hapticIntensity: normalizeHapticIntensity(prefs.hapticIntensity),
     language: normalizeLanguage(prefs.language),
   };
   if (!isTauriRuntime()) {
@@ -822,9 +946,14 @@ export async function savePreferences(prefs: AppPreferences): Promise<AppPrefere
     emitMockEvent("prefs:changed", sanitized);
     return sanitized;
   }
-  const res = await invoke<AppPreferences | void>("save_preferences", { prefs: sanitized });
-  return res
-    ? { ...res, language: normalizeLanguage(res.language) }
+  const raw = await invoke<AppPreferences | void>("save_preferences", { prefs: sanitized });
+  return raw
+    ? {
+        ...raw,
+        auraEnabled: typeof raw.auraEnabled === "boolean" ? raw.auraEnabled : defaults.auraEnabled,
+        hapticIntensity: normalizeHapticIntensity(raw.hapticIntensity),
+        language: normalizeLanguage(raw.language),
+      }
     : sanitized;
 }
 
@@ -1202,6 +1331,8 @@ export const events = {
     subscribeEvent<Record<string, unknown>>("wheel:toggle-raw", () => cb()),
   onWheelToggleFace: (cb: () => void) =>
     subscribeEvent<Record<string, unknown>>("wheel:toggle-face", () => cb()),
+  onWheelSpace: (cb: () => void) =>
+    subscribeEvent<Record<string, unknown>>("wheel:space", () => cb()),
   onConversionProgress: (cb: (p: ConversionProgressPayload) => void) =>
     subscribeEvent<ConversionProgressPayload>("conversion:progress", cb),
   onConversionComplete: (cb: (p: ConversionCompletePayload) => void) =>

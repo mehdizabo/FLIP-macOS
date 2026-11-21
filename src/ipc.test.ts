@@ -12,6 +12,7 @@ import {
   events,
   executeConversion,
   executeCreateNew,
+  executeManualCrop,
   formatError,
   getDiagnosticsReport,
   getEngineStatus,
@@ -24,6 +25,7 @@ import {
   inspectFiles,
   inspectFilesLocally,
   installFinderQuickActions,
+  normalizeHapticIntensity,
   openBatchWithFiles,
   openReleaseUrl,
   openWheelMode,
@@ -39,6 +41,8 @@ describe("Frontend IPC surface & contract alignment", () => {
     expect(prefs.version).toBe(1);
     expect(prefs.soundEnabled).toBe(true);
     expect(prefs.hapticsEnabled).toBe(true);
+    expect(prefs.hapticIntensity).toBe("firm");
+    expect(prefs.auraEnabled).toBe(true);
     expect(prefs.notificationsEnabled).toBe(true);
     expect(prefs.dragTrigger).toBe("Down");
     expect(prefs.idleShortcut).toBe("Option+Shift+Space");
@@ -68,6 +72,22 @@ describe("Frontend IPC surface & contract alignment", () => {
       "audio",
       "video",
     ]);
+
+    expect(normalizeHapticIntensity("light")).toBe("light");
+    expect(normalizeHapticIntensity("1")).toBe("light");
+    expect(normalizeHapticIntensity("subtle")).toBe("light");
+    expect(normalizeHapticIntensity("medium")).toBe("medium");
+    expect(normalizeHapticIntensity("2")).toBe("medium");
+    expect(normalizeHapticIntensity("firm")).toBe("firm");
+    expect(normalizeHapticIntensity("3")).toBe("firm");
+    expect(normalizeHapticIntensity("default")).toBe("firm");
+    expect(normalizeHapticIntensity("strong")).toBe("strong");
+    expect(normalizeHapticIntensity("4")).toBe("strong");
+    expect(normalizeHapticIntensity("5")).toBe("strong");
+    expect(normalizeHapticIntensity("max")).toBe("strong");
+    expect(normalizeHapticIntensity("unknown")).toBe("firm");
+    expect(normalizeHapticIntensity(null)).toBe("firm");
+    expect(normalizeHapticIntensity(undefined)).toBe("firm");
   });
 
   test("mock IPC commands emit expected payloads and events", async () => {
@@ -143,6 +163,16 @@ describe("Frontend IPC surface & contract alignment", () => {
       expect(conv.results[0]?.outputs[0]).toBe("/tmp/photo.png");
       expect(progressPct.length).toBeGreaterThan(0);
 
+      const cropRes = await executeManualCrop(["/tmp/photo.jpg"], {
+        x: 0.1,
+        y: 0.1,
+        width: 0.8,
+        height: 0.8,
+      });
+      expect(cropRes.success).toBe(true);
+      expect(cropRes.results[0]?.format).toBe("CROP_MANUAL");
+      expect(cropRes.results[0]?.outputs[0]).toBe("/tmp/photo-cropped.jpg");
+
       await cancelConversion();
 
       const created = await executeCreateNew("md", "/tmp");
@@ -177,18 +207,22 @@ describe("Frontend IPC surface & contract alignment", () => {
       expect(qa2.cliSymlinkPath).toBeNull();
 
       const prefs = await getPreferences();
+      expect(prefs.auraEnabled).toBe(true);
       const prefsUpdates: string[] = [];
       const uPrefs = await events.onPrefsChanged((p) => prefsUpdates.push(p.language));
       prefs.dragTrigger = "Space";
       prefs.language = "it";
+      prefs.auraEnabled = false;
       prefs.preferredFormats.document = ["EPUB", "MD"];
       const saved = await savePreferences(prefs);
       expect(saved.dragTrigger).toBe("Space");
       expect(saved.language).toBe("it");
+      expect(saved.auraEnabled).toBe(false);
       expect(prefsUpdates).toEqual(["it"]);
       uPrefs();
       const reloaded = await getPreferences();
       expect(reloaded.language).toBe("it");
+      expect(reloaded.auraEnabled).toBe(false);
       expect(reloaded.preferredFormats.document.slice(0, 2)).toEqual(["EPUB", "MD"]);
       expect(reloaded.preferredFormats.document).toContain("HEIC");
       expect((await getRecentConversions()).length).toBeGreaterThan(0);
@@ -373,6 +407,8 @@ describe("Frontend IPC surface & contract alignment", () => {
   test("SVG input, ICO output, and ANIMATE_GIF image policy alignment", () => {
     const svgRes = inspectFilesLocally(["/tmp/logo.svg"]);
     expect(svgRes.family).toBe("image");
+    expect(svgRes.imageWidth).toBe(4032);
+    expect(svgRes.imageHeight).toBe(3024);
     expect(svgRes.compatibleFormats).not.toContain("SVG");
     for (const target of [
       "PNG",
@@ -531,6 +567,54 @@ describe("Frontend IPC surface & contract alignment", () => {
       const flatMissing = await withRaw({ ...toolsBase });
       expect(flatMissing.ghostscript).toBeNull();
       expect("ghostscript" in flatMissing).toBe(true);
+    } finally {
+      g.window = prevWindow;
+      if (prevIsTauri === undefined) delete g.isTauri;
+      else g.isTauri = prevIsTauri;
+    }
+  });
+
+  test("auraEnabled defaults cleanly in getPreferences/savePreferences and inspectFiles passes through image dimensions", async () => {
+    const g = globalThis as Record<string, unknown>;
+    const prevWindow = g.window;
+    const prevIsTauri = g.isTauri;
+    try {
+      g.isTauri = true;
+      g.window = {
+        __TAURI_INTERNALS__: {
+          invoke: async (cmd: string, args: Record<string, unknown>) => {
+            if (cmd === "get_preferences") {
+              return { version: 1, language: "en" };
+            }
+            if (cmd === "save_preferences") {
+              return { ...(args.prefs as Record<string, unknown>), auraEnabled: "invalid" };
+            }
+            if (cmd === "inspect_files") {
+              return {
+                files: args.paths,
+                compatibleFormats: ["PNG", "JPG"],
+                batchActions: [],
+                toolActions: ["SCALE_1080P"],
+                availabilityMessage: "",
+                family: "image",
+                imageWidth: 4032,
+                imageHeight: 3024,
+              };
+            }
+            return null;
+          },
+        },
+      };
+
+      const loaded = await getPreferences();
+      expect(loaded.auraEnabled).toBe(true);
+
+      const saved = await savePreferences({ ...defaultPreferences(), auraEnabled: false });
+      expect(saved.auraEnabled).toBe(true);
+
+      const inspected = await inspectFiles(["/tmp/pic.heic"]);
+      expect(inspected.imageWidth).toBe(4032);
+      expect(inspected.imageHeight).toBe(3024);
     } finally {
       g.window = prevWindow;
       if (prevIsTauri === undefined) delete g.isTauri;

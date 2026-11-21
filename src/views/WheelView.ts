@@ -6,7 +6,12 @@ import {
   t,
 } from "../i18n";
 import { getFormatMeta, getNewKindMeta, getToolGroupMeta, UI_ICONS } from "../icons";
-import { buildToolEntries, isImageToolToken, type ToolGroupId } from "../imageTools";
+import {
+  buildToolEntries,
+  computeScaledDimensions,
+  isImageToolToken,
+  type ToolGroupId,
+} from "../imageTools";
 import {
   cancelConversion,
   copyDiagnosticsToClipboard,
@@ -15,6 +20,7 @@ import {
   events,
   executeConversion,
   executeCreateNew,
+  executeManualCrop,
   formatError,
   getNewFileKinds,
   getPreferences,
@@ -24,6 +30,7 @@ import {
   isTauriRuntime,
   openBatchWithFiles,
   openWheelMode,
+  openWindow,
   playWheelFeedback,
   subscribeNativeDragDrop,
   switchWheelMode,
@@ -52,10 +59,12 @@ import {
   getSectorCenter,
   orderFormats,
   paginateWheelItems,
+  polarToCartesian,
   progressArcSvgPath,
   progressRaySegment,
   progressTipPoint,
   sectorSvgPath,
+  shortestAngularDistanceDeg,
   WHEEL_CANVAS_SIZE,
   WHEEL_CENTER,
   WHEEL_OUTER_MAX_RADIUS,
@@ -95,6 +104,21 @@ type SlotNavigation =
   | { kind: "group"; group: ToolGroupId | null };
 
 const TOOLS_UP_ITEM_ID = "__tools-up__";
+const OUTER_ARC_RADIUS = 184;
+const OUTER_ARC_STEP_DEG = 22;
+const OUTER_ARC_INNER_R = 162;
+const OUTER_ARC_OUTER_R = 214;
+
+interface OuterSubItem {
+  token: string;
+  label: string;
+  subtitle: string;
+  accent: string;
+  iconSvg: string;
+  x: number;
+  y: number;
+  angleDeg: number;
+}
 
 export function mountWheelView(root: HTMLElement): () => void {
   document.documentElement.dataset.route = "wheel";
@@ -121,6 +145,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     originY: WHEEL_CENTER,
     availabilityMessage: "",
     family: null,
+    imageWidth: null,
+    imageHeight: null,
   };
 
   let page = 0;
@@ -168,6 +194,11 @@ export function mountWheelView(root: HTMLElement): () => void {
   let rawMode = false;
   let face: WheelFace = "formats";
   let toolGroup: ToolGroupId | null = null;
+  let openOuterGroupId: ToolGroupId | null = null;
+  let openOuterSlotIndex = -1;
+  let activeOuterToken: string | null = null;
+  let outerSubItems: OuterSubItem[] = [];
+  let renderedOuterArcSignature = "";
   let lastDomPointerMoveAt = 0;
   let lastMonitorPointerMoveAt = 0;
   let lastReleaseHandledAt = 0;
@@ -175,6 +206,19 @@ export function mountWheelView(root: HTMLElement): () => void {
   let lastCanvasPointerPos: { x: number; y: number } | null = null;
   let lastSvgPointerDownAt = 0;
   let isHoveringControl = false;
+  let isHoveringHub = false;
+  let spacePreviewOpen = false;
+  let spacePreviewDataUrl: string | null = null;
+  let spacePreviewFile = "";
+  let cropModalOpen = false;
+  let cropRect = { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
+  let cropPreviewDataUrl: string | null = null;
+  let cropDraggingMode: "move" | "nw" | "ne" | "sw" | "se" | null = null;
+  let cropDragStart: {
+    clientX: number;
+    clientY: number;
+    rect: { x: number; y: number; width: number; height: number };
+  } | null = null;
   let renderedHubKey = "";
   let renderedSlotsSignature = "";
   const handledPointerEvents = new WeakSet<Event>();
@@ -209,6 +253,7 @@ export function mountWheelView(root: HTMLElement): () => void {
         <div class="wheel-glass-ring" aria-hidden="true"></div>
         <div class="wheel-chromatic-rim" aria-hidden="true"></div>
         <div class="wheel-glass-layer" id="wheel-glass-layer" aria-hidden="true"></div>
+        <div class="wheel-outer-arc-layer" id="wheel-outer-arc-layer" style="display:none"></div>
 
         <svg class="wheel-svg" id="wheel-svg" viewBox="0 0 ${WHEEL_CANVAS_SIZE} ${WHEEL_CANVAS_SIZE}" width="${WHEEL_CANVAS_SIZE}" height="${WHEEL_CANVAS_SIZE}">
           <defs>
@@ -242,6 +287,8 @@ export function mountWheelView(root: HTMLElement): () => void {
         <div class="wheel-hub" id="wheel-hub"></div>
         <div class="wheel-page-dots" id="wheel-page-dots" style="display:none"></div>
       </div>
+      <div class="wheel-space-preview" id="wheel-space-preview" style="display:none" role="dialog" aria-label="QuickLook Preview"></div>
+      <div class="wheel-crop-modal" id="wheel-crop-modal" style="display:none" role="dialog" aria-modal="true"></div>
       ${
         isTauriRuntime()
           ? ""
@@ -261,6 +308,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   const announcerEl = root.querySelector<HTMLElement>("#wheel-live-announcer")!;
   const shellEl = root.querySelector<HTMLElement>("#wheel-shell")!;
   const glassLayerEl = root.querySelector<HTMLElement>("#wheel-glass-layer")!;
+  const outerArcLayerEl = root.querySelector<HTMLElement>("#wheel-outer-arc-layer")!;
   const svgEl = root.querySelector<SVGSVGElement>("#wheel-svg")!;
   const sectorsLayer = root.querySelector<SVGGElement>("#wheel-sectors-layer")!;
   const progressLayer = root.querySelector<SVGGElement>("#wheel-progress-layer")!;
@@ -270,6 +318,8 @@ export function mountWheelView(root: HTMLElement): () => void {
   const hubTetherEl = root.querySelector<HTMLElement>("#wheel-hub-tether")!;
   const hubEl = root.querySelector<HTMLElement>("#wheel-hub")!;
   const pageDotsEl = root.querySelector<HTMLElement>("#wheel-page-dots")!;
+  const spacePreviewEl = root.querySelector<HTMLElement>("#wheel-space-preview")!;
+  const cropModalEl = root.querySelector<HTMLElement>("#wheel-crop-modal")!;
   const topBarEl = root.querySelector<HTMLElement>(".wheel-top-bar");
   const modeButtons = Array.from(root.querySelectorAll<HTMLButtonElement>(".wheel-mode-btn"));
   const rawToggleBtn = root.querySelector<HTMLButtonElement>("#wheel-raw-toggle")!;
@@ -939,6 +989,179 @@ export function mountWheelView(root: HTMLElement): () => void {
     });
   }
 
+  function updateOuterArcHighlightClasses(): void {
+    const els = Array.from(
+      outerArcLayerEl.querySelectorAll<HTMLElement>(".wheel-outer-sub-item[data-sub-token]"),
+    );
+    for (const el of els) {
+      const isActive = Boolean(activeOuterToken && el.dataset.subToken === activeOuterToken);
+      el.classList.toggle("is-active", isActive);
+      el.setAttribute("aria-current", isActive ? "true" : "false");
+    }
+  }
+
+  function clearOuterArc(): void {
+    openOuterGroupId = null;
+    openOuterSlotIndex = -1;
+    activeOuterToken = null;
+    outerSubItems = [];
+    if (renderedOuterArcSignature !== "") {
+      renderedOuterArcSignature = "";
+      outerArcLayerEl.style.display = "none";
+      outerArcLayerEl.innerHTML = "";
+    }
+  }
+
+  function renderOuterArc(): void {
+    if (
+      phase !== "idle" ||
+      !isToolsFaceActive() ||
+      toolGroup !== null ||
+      !openOuterGroupId ||
+      openOuterSlotIndex < 0 ||
+      openOuterSlotIndex >= slots.length
+    ) {
+      clearOuterArc();
+      return;
+    }
+
+    const entries = buildToolEntries(
+      state.toolActions,
+      state.compatibleFormats,
+      state.batchActions,
+    );
+    const groupEntry = entries.find(
+      (entry) => entry.kind === "group" && entry.id === openOuterGroupId,
+    );
+    if (!groupEntry || groupEntry.kind !== "group" || groupEntry.tokens.length === 0) {
+      clearOuterArc();
+      return;
+    }
+
+    const l = lang();
+    const tokens: string[] =
+      openOuterGroupId === "crop"
+        ? ["CROP_MANUAL", ...groupEntry.tokens]
+        : [...groupEntry.tokens];
+    const signature = JSON.stringify({
+      l,
+      group: openOuterGroupId,
+      slot: openOuterSlotIndex,
+      count: slots.length,
+      tokens,
+    });
+
+    if (signature === renderedOuterArcSignature) {
+      updateOuterArcHighlightClasses();
+      return;
+    }
+
+    const parentMidDeg = (openOuterSlotIndex * 360) / slots.length;
+    const n = tokens.length;
+    outerSubItems = tokens.map((token, i) => {
+      const angleDeg = parentMidDeg + (i - (n - 1) / 2) * OUTER_ARC_STEP_DEG;
+      const rawPt = polarToCartesian(OUTER_ARC_RADIUS, angleDeg);
+      const x = Math.max(36, Math.min(WHEEL_CANVAS_SIZE - 36, rawPt.x));
+      const minY = x >= 86 && x <= WHEEL_CANVAS_SIZE - 86 ? 46 : 24;
+      const y = Math.max(minY, Math.min(WHEEL_CANVAS_SIZE - 24, rawPt.y));
+      const meta = getFormatMeta(token, l);
+      return {
+        token,
+        label: meta.shortLabel,
+        subtitle: meta.title,
+        accent: meta.accent,
+        iconSvg: meta.iconSvg,
+        x,
+        y,
+        angleDeg,
+      };
+    });
+
+    renderedOuterArcSignature = signature;
+    outerArcLayerEl.innerHTML = outerSubItems
+      .map((item) => {
+        const isActive = activeOuterToken === item.token;
+        return `
+          <button type="button"
+                  class="wheel-outer-sub-item ${isActive ? "is-active" : ""}"
+                  data-sub-token="${escapeHtml(item.token)}"
+                  style="left:${item.x.toFixed(2)}px;top:${item.y.toFixed(2)}px;--sector-accent:${escapeHtml(item.accent)}"
+                  aria-label="${escapeHtml(item.subtitle)}"
+                  aria-current="${isActive ? "true" : "false"}"
+                  title="${escapeHtml(item.subtitle)}">
+            <span class="wheel-outer-sub-icon">${item.iconSvg}</span>
+            <span class="wheel-outer-sub-label">${escapeHtml(item.label)}</span>
+          </button>
+        `;
+      })
+      .join("");
+    outerArcLayerEl.style.display = "block";
+  }
+
+  function hitOuterSubItem(px: number, py: number): OuterSubItem | null {
+    if (
+      phase !== "idle" ||
+      !isToolsFaceActive() ||
+      toolGroup !== null ||
+      !openOuterGroupId ||
+      outerSubItems.length === 0
+    ) {
+      return null;
+    }
+
+    let bestItem: OuterSubItem | null = null;
+    let bestDist = Infinity;
+    for (const item of outerSubItems) {
+      const d = Math.hypot(px - item.x, py - item.y);
+      if (d <= 28 && d < bestDist) {
+        bestDist = d;
+        bestItem = item;
+      }
+    }
+    if (bestItem) return bestItem;
+
+    const r = Math.hypot(px - WHEEL_CENTER, py - WHEEL_CENTER);
+    if (r < OUTER_ARC_INNER_R || r > OUTER_ARC_OUTER_R) return null;
+    const deg = ((Math.atan2(py - WHEEL_CENTER, px - WHEEL_CENTER) * 180) / Math.PI + 90 + 360) % 360;
+    let bestAng = Infinity;
+    for (const item of outerSubItems) {
+      const ang = shortestAngularDistanceDeg(deg, item.angleDeg);
+      if (ang <= OUTER_ARC_STEP_DEG * 0.65 && ang < bestAng) {
+        bestAng = ang;
+        bestItem = item;
+      }
+    }
+    return bestItem;
+  }
+
+  function isInOpenOuterCorridor(px: number, py: number): boolean {
+    if (!openOuterGroupId || outerSubItems.length === 0) return false;
+    for (const item of outerSubItems) {
+      if (Math.hypot(px - item.x, py - item.y) <= 36) return true;
+    }
+    const r = Math.hypot(px - WHEEL_CENTER, py - WHEEL_CENTER);
+    if (r < OUTER_ARC_INNER_R || r > OUTER_ARC_OUTER_R) return false;
+    const deg = ((Math.atan2(py - WHEEL_CENTER, px - WHEEL_CENTER) * 180) / Math.PI + 90 + 360) % 360;
+    return outerSubItems.some(
+      (item) => shortestAngularDistanceDeg(deg, item.angleDeg) <= OUTER_ARC_STEP_DEG * 0.85,
+    );
+  }
+
+  function setActiveOuterToken(nextToken: string | null): void {
+    if (phase !== "idle") return;
+    if (nextToken === activeOuterToken) return;
+    activeOuterToken = nextToken;
+    if (nextToken) {
+      const item = outerSubItems.find((i) => i.token === nextToken);
+      if (item) {
+        void playWheelFeedback("tick");
+        announce(item.subtitle);
+      }
+    }
+    updateOuterArcHighlightClasses();
+    renderHub();
+  }
+
   function renderHub(): void {
     const l = lang();
     hubEl.classList.toggle("is-error-hub", phase === "error");
@@ -1138,9 +1361,18 @@ export function mountWheelView(root: HTMLElement): () => void {
       return;
     }
 
+    const toolsAvail = toolFaceAvailable();
+    const toolsActive = isToolsFaceActive();
+    const activeOuterItem = activeOuterToken
+      ? outerSubItems.find((item) => item.token === activeOuterToken)
+      : undefined;
+
     let subtitle = t(l, "wheel.escToCancel");
     let subtitleTitle = "";
     let subClass = "is-muted";
+    let hoveredActionToken: string | null = null;
+    let hoveredActionTitle = "";
+
     if (state.compatibleFormats.length === 0 && state.batchActions.length === 0) {
       const rawMsg =
         localizeAvailabilityMessage(l, state.availabilityMessage) ||
@@ -1154,6 +1386,11 @@ export function mountWheelView(root: HTMLElement): () => void {
           ? lines.slice(1).join(" · ")
           : lines.join(" · ") || t(l, "wheel.noCommonFormat");
       subClass = "is-error";
+    } else if (activeOuterItem) {
+      hoveredActionToken = activeOuterItem.token;
+      hoveredActionTitle = activeOuterItem.subtitle;
+      subtitle = activeOuterItem.subtitle;
+      subClass = "";
     } else if (hoveredSlot) {
       if (hoveredSlot.kind === "more") {
         subtitle = t(l, "wheel.nextFormats");
@@ -1165,12 +1402,27 @@ export function mountWheelView(root: HTMLElement): () => void {
         subtitle = hoveredSlot.item.disabledReason ?? t(l, "wheel.unavailable");
         subClass = "is-error";
       } else {
+        hoveredActionToken = hoveredSlot.item.id;
+        hoveredActionTitle = hoveredSlot.item.subtitle;
         subtitle = hoveredSlot.item.subtitle;
         subClass = "";
       }
     } else if (rawMode) {
       subtitle = t(l, "wheel.mode.raw");
       subClass = "is-raw-hint";
+    }
+
+    if (hoveredActionToken && state.imageWidth && state.imageHeight) {
+      const scaled = computeScaledDimensions(
+        state.imageWidth,
+        state.imageHeight,
+        hoveredActionToken,
+      );
+      if (scaled) {
+        subtitle = `${state.imageWidth}×${state.imageHeight} → ${scaled.width}×${scaled.height}`;
+        subtitleTitle = hoveredActionTitle ? `${hoveredActionTitle} (${subtitle})` : subtitle;
+        subClass = "is-dims";
+      }
     }
 
     const thumbVisual = thumbnailDataUrl
@@ -1180,7 +1432,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     const showMultiBtn =
       state.compatibleFormats.length > 0 || state.batchActions.length > 0;
 
-    const nextHubKey = `idle:convert:${l}:${fileCount}:${state.files[0] ?? ""}:${thumbnailDataUrl ?? ""}:${showMultiBtn ? 1 : 0}`;
+    const nextHubKey = `idle:convert:${l}:${fileCount}:${state.files[0] ?? ""}:${thumbnailDataUrl ?? ""}:${showMultiBtn ? 1 : 0}:${toolsAvail ? 1 : 0}`;
     const existingTitle = hubEl.querySelector<HTMLElement>(".wheel-hub-title");
     const existingSubtitle = hubEl.querySelector<HTMLElement>(".wheel-hub-subtitle");
     if (renderedHubKey === nextHubKey && existingTitle && existingSubtitle) {
@@ -1189,6 +1441,10 @@ export function mountWheelView(root: HTMLElement): () => void {
       existingSubtitle.textContent = subtitle;
       existingSubtitle.title = subtitleTitle || subtitle;
       existingSubtitle.className = subClass ? `wheel-hub-subtitle ${subClass}` : "wheel-hub-subtitle";
+      const formatsOpt = hubEl.querySelector<HTMLElement>('[data-hub-face="formats"]');
+      const toolsOpt = hubEl.querySelector<HTMLElement>('[data-hub-face="tools"]');
+      formatsOpt?.classList.toggle("is-active", !toolsActive);
+      toolsOpt?.classList.toggle("is-active", toolsActive);
       return;
     }
     renderedHubKey = nextHubKey;
@@ -1202,9 +1458,18 @@ export function mountWheelView(root: HTMLElement): () => void {
       <div class="wheel-hub-title" title="${escapeHtml(state.files.join("\n"))}">${escapeHtml(primaryName)}</div>
       <div class="wheel-hub-subtitle ${subClass}" title="${escapeHtml(subtitleTitle || subtitle)}">${escapeHtml(subtitle)}</div>
       ${
-        showMultiBtn
+        showMultiBtn || toolsAvail
           ? `<div class="wheel-hub-actions">
-               <button type="button" class="wheel-hub-pill-btn" id="hub-multi-btn" title="${escapeHtml(t(l, "wheel.multiBtnTitle"))}">${escapeHtml(t(l, "wheel.multiBtn"))}</button>
+               ${showMultiBtn ? `<button type="button" class="wheel-hub-pill-btn" id="hub-multi-btn" title="${escapeHtml(t(l, "wheel.multiBtnTitle"))}">${escapeHtml(t(l, "wheel.multiBtn"))}</button>` : ""}
+               ${
+                 toolsAvail
+                   ? `<button type="button" class="wheel-hub-face-pill" data-hub-face-toggle aria-label="${escapeHtml(t(l, "wheel.faceSwitchLabel"))}" title="${escapeHtml(t(l, "wheel.faceSwitchLabel"))}">
+                        <span class="wheel-hub-face-opt ${!toolsActive ? "is-active" : ""}" data-hub-face="formats">${escapeHtml(t(l, "wheel.faceFormats"))}</span>
+                        <span class="wheel-hub-face-sep" aria-hidden="true">·</span>
+                        <span class="wheel-hub-face-opt ${toolsActive ? "is-active" : ""}" data-hub-face="tools">${escapeHtml(t(l, "wheel.faceTools"))}</span>
+                      </button>`
+                   : ""
+               }
              </div>`
           : ""
       }
@@ -1216,6 +1481,12 @@ export function mountWheelView(root: HTMLElement): () => void {
       void openBatchWithFiles(state.files).then(() => {
         if (isTauriRuntime() && !disposed) requestDismiss("open-batch");
       });
+    });
+
+    hubEl.querySelector<HTMLButtonElement>("[data-hub-face-toggle]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      (e.currentTarget as HTMLButtonElement).blur();
+      toggleFace();
     });
   }
 
@@ -1266,6 +1537,19 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (slot) {
       announce(formatSectorAriaLabel(slot, bounded, slots.length, lang()));
     }
+    if (
+      isToolsFaceActive() &&
+      toolGroup === null &&
+      slot?.kind === "item" &&
+      slot.item.groupId
+    ) {
+      openOuterGroupId = slot.item.groupId;
+      openOuterSlotIndex = bounded;
+      activeOuterToken = null;
+      renderOuterArc();
+    } else if (openOuterGroupId !== null) {
+      clearOuterArc();
+    }
     if (slot && isSlotActionable(slot)) {
       void playWheelFeedback("tick");
       const navigation = slotNavigation(slot);
@@ -1301,7 +1585,10 @@ export function mountWheelView(root: HTMLElement): () => void {
   }
 
   function startConversionVisual(formatLabel: string): void {
+    closeSpacePreview();
+    closeCropModal();
     clearDwell();
+    clearOuterArc();
     clearAutoClose();
     stopProgressLoop();
     stopPhysicsLoop();
@@ -1415,6 +1702,281 @@ export function mountWheelView(root: HTMLElement): () => void {
     return phase;
   }
 
+  function isPointerInCenterHub(): boolean {
+    if (activeIndex >= 0) return false;
+    if (isHoveringHub) return true;
+    if (!lastCanvasPointerPos) return false;
+    return (
+      Math.hypot(lastCanvasPointerPos.x - WHEEL_CENTER, lastCanvasPointerPos.y - WHEEL_CENTER) <= 72
+    );
+  }
+
+  function renderSpacePreview(): void {
+    if (!spacePreviewOpen || state.files.length === 0) {
+      spacePreviewEl.style.display = "none";
+      spacePreviewEl.innerHTML = "";
+      return;
+    }
+    const firstFile = state.files[0];
+    const fileName = basename(firstFile);
+    const extBadge = extLower(firstFile).toUpperCase() || "FILE";
+    const dimsText =
+      state.imageWidth && state.imageHeight
+        ? `${state.imageWidth}×${state.imageHeight}`
+        : "";
+    const thumbHtml = spacePreviewDataUrl
+      ? `<img class="wheel-space-preview-img" src="${escapeHtml(spacePreviewDataUrl)}" alt="${escapeHtml(fileName)}" />`
+      : `<div class="wheel-space-preview-fallback">${UI_ICONS.image}</div>`;
+
+    spacePreviewEl.innerHTML = `
+      <div class="wheel-space-preview-media">${thumbHtml}</div>
+      <div class="wheel-space-preview-meta">
+        <div class="wheel-space-preview-name" title="${escapeHtml(firstFile)}">${escapeHtml(fileName)}</div>
+        <div class="wheel-space-preview-badges">
+          <span class="wheel-space-preview-badge">${escapeHtml(extBadge)}</span>
+          ${dimsText ? `<span class="wheel-space-preview-dims">${escapeHtml(dimsText)}</span>` : ""}
+        </div>
+      </div>
+    `;
+    spacePreviewEl.style.display = "flex";
+  }
+
+  function closeSpacePreview(): void {
+    if (!spacePreviewOpen) return;
+    spacePreviewOpen = false;
+    spacePreviewFile = "";
+    spacePreviewEl.style.display = "none";
+    spacePreviewEl.innerHTML = "";
+  }
+
+  function openSpacePreview(): void {
+    if (phase !== "idle" || state.mode !== "convert" || state.files.length === 0 || cropModalOpen) {
+      return;
+    }
+    clearDwell();
+    clearOuterArc();
+    const firstFile = state.files[0];
+    spacePreviewOpen = true;
+    spacePreviewFile = firstFile;
+    spacePreviewDataUrl = thumbnailDataUrl;
+    renderSpacePreview();
+    void getThumbnail(firstFile, 512)
+      .then((res) => {
+        if (disposed || !spacePreviewOpen || spacePreviewFile !== firstFile) return;
+        if (res.ok && res.pngBase64) {
+          const mime = res.pngBase64.startsWith("PHN2Zy") ? "image/svg+xml" : "image/png";
+          spacePreviewDataUrl = `data:${mime};base64,${res.pngBase64}`;
+          renderSpacePreview();
+        }
+      })
+      .catch(() => {});
+  }
+
+  function formatCropDimsText(): string {
+    const baseW = state.imageWidth || 1000;
+    const baseH = state.imageHeight || 1000;
+    const w = Math.max(1, Math.round(cropRect.width * baseW));
+    const h = Math.max(1, Math.round(cropRect.height * baseH));
+    return `${w}×${h}`;
+  }
+
+  function updateCropBoxDom(): void {
+    const boxEl = cropModalEl.querySelector<HTMLElement>(".wheel-crop-box");
+    const dimsEl = cropModalEl.querySelector<HTMLElement>("#wheel-crop-dims");
+    if (boxEl) {
+      boxEl.style.left = `${(cropRect.x * 100).toFixed(2)}%`;
+      boxEl.style.top = `${(cropRect.y * 100).toFixed(2)}%`;
+      boxEl.style.width = `${(cropRect.width * 100).toFixed(2)}%`;
+      boxEl.style.height = `${(cropRect.height * 100).toFixed(2)}%`;
+    }
+    if (dimsEl) {
+      dimsEl.textContent = formatCropDimsText();
+    }
+  }
+
+  const onCropPointerMove = (ev: PointerEvent) => {
+    if (!cropModalOpen || !cropDraggingMode || !cropDragStart) return;
+    const stage = cropModalEl.querySelector<HTMLElement>(".wheel-crop-stage");
+    const rect = stage?.getBoundingClientRect();
+    const w = rect && rect.width > 0 ? rect.width : 240;
+    const h = rect && rect.height > 0 ? rect.height : 180;
+    const dx = (ev.clientX - cropDragStart.clientX) / w;
+    const dy = (ev.clientY - cropDragStart.clientY) / h;
+    const s = cropDragStart.rect;
+    const minSize = 0.08;
+
+    if (cropDraggingMode === "move") {
+      cropRect = {
+        x: Math.max(0, Math.min(1 - s.width, s.x + dx)),
+        y: Math.max(0, Math.min(1 - s.height, s.y + dy)),
+        width: s.width,
+        height: s.height,
+      };
+    } else {
+      let left = s.x;
+      let top = s.y;
+      let right = s.x + s.width;
+      let bottom = s.y + s.height;
+      if (cropDraggingMode === "nw" || cropDraggingMode === "sw") {
+        left = Math.max(0, Math.min(right - minSize, s.x + dx));
+      }
+      if (cropDraggingMode === "ne" || cropDraggingMode === "se") {
+        right = Math.min(1, Math.max(left + minSize, s.x + s.width + dx));
+      }
+      if (cropDraggingMode === "nw" || cropDraggingMode === "ne") {
+        top = Math.max(0, Math.min(bottom - minSize, s.y + dy));
+      }
+      if (cropDraggingMode === "sw" || cropDraggingMode === "se") {
+        bottom = Math.min(1, Math.max(top + minSize, s.y + s.height + dy));
+      }
+      cropRect = { x: left, y: top, width: right - left, height: bottom - top };
+    }
+    updateCropBoxDom();
+  };
+
+  const onCropPointerUp = () => {
+    cropDraggingMode = null;
+    cropDragStart = null;
+    window.removeEventListener("pointermove", onCropPointerMove);
+    window.removeEventListener("pointerup", onCropPointerUp);
+  };
+
+  function closeCropModal(): void {
+    cropDraggingMode = null;
+    cropDragStart = null;
+    window.removeEventListener("pointermove", onCropPointerMove);
+    window.removeEventListener("pointerup", onCropPointerUp);
+    if (!cropModalOpen) return;
+    cropModalOpen = false;
+    cropModalEl.style.display = "none";
+    cropModalEl.innerHTML = "";
+  }
+
+  async function applyManualCrop(): Promise<void> {
+    if (!cropModalOpen || getPhase() !== "idle" || state.files.length === 0) return;
+    const filesSnapshot = [...state.files];
+    const rectSnapshot = { ...cropRect };
+    closeCropModal();
+    const l = lang();
+    conversionInFlight = true;
+    void playWheelFeedback("generic");
+    startConversionVisual(t(l, "wheel.tool.crop_manual_short"));
+    stepLabel = t(l, "wheel.tool.crop_manual");
+
+    try {
+      const res = await executeManualCrop(filesSnapshot, rectSnapshot);
+      if (disposed) return;
+      if (conversionInFlight && getPhase() === "converting") {
+        handleConversionComplete(res);
+      }
+    } catch (err) {
+      if (disposed) return;
+      if (conversionInFlight && getPhase() === "converting") {
+        handleConversionComplete({
+          success: false,
+          results: [],
+          error: formatError(err),
+        });
+      }
+    }
+  }
+
+  function renderCropModal(): void {
+    if (!cropModalOpen) {
+      cropModalEl.style.display = "none";
+      cropModalEl.innerHTML = "";
+      return;
+    }
+    const l = lang();
+    const previewHtml = cropPreviewDataUrl
+      ? `<img class="wheel-crop-img" src="${escapeHtml(cropPreviewDataUrl)}" alt="" draggable="false" />`
+      : `<div class="wheel-crop-fallback">${UI_ICONS.image}</div>`;
+
+    cropModalEl.setAttribute("aria-label", t(l, "wheel.cropModalTitle"));
+    cropModalEl.innerHTML = `
+      <div class="wheel-crop-header">
+        <span class="wheel-crop-title">${escapeHtml(t(l, "wheel.cropModalTitle"))}</span>
+        <span class="wheel-crop-dims" id="wheel-crop-dims">${escapeHtml(formatCropDimsText())}</span>
+      </div>
+      <div class="wheel-crop-stage">
+        ${previewHtml}
+        <div class="wheel-crop-box" style="left:${(cropRect.x * 100).toFixed(2)}%;top:${(cropRect.y * 100).toFixed(2)}%;width:${(cropRect.width * 100).toFixed(2)}%;height:${(cropRect.height * 100).toFixed(2)}%">
+          <span class="wheel-crop-handle is-nw" data-crop-handle="nw"></span>
+          <span class="wheel-crop-handle is-ne" data-crop-handle="ne"></span>
+          <span class="wheel-crop-handle is-sw" data-crop-handle="sw"></span>
+          <span class="wheel-crop-handle is-se" data-crop-handle="se"></span>
+        </div>
+      </div>
+      <div class="wheel-crop-footer">
+        <button type="button" class="wheel-crop-btn" id="wheel-crop-cancel">${escapeHtml(t(l, "common.cancel"))}</button>
+        <button type="button" class="wheel-crop-btn is-primary" id="wheel-crop-apply">${escapeHtml(t(l, "wheel.cropApply"))}</button>
+      </div>
+    `;
+    cropModalEl.style.display = "flex";
+
+    cropModalEl.querySelector("#wheel-crop-cancel")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      closeCropModal();
+    });
+    cropModalEl.querySelector("#wheel-crop-apply")?.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      void applyManualCrop();
+    });
+
+    const boxEl = cropModalEl.querySelector<HTMLElement>(".wheel-crop-box");
+    boxEl?.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const target = ev.target instanceof Element ? ev.target : null;
+      const handleEl = target?.closest<HTMLElement>("[data-crop-handle]");
+      const mode = (handleEl?.dataset.cropHandle as "nw" | "ne" | "sw" | "se" | undefined) ?? "move";
+      cropDraggingMode = mode;
+      cropDragStart = {
+        clientX: ev.clientX,
+        clientY: ev.clientY,
+        rect: { ...cropRect },
+      };
+      window.addEventListener("pointermove", onCropPointerMove);
+      window.addEventListener("pointerup", onCropPointerUp);
+    });
+  }
+
+  function openCropModal(): void {
+    if (phase !== "idle" || state.files.length === 0) return;
+    closeSpacePreview();
+    clearDwell();
+    clearOuterArc();
+    setActiveIndex(-1, { skipStep: true });
+    cropModalOpen = true;
+    cropRect = { x: 0.1, y: 0.1, width: 0.8, height: 0.8 };
+    cropPreviewDataUrl = thumbnailDataUrl;
+    renderCropModal();
+    const firstFile = state.files[0];
+    void getThumbnail(firstFile, 512)
+      .then((res) => {
+        if (disposed || !cropModalOpen || state.files[0] !== firstFile) return;
+        if (res.ok && res.pngBase64) {
+          const mime = res.pngBase64.startsWith("PHN2Zy") ? "image/svg+xml" : "image/png";
+          cropPreviewDataUrl = `data:${mime};base64,${res.pngBase64}`;
+          const img = cropModalEl.querySelector<HTMLImageElement>(".wheel-crop-img");
+          if (img) {
+            img.src = cropPreviewDataUrl;
+          } else {
+            renderCropModal();
+          }
+        }
+      })
+      .catch(() => {});
+  }
+
+  function activateOuterToken(token: string, forceRaw = false): void {
+    if (token === "CROP_MANUAL") {
+      openCropModal();
+      return;
+    }
+    void commitFormatConversion(token, forceRaw);
+  }
+
   async function commitFormatConversion(formatId: string, forceRaw = false): Promise<void> {
     if (getPhase() !== "idle" || state.files.length === 0) return;
     const filesSnapshot = [...state.files];
@@ -1447,7 +2009,10 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   async function commitCreateNew(kind: WheelActionItem): Promise<void> {
     if (phase !== "idle" || !kind.enabled) return;
+    closeSpacePreview();
+    closeCropModal();
     clearDwell();
+    clearOuterArc();
     clearAutoClose();
     stopProgressLoop();
     stopPhysicsLoop();
@@ -1530,6 +2095,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   function followNavigation(navigation: SlotNavigation): void {
     activeIndex = -1;
     clearDwell();
+    clearOuterArc();
     if (navigation.kind === "page") {
       page = navigation.page;
     } else {
@@ -1592,6 +2158,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     conversionInFlight = false;
     isDragHovering = false;
     isHoveringControl = false;
+    isHoveringHub = false;
+    closeSpacePreview();
+    closeCropModal();
     lastDomPointerMoveAt = 0;
     lastMonitorPointerMoveAt = 0;
     lastReleaseHandledAt = 0;
@@ -1601,6 +2170,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     lastDragCoords = null;
     latchedDwellSlot = -1;
     clearDwell();
+    clearOuterArc();
     clearAutoClose();
     clearDismissTimer();
     clearDiagResetTimer();
@@ -1679,6 +2249,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     openedAtMs = performance.now();
     conversionInFlight = false;
     isHoveringControl = false;
+    isHoveringHub = false;
+    closeSpacePreview();
+    closeCropModal();
     lastDomPointerMoveAt = 0;
     lastReleaseHandledAt = 0;
     clearDismissTimer();
@@ -1699,6 +2272,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     diagBtnFailReason = "";
     lastResults = [];
     clearDwell();
+    clearOuterArc();
     clearAutoClose();
     clearDiagResetTimer();
     stopProgressLoop();
@@ -1802,6 +2376,8 @@ export function mountWheelView(root: HTMLElement): () => void {
       toolActions: inspected.toolActions ?? [],
       availabilityMessage: inspected.availabilityMessage,
       family: inspected.family ?? null,
+      imageWidth: inspected.imageWidth ?? null,
+      imageHeight: inspected.imageHeight ?? null,
     });
     return true;
   }
@@ -1842,12 +2418,15 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   function toggleFace(): void {
     if (phase !== "idle" || !toolFaceAvailable()) return;
+    closeSpacePreview();
+    closeCropModal();
     face = face === "tools" ? "formats" : "tools";
     toolGroup = null;
     page = 0;
     activeIndex = -1;
     latchedDwellSlot = -1;
     clearDwell();
+    clearOuterArc();
     void playWheelFeedback("level");
     updateModePillUI();
     renderSectors();
@@ -1879,37 +2458,32 @@ export function mountWheelView(root: HTMLElement): () => void {
     });
   }
 
-  // Single authoritative pointer stream: stageEl captures all wheel hover + controls,
-  // with WeakSet dedup so dispatching directly on svgEl or stageEl behaves identically.
-  const onPointerMove = (ev: PointerEvent) => {
-    if (handledPointerEvents.has(ev)) return;
-    handledPointerEvents.add(ev);
-    lastDomPointerMoveAt = performance.now();
-    if (phase !== "idle") return;
-    const target = ev.target;
-    if (
-      target instanceof Element &&
-      target.closest(
-        ".wheel-top-bar, .wheel-page-dots, .wheel-preview-dock, .wheel-hub-pill-btn",
-      )
-    ) {
-      isHoveringControl = true;
-      setActiveIndex(-1, { skipStep: true });
-      updateCursorProximity(null, null);
-      return;
+  function handleCanvasPointerMove(pt: { x: number; y: number }, isDragging: boolean): void {
+    const distFromCenter = Math.hypot(pt.x - WHEEL_CENTER, pt.y - WHEEL_CENTER);
+    isHoveringHub = distFromCenter <= 72;
+    if (spacePreviewOpen && distFromCenter > 96) {
+      closeSpacePreview();
     }
-    isHoveringControl = false;
-    if (slots.length === 0) return;
-    if (target instanceof Element && target.closest("#wheel-hub")) {
-      const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
-      currentPointerCanvas = pt;
-      lastCanvasPointerPos = pt;
-      setActiveIndex(-1, { skipStep: true });
-      updateCursorProximity(pt.x, pt.y);
-      return;
+    if (isToolsFaceActive() && toolGroup === null && openOuterGroupId !== null) {
+      const outerHit = hitOuterSubItem(pt.x, pt.y);
+      if (outerHit) {
+        clearDwell();
+        currentPointerCanvas = pt;
+        lastCanvasPointerPos = pt;
+        setActiveOuterToken(outerHit.token);
+        updateCursorProximity(pt.x, pt.y);
+        return;
+      }
+      if (isInOpenOuterCorridor(pt.x, pt.y)) {
+        clearDwell();
+        currentPointerCanvas = pt;
+        lastCanvasPointerPos = pt;
+        setActiveOuterToken(null);
+        updateCursorProximity(pt.x, pt.y);
+        return;
+      }
     }
-    const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
-    const isDragging = state.isDrag || isDragHovering;
+
     const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
       previousIndex: activeIndex,
       innerDeadZoneRadius: 72,
@@ -1917,23 +2491,101 @@ export function mountWheelView(root: HTMLElement): () => void {
     });
     currentPointerCanvas = pt;
     lastCanvasPointerPos = pt;
+    setActiveOuterToken(null);
     setActiveIndex(hit, { skipStep: true });
     updateCursorProximity(pt.x, pt.y);
+  }
+
+  // Single authoritative pointer stream: stageEl captures all wheel hover + controls,
+  // with WeakSet dedup so dispatching directly on svgEl or stageEl behaves identically.
+  const onPointerMove = (ev: PointerEvent) => {
+    if (handledPointerEvents.has(ev)) return;
+    handledPointerEvents.add(ev);
+    lastDomPointerMoveAt = performance.now();
+    if (phase !== "idle" || cropModalOpen) return;
+    const target = ev.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        ".wheel-top-bar, .wheel-page-dots, .wheel-preview-dock, .wheel-hub-pill-btn, .wheel-hub-face-pill",
+      )
+    ) {
+      isHoveringControl = true;
+      isHoveringHub = false;
+      closeSpacePreview();
+      setActiveOuterToken(null);
+      setActiveIndex(-1, { skipStep: true });
+      updateCursorProximity(null, null);
+      return;
+    }
+    isHoveringControl = false;
+    if (slots.length === 0) return;
+
+    if (target instanceof Element && target.closest("#wheel-space-preview")) {
+      isHoveringHub = true;
+      return;
+    }
+
+    const outerBtn =
+      target instanceof Element
+        ? target.closest<HTMLElement>(".wheel-outer-sub-item[data-sub-token]")
+        : null;
+    if (outerBtn && isToolsFaceActive() && toolGroup === null && openOuterGroupId !== null) {
+      isHoveringHub = false;
+      closeSpacePreview();
+      clearDwell();
+      const token = outerBtn.dataset.subToken ?? null;
+      const pt =
+        ev.clientX !== 0 || ev.clientY !== 0
+          ? clientToCanvasPoint(ev.clientX, ev.clientY)
+          : lastCanvasPointerPos;
+      if (pt) {
+        currentPointerCanvas = pt;
+        lastCanvasPointerPos = pt;
+      }
+      setActiveOuterToken(token);
+      if (pt) updateCursorProximity(pt.x, pt.y);
+      return;
+    }
+
+    if (target instanceof Element && target.closest("#wheel-hub")) {
+      isHoveringHub = true;
+      const pt =
+        ev.clientX === 0 && ev.clientY === 0
+          ? { x: WHEEL_CENTER, y: WHEEL_CENTER }
+          : clientToCanvasPoint(ev.clientX, ev.clientY);
+      currentPointerCanvas = pt;
+      lastCanvasPointerPos = pt;
+      setActiveOuterToken(null);
+      setActiveIndex(-1, { skipStep: true });
+      updateCursorProximity(pt.x, pt.y);
+      return;
+    }
+    const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
+    const isDragging = state.isDrag || isDragHovering;
+    handleCanvasPointerMove(pt, isDragging);
   };
 
   const onStagePointerLeave = () => {
     isHoveringControl = false;
+    isHoveringHub = false;
     if (phase === "idle") {
+      closeSpacePreview();
+      setActiveOuterToken(null);
       setActiveIndex(-1, { skipStep: true });
       updateCursorProximity(null, null);
     }
   };
 
-  const onSvgPointerLeave = () => {
-    if (phase === "idle") {
-      setActiveIndex(-1, { skipStep: true });
-      updateCursorProximity(null, null);
+  const onSvgPointerLeave = (ev: PointerEvent) => {
+    if (phase !== "idle") return;
+    const rel = ev.relatedTarget;
+    if (rel instanceof Element && (outerArcLayerEl.contains(rel) || rel.closest("#wheel-hub"))) {
+      return;
     }
+    setActiveOuterToken(null);
+    setActiveIndex(-1, { skipStep: true });
+    updateCursorProximity(null, null);
   };
 
   const onSvgPointerDown = () => {
@@ -1952,6 +2604,25 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
   };
 
+  const onOuterArcFocusIn = (ev: FocusEvent) => {
+    if (phase !== "idle" || !isToolsFaceActive() || toolGroup !== null || !openOuterGroupId) return;
+    const targetEl = ev.target instanceof Element ? ev.target : null;
+    const btn = targetEl?.closest<HTMLElement>(".wheel-outer-sub-item[data-sub-token]");
+    if (!btn) return;
+    setActiveOuterToken(btn.dataset.subToken ?? null);
+  };
+
+  const onOuterArcClick = (ev: MouseEvent) => {
+    if (phase !== "idle") return;
+    const targetEl = ev.target instanceof Element ? ev.target : null;
+    const btn = targetEl?.closest<HTMLElement>(".wheel-outer-sub-item[data-sub-token]");
+    const token = btn?.dataset.subToken;
+    if (!token) return;
+    ev.stopPropagation();
+    (btn as HTMLElement).blur?.();
+    activateOuterToken(token, ev.altKey);
+  };
+
   const onSvgClick = (ev: MouseEvent) => {
     if (phase !== "idle" || slots.length === 0) return;
     const targetEl = ev.target instanceof Element ? ev.target : null;
@@ -1963,6 +2634,14 @@ export function mountWheelView(root: HTMLElement): () => void {
       if (Number.isInteger(idxAttr)) hit = idxAttr;
     } else {
       const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
+      if (isToolsFaceActive() && toolGroup === null && openOuterGroupId !== null) {
+        const outerHit = hitOuterSubItem(pt.x, pt.y);
+        if (outerHit) {
+          ev.stopPropagation();
+          activateOuterToken(outerHit.token, ev.altKey);
+          return;
+        }
+      }
       const isDragging = state.isDrag || isDragHovering;
       const maxRadius = isDragging ? WHEEL_OUTER_MAX_RADIUS : WHEEL_OUTER_RADIUS + 6;
       hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
@@ -2012,6 +2691,8 @@ export function mountWheelView(root: HTMLElement): () => void {
   svgEl.addEventListener("mousedown", onSvgPointerDown);
   svgEl.addEventListener("focusin", onSectorFocusIn);
   svgEl.addEventListener("click", onSvgClick);
+  outerArcLayerEl.addEventListener("focusin", onOuterArcFocusIn);
+  outerArcLayerEl.addEventListener("click", onOuterArcClick);
 
   const onBackdropClick = (ev: MouseEvent) => {
     if (phase !== "idle" || state.isDrag || closing) return;
@@ -2019,7 +2700,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (
       target instanceof Element &&
       target.closest(
-        "#wheel-hub, .wheel-top-bar, .wheel-mode-pill, #wheel-raw-toggle, #wheel-face-toggle, .wheel-page-dots, .wheel-preview-dock, .wheel-sector-group",
+        "#wheel-hub, #wheel-crop-modal, #wheel-space-preview, .wheel-top-bar, .wheel-mode-pill, #wheel-raw-toggle, #wheel-face-toggle, .wheel-page-dots, .wheel-preview-dock, .wheel-sector-group, .wheel-outer-sub-item, .wheel-hub-face-pill",
       )
     ) {
       return;
@@ -2047,9 +2728,22 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   // Keyboard Navigation
   const onKeyDown = (ev: KeyboardEvent) => {
+    if (cropModalOpen) {
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeCropModal();
+      } else if (ev.key === "Enter") {
+        ev.preventDefault();
+        void applyManualCrop();
+      }
+      return;
+    }
+
     if (ev.key === "Escape") {
       ev.preventDefault();
-      if (phase === "converting") {
+      if (spacePreviewOpen) {
+        closeSpacePreview();
+      } else if (phase === "converting") {
         void cancelConversion();
       } else {
         requestDismiss("escape-key");
@@ -2058,6 +2752,31 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
 
     if (phase !== "idle") return;
+
+    if (ev.key === " " && spacePreviewOpen) {
+      ev.preventDefault();
+      closeSpacePreview();
+      return;
+    }
+
+    if (
+      !ev.repeat &&
+      (ev.metaKey || ev.ctrlKey) &&
+      !ev.altKey &&
+      !ev.shiftKey &&
+      (ev.key === "," || ev.code === "Comma")
+    ) {
+      ev.preventDefault();
+      void openWindow("settings").then(() => {
+        if (isTauriRuntime() && !disposed) {
+          requestDismiss("open-settings");
+        }
+      });
+      if (!isTauriRuntime()) {
+        requestDismiss("open-settings");
+      }
+      return;
+    }
 
     if (ev.key === "Tab") {
       ev.preventDefault();
@@ -2110,6 +2829,11 @@ export function mountWheelView(root: HTMLElement): () => void {
     }
 
     if (ev.key === "Enter" || ev.key === " ") {
+      if (ev.key === " " && state.mode === "convert" && state.files.length > 0 && isPointerInCenterHub()) {
+        ev.preventDefault();
+        openSpacePreview();
+        return;
+      }
       if (ev.target instanceof HTMLButtonElement) {
         return;
       }
@@ -2169,13 +2893,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     isDragHovering = true;
     if (slots.length > 0) {
       const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
-      const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
-        previousIndex: activeIndex,
-      });
-      currentPointerCanvas = pt;
-      lastCanvasPointerPos = pt;
-      setActiveIndex(hit, { skipStep: true });
-      updateCursorProximity(pt.x, pt.y);
+      handleCanvasPointerMove(pt, true);
     }
   };
 
@@ -2183,6 +2901,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     if (isTauriRuntime()) return;
     if (!shellEl.contains(ev.relatedTarget as Node | null)) {
       isDragHovering = false;
+      setActiveOuterToken(null);
       setActiveIndex(-1, { skipStep: true });
       updateCursorProximity(null, null);
     }
@@ -2198,6 +2917,17 @@ export function mountWheelView(root: HTMLElement): () => void {
       if (disposed || phase !== "idle") return;
       const pt = clientToCanvasPoint(ev.clientX, ev.clientY);
       const dist = Math.hypot(pt.x - WHEEL_CENTER, pt.y - WHEEL_CENTER);
+      if (isToolsFaceActive() && toolGroup === null && openOuterGroupId !== null) {
+        const outerHit =
+          hitOuterSubItem(pt.x, pt.y) ??
+          (activeOuterToken && dist >= OUTER_ARC_INNER_R && dist <= OUTER_ARC_OUTER_R
+            ? outerSubItems.find((i) => i.token === activeOuterToken) ?? null
+            : null);
+        if (outerHit) {
+          activateOuterToken(outerHit.token);
+          return;
+        }
+      }
       const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
         previousIndex: activeIndex,
       });
@@ -2258,7 +2988,7 @@ export function mountWheelView(root: HTMLElement): () => void {
         }
       }),
       events.onWheelPointerMove((payload) => {
-        if (disposed || closing || phase !== "idle" || slots.length === 0) return;
+        if (disposed || closing || phase !== "idle" || slots.length === 0 || cropModalOpen) return;
         const isDragging = state.isDrag || isDragHovering;
         const pt = windowLogicalToCanvasPoint(payload.localX, payload.localY);
         if (!isDragging && isHoveringControl) {
@@ -2281,22 +3011,17 @@ export function mountWheelView(root: HTMLElement): () => void {
         lastMonitorPointerMoveAt = performance.now();
         lastMonitorPointerPos = { x: payload.localX, y: payload.localY };
         if (!isDragging && topBarEl && pt.y <= 44 && pt.x >= 50 && pt.x <= 390) {
+          isHoveringHub = false;
+          closeSpacePreview();
+          setActiveOuterToken(null);
           setActiveIndex(-1, { skipStep: true });
           updateCursorProximity(null, null);
           return;
         }
-        const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
-          previousIndex: activeIndex,
-          innerDeadZoneRadius: 72,
-          outerMaxRadius: isDragging ? WHEEL_OUTER_MAX_RADIUS : WHEEL_OUTER_RADIUS + 6,
-        });
-        currentPointerCanvas = pt;
-        lastCanvasPointerPos = pt;
-        setActiveIndex(hit, { skipStep: true });
-        updateCursorProximity(pt.x, pt.y);
+        handleCanvasPointerMove(pt, isDragging);
       }),
       events.onWheelPointerRelease((payload) => {
-        if (disposed || closing || phase !== "idle" || conversionInFlight) return;
+        if (disposed || closing || phase !== "idle" || conversionInFlight || cropModalOpen) return;
         if (lastReleaseHandledAt > 0 && performance.now() - lastReleaseHandledAt < 250) return;
         lastReleaseHandledAt = performance.now();
         isDragHovering = false;
@@ -2304,6 +3029,17 @@ export function mountWheelView(root: HTMLElement): () => void {
         lastMonitorPointerPos = { x: payload.localX, y: payload.localY };
         const pt = windowLogicalToCanvasPoint(payload.localX, payload.localY);
         const dist = Math.hypot(pt.x - WHEEL_CENTER, pt.y - WHEEL_CENTER);
+        if (isToolsFaceActive() && toolGroup === null && openOuterGroupId !== null) {
+          const outerHit =
+            hitOuterSubItem(pt.x, pt.y) ??
+            (activeOuterToken && dist >= OUTER_ARC_INNER_R && dist <= OUTER_ARC_OUTER_R
+              ? outerSubItems.find((i) => i.token === activeOuterToken) ?? null
+              : null);
+          if (outerHit) {
+            activateOuterToken(outerHit.token);
+            return;
+          }
+        }
         const outerMax = state.isDrag ? WHEEL_OUTER_MAX_RADIUS : WHEEL_OUTER_RADIUS + 14;
         let hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
           previousIndex: activeIndex,
@@ -2322,7 +3058,11 @@ export function mountWheelView(root: HTMLElement): () => void {
       }),
       events.onWheelEscape((payload) => {
         if (disposed) return;
-        if (phase === "converting") {
+        if (cropModalOpen) {
+          closeCropModal();
+        } else if (spacePreviewOpen) {
+          closeSpacePreview();
+        } else if (phase === "converting") {
           void cancelConversion();
         } else if (payload && payload.alreadyHidden === true) {
           resetClosedLocally();
@@ -2337,6 +3077,14 @@ export function mountWheelView(root: HTMLElement): () => void {
       events.onWheelToggleFace(() => {
         if (disposed || closing) return;
         toggleFace();
+      }),
+      events.onWheelSpace(() => {
+        if (disposed || closing || phase !== "idle" || cropModalOpen) return;
+        if (spacePreviewOpen) {
+          closeSpacePreview();
+        } else if (state.mode === "convert" && state.files.length > 0 && isPointerInCenterHub()) {
+          openSpacePreview();
+        }
       }),
       events.onConversionProgress((payload) => {
         if (disposed || !conversionInFlight || phase !== "converting") return;
@@ -2404,13 +3152,7 @@ export function mountWheelView(root: HTMLElement): () => void {
             }
             const coords = lastDragCoords ?? { x: lx, y: ly };
             const pt = windowLogicalToCanvasPoint(coords.x, coords.y);
-            const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
-              previousIndex: activeIndex,
-            });
-            currentPointerCanvas = pt;
-            lastCanvasPointerPos = pt;
-            setActiveIndex(hit, { skipStep: true });
-            updateCursorProximity(pt.x, pt.y);
+            handleCanvasPointerMove(pt, true);
           })();
         },
         onOver: (lx, ly) => {
@@ -2421,13 +3163,7 @@ export function mountWheelView(root: HTMLElement): () => void {
             return;
           }
           const pt = windowLogicalToCanvasPoint(lx, ly);
-          const hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
-            previousIndex: activeIndex,
-          });
-          currentPointerCanvas = pt;
-          lastCanvasPointerPos = pt;
-          setActiveIndex(hit, { skipStep: true });
-          updateCursorProximity(pt.x, pt.y);
+          handleCanvasPointerMove(pt, true);
         },
         onDrop: (paths, lx, ly) => {
           if (disposed || closing || phase !== "idle" || conversionInFlight) return;
@@ -2446,6 +3182,17 @@ export function mountWheelView(root: HTMLElement): () => void {
             const srcCoords = useMonitorPos ? lastMonitorPointerPos! : { x: lx, y: ly };
             const pt = windowLogicalToCanvasPoint(srcCoords.x, srcCoords.y);
             const dist = Math.hypot(pt.x - WHEEL_CENTER, pt.y - WHEEL_CENTER);
+            if (isToolsFaceActive() && toolGroup === null && openOuterGroupId !== null) {
+              const outerHit =
+                hitOuterSubItem(pt.x, pt.y) ??
+                (activeOuterToken && dist >= OUTER_ARC_INNER_R && dist <= OUTER_ARC_OUTER_R
+                  ? outerSubItems.find((i) => i.token === activeOuterToken) ?? null
+                  : null);
+              if (outerHit) {
+                activateOuterToken(outerHit.token);
+                return;
+              }
+            }
             let hit = getSectorAtPoint(pt.x, pt.y, slots.length, {
               previousIndex: activeIndex,
               innerDeadZoneRadius: 68,
@@ -2471,6 +3218,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           if (disposed || state.isDrag) return;
           isDragHovering = false;
           lastDragCoords = null;
+          setActiveOuterToken(null);
           setActiveIndex(-1, { skipStep: true });
           updateCursorProximity(null, null);
         },
@@ -2503,7 +3251,10 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   return () => {
     disposed = true;
+    closeSpacePreview();
+    closeCropModal();
     clearDwell();
+    clearOuterArc();
     clearAutoClose();
     clearDismissTimer();
     clearDiagResetTimer();
@@ -2519,6 +3270,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     svgEl.removeEventListener("mousedown", onSvgPointerDown);
     svgEl.removeEventListener("focusin", onSectorFocusIn);
     svgEl.removeEventListener("click", onSvgClick);
+    outerArcLayerEl.removeEventListener("focusin", onOuterArcFocusIn);
+    outerArcLayerEl.removeEventListener("click", onOuterArcClick);
     stageEl.removeEventListener("click", onBackdropClick);
     window.removeEventListener("blur", onWindowBlur);
     window.removeEventListener("keydown", onKeyDown);

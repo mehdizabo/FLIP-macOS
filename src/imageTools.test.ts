@@ -5,6 +5,7 @@ import { EN_STRINGS, IT_STRINGS } from "./i18n";
 import { getFormatMeta, getToolGroupMeta, toolGroupKey, toolTitleKey } from "./icons";
 import {
   buildToolEntries,
+  computeScaledDimensions,
   IMAGE_TOOL_TOKENS,
   isImageToolToken,
   TOOL_GROUPS,
@@ -161,5 +162,30 @@ describe("tool availability and first-page entries", () => {
     );
     expect(gifOnly.some((e) => e.kind === "leaf" && e.token === "STRIP_EXIF")).toBe(false);
     expect(gifOnly.some((e) => e.kind === "group" && e.id === "crop")).toBe(true);
+  });
+});
+
+describe("computeScaledDimensions", () => {
+  test("computes expected dimensions for 4032x3024 across SCALE_* presets", () => {
+    expect(computeScaledDimensions(4032, 3024, "SCALE_50")).toEqual({ width: 2016, height: 1512 });
+    expect(computeScaledDimensions(4032, 3024, "SCALE_25")).toEqual({ width: 1008, height: 756 });
+    expect(computeScaledDimensions(4032, 3024, "SCALE_1080P")).toEqual({ width: 1440, height: 1080 });
+    expect(computeScaledDimensions(4032, 3024, "SCALE_720P")).toEqual({ width: 960, height: 720 });
+    expect(computeScaledDimensions(4032, 3024, "scale_1080p")).toEqual({ width: 1440, height: 1080 });
+  });
+
+  test("handles portrait orientation and never upscales smaller images", () => {
+    expect(computeScaledDimensions(3024, 4032, "SCALE_1080P")).toEqual({ width: 1080, height: 1440 });
+    expect(computeScaledDimensions(1280, 720, "SCALE_1080P")).toEqual({ width: 1280, height: 720 });
+    expect(computeScaledDimensions(640, 480, "SCALE_720P")).toEqual({ width: 640, height: 480 });
+  });
+
+  test("returns null for SCALE_1MB, non-scale tokens, and non-positive dimensions", () => {
+    expect(computeScaledDimensions(4032, 3024, "SCALE_1MB")).toBeNull();
+    expect(computeScaledDimensions(4032, 3024, "CROP_1_1")).toBeNull();
+    expect(computeScaledDimensions(4032, 3024, "PNG")).toBeNull();
+    expect(computeScaledDimensions(0, 3024, "SCALE_50")).toBeNull();
+    expect(computeScaledDimensions(4032, -10, "SCALE_50")).toBeNull();
+    expect(computeScaledDimensions(Number.NaN, 3024, "SCALE_50")).toBeNull();
   });
 });

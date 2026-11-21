@@ -25,6 +25,7 @@ import {
   getQuickActionsStatus,
   getRecentConversions,
   installFinderQuickActions,
+  normalizeHapticIntensity,
   openReleaseUrl,
   openTemplatesFolder,
   openWindow,
@@ -311,6 +312,38 @@ export function mountSettingsView(root: HTMLElement): () => void {
           </div>
           <label class="mac-switch">
             <input type="checkbox" id="pref-hapticsEnabled" ${prefs.hapticsEnabled ? "checked" : ""} />
+            <span class="mac-switch-track"></span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.hapticIntensityLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.hapticIntensityDesc"))}</div>
+          </div>
+          <div class="segmented" id="seg-hapticIntensity" role="group" aria-label="${escapeHtml(t(l, "settings.general.hapticIntensityLabel"))}">
+            ${(["light", "medium", "firm", "strong"] as const)
+              .map((level) => {
+                const active = normalizeHapticIntensity(prefs.hapticIntensity) === level;
+                const labelKey =
+                  level === "light"
+                    ? "settings.general.hapticLight"
+                    : level === "medium"
+                      ? "settings.general.hapticMedium"
+                      : level === "firm"
+                        ? "settings.general.hapticFirm"
+                        : "settings.general.hapticStrong";
+                return `<button type="button" data-val="${level}" class="${active ? "is-active" : ""}" aria-pressed="${active ? "true" : "false"}" ${prefs.hapticsEnabled ? "" : "disabled"}>${escapeHtml(t(l, labelKey))}</button>`;
+              })
+              .join("")}
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <div class="setting-label">${escapeHtml(t(l, "settings.general.auraLabel"))}</div>
+            <div class="setting-desc">${escapeHtml(t(l, "settings.general.auraDesc"))}</div>
+          </div>
+          <label class="mac-switch">
+            <input type="checkbox" id="pref-auraEnabled" ${prefs.auraEnabled ? "checked" : ""} />
             <span class="mac-switch-track"></span>
           </label>
         </div>
@@ -1043,8 +1076,34 @@ export function mountSettingsView(root: HTMLElement): () => void {
     });
     mainEl.querySelector<HTMLInputElement>("#pref-hapticsEnabled")?.addEventListener("change", (e) => {
       const checked = (e.target as HTMLInputElement).checked;
+      mainEl.querySelectorAll<HTMLButtonElement>("#seg-hapticIntensity button").forEach((btn) => {
+        btn.disabled = !checked;
+      });
       void persistPrefs((d) => {
         d.hapticsEnabled = checked;
+      });
+    });
+    mainEl.querySelector<HTMLInputElement>("#pref-auraEnabled")?.addEventListener("change", (e) => {
+      const checked = (e.target as HTMLInputElement).checked;
+      void persistPrefs((d) => {
+        d.auraEnabled = checked;
+      });
+    });
+    mainEl.querySelectorAll<HTMLButtonElement>("#seg-hapticIntensity button[data-val]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = normalizeHapticIntensity(btn.dataset.val);
+        mainEl.querySelectorAll<HTMLButtonElement>("#seg-hapticIntensity button").forEach((b) => {
+          const isAct = b === btn;
+          b.classList.toggle("is-active", isAct);
+          b.setAttribute("aria-pressed", isAct ? "true" : "false");
+        });
+        void persistPrefs((d) => {
+          d.hapticIntensity = val;
+        }).then((ok) => {
+          if (ok && !disposed && prefs.hapticsEnabled) {
+            void playWheelFeedback("alignment").catch(() => undefined);
+          }
+        });
       });
     });
     mainEl.querySelector<HTMLButtonElement>("#btn-test-wheel-feedback")?.addEventListener("click", async () => {

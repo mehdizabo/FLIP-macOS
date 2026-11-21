@@ -6,16 +6,19 @@
 //! the source's own format (a rotated JPG stays a JPG), so the output format is resolved from the
 //! source extension and the file gets a descriptive suffix (`photo-crop-9x16.jpg`).
 
+use crate::core::naming::format_extension;
 use crate::core::policy::{ext_lower, IMAGE_EXTS};
+use crate::core::preferences::AppPreferences;
+use crate::core::staging::JobStaging;
 use crate::engines::image::decode_via_bridge_or_rust;
 use crate::engines::redact::{self, Region};
-use crate::engines::{bridge, EngineError};
+use crate::engines::{bridge, resolve_target_dir, validate_container, validate_output, EngineError};
 use ::image::codecs::jpeg::JpegEncoder;
 use ::image::imageops::FilterType;
 use ::image::{DynamicImage, GenericImageView, ImageBuffer, ImageFormat, Rgb, RgbImage, Rgba};
 use std::fs::{self, File};
 use std::io::BufWriter;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -911,6 +914,80 @@ pub fn apply(
     encode_to(out, &result, format, quality)
 }
 
+/// Crops `src` to a normalized `(norm_x, norm_y, norm_w, norm_h)` rectangle and writes `<stem>-cropped.<ext>`
+/// using atomic staging and non-overwriting destination naming.
+pub fn apply_manual_crop(
+    src: &Path,
+    norm_x: f64,
+    norm_y: f64,
+    norm_w: f64,
+    norm_h: f64,
+    prefs: &AppPreferences,
+    cancel: &AtomicBool,
+) -> Result<PathBuf, EngineError> {
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EngineError::Cancelled);
+    }
+    if !norm_x.is_finite()
+        || !norm_y.is_finite()
+        || !norm_w.is_finite()
+        || !norm_h.is_finite()
+        || norm_w <= 0.01
+        || norm_h <= 0.01
+    {
+        return Err(EngineError::ConversionFailed(
+            "Manual crop selection must be wider and taller than 1% of the image.".to_string(),
+        ));
+    }
+
+    let nx = norm_x.clamp(0.0, 1.0);
+    let ny = norm_y.clamp(0.0, 1.0);
+    let nw = norm_w.clamp(0.0, 1.0 - nx);
+    let nh = norm_h.clamp(0.0, 1.0 - ny);
+    if nw <= 0.01 || nh <= 0.01 {
+        return Err(EngineError::ConversionFailed(
+            "Manual crop selection after clamping is too small.".to_string(),
+        ));
+    }
+
+    let ext = ext_lower(src);
+    if !IMAGE_EXTS.contains(&ext.as_str()) {
+        return Err(EngineError::Unsupported(format!(
+            "Manual crop is not available for .{ext} images."
+        )));
+    }
+
+    validate_container(src)?;
+    let target_dir = resolve_target_dir(src, prefs)?;
+    let staging = JobStaging::create(&target_dir)?;
+    let out_format = ImageTool::Crop(CropRatio::Square).output_format(&ext);
+    let staged = staging.staged_path(&format!("output.{}", format_extension(out_format)));
+
+    let cancel_arc = Arc::new(AtomicBool::new(cancel.load(Ordering::Relaxed)));
+    let img = decode_via_bridge_or_rust(src, staging.dir(), &cancel_arc)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EngineError::Cancelled);
+    }
+
+    let (w, h) = img.dimensions();
+    let px = ((nx * f64::from(w)).round() as u32).min(w.saturating_sub(1));
+    let py = ((ny * f64::from(h)).round() as u32).min(h.saturating_sub(1));
+    let max_pw = w.saturating_sub(px).max(1);
+    let max_ph = h.saturating_sub(py).max(1);
+    let pw = ((nw * f64::from(w)).round() as u32).clamp(1, max_pw);
+    let ph = ((nh * f64::from(h)).round() as u32).clamp(1, max_ph);
+    let cropped = img.crop_imm(px, py, pw, ph);
+
+    encode_to(&staged, &cropped, out_format, prefs.image_quality)?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err(EngineError::Cancelled);
+    }
+    validate_output(&staged, out_format)?;
+    let committed = staging.commit_one(&staged, src, Some("-cropped"), out_format)?;
+    staging.cleanup()?;
+    Ok(committed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1322,5 +1399,24 @@ mod tests {
             Err(EngineError::Cancelled)
         ));
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn apply_manual_crop_crops_normalized_rect_and_writes_cropped_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("photo.png");
+        let img = solid(200, 100, [40, 120, 200, 255]);
+        img.save_with_format(&src, ImageFormat::Png).unwrap();
+
+        let prefs = AppPreferences::default();
+        let cancel = AtomicBool::new(false);
+        let out = apply_manual_crop(&src, 0.25, 0.10, 0.50, 0.80, &prefs, &cancel).unwrap();
+
+        assert_eq!(out.file_name().and_then(|s| s.to_str()), Some("photo-cropped.png"));
+        let decoded = ::image::open(&out).unwrap();
+        assert_eq!(decoded.dimensions(), (100, 80));
+
+        assert!(apply_manual_crop(&src, 0.25, 0.10, 0.01, 0.80, &prefs, &cancel).is_err());
+        assert!(apply_manual_crop(&src, 0.25, 0.10, 0.50, 0.005, &prefs, &cancel).is_err());
     }
 }

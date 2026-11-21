@@ -695,6 +695,7 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
             host::commands::inspect_files,
             host::commands::get_thumbnail,
             host::commands::execute_conversion,
+            host::commands::execute_manual_crop,
             host::commands::cancel_conversion,
             host::commands::execute_create_new,
             host::commands::get_new_file_kinds,

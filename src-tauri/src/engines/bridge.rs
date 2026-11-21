@@ -546,9 +546,21 @@ pub fn convert_av(
 }
 
 pub fn feedback(kind: &str, wav_path: Option<&Path>) -> Result<(), BridgeError> {
+    feedback_with_intensity(kind, wav_path, None)
+}
+
+pub fn feedback_with_intensity(
+    kind: &str,
+    wav_path: Option<&Path>,
+    intensity: Option<&str>,
+) -> Result<(), BridgeError> {
     let mut args = vec!["feedback".to_string(), kind.to_string()];
     if let Some(w) = wav_path {
         args.push(w.to_string_lossy().into_owned());
+    }
+    if let Some(lvl) = intensity {
+        args.push("--intensity".to_string());
+        args.push(lvl.to_string());
     }
     let _ = run_bridge_json(&args, 5, None)?;
     Ok(())

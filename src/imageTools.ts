@@ -140,3 +140,52 @@ export function toolActionsForExtensions(
     ["jpg", "jpeg", "png", "webp", "tif", "tiff", "heic", "heif", "avif"].includes(e.toLowerCase());
   return IMAGE_TOOL_TOKENS.filter((t) => t !== "STRIP_EXIF" || exts.every(carriesMetadata));
 }
+
+/**
+ * Pure mirror of Rust `scaled_dimensions` (`src-tauri/src/engines/image_tools.rs`)
+ * for live dimension previews in the wheel hub. Returns null for non-dimension tokens
+ * (including `SCALE_1MB`) or invalid source dimensions.
+ */
+export function computeScaledDimensions(
+  width: number,
+  height: number,
+  token: string,
+): { width: number; height: number } | null {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null;
+  }
+  const w = Math.round(width);
+  const h = Math.round(height);
+  switch (token.trim().toUpperCase()) {
+    case "SCALE_50":
+      return {
+        width: Math.max(1, Math.round(w * 0.5)),
+        height: Math.max(1, Math.round(h * 0.5)),
+      };
+    case "SCALE_25":
+      return {
+        width: Math.max(1, Math.round(w * 0.25)),
+        height: Math.max(1, Math.round(h * 0.25)),
+      };
+    case "SCALE_1080P": {
+      const shorter = Math.min(w, h);
+      if (shorter <= 1080) return { width: w, height: h };
+      const factor = 1080 / shorter;
+      return {
+        width: Math.max(1, Math.round(w * factor)),
+        height: Math.max(1, Math.round(h * factor)),
+      };
+    }
+    case "SCALE_720P": {
+      const shorter = Math.min(w, h);
+      if (shorter <= 720) return { width: w, height: h };
+      const factor = 720 / shorter;
+      return {
+        width: Math.max(1, Math.round(w * factor)),
+        height: Math.max(1, Math.round(h * factor)),
+      };
+    }
+    default:
+      return null;
+  }
+}

@@ -23,6 +23,8 @@ export type FeedbackKind =
   | "success"
   | "error";
 
+export type HapticIntensity = "light" | "medium" | "firm" | "strong";
+
 export type PermissionRequestKind =
   | "accessibility_prompt"
   | "open_accessibility"
@@ -40,6 +42,8 @@ export interface AppPreferences {
   version: number;
   soundEnabled: boolean;
   hapticsEnabled: boolean;
+  hapticIntensity: HapticIntensity | string;
+  auraEnabled: boolean;
   notificationsEnabled: boolean;
   dragTrigger: string;
   idleShortcut: string;
@@ -156,6 +160,8 @@ export interface InspectFilesResult {
   toolActions?: string[];
   availabilityMessage: string;
   family?: FormatFamily | null;
+  imageWidth?: number | null;
+  imageHeight?: number | null;
 }
 
 export interface ThumbnailResult {
@@ -178,6 +184,8 @@ export interface WheelStatePayload {
   originY: number;
   availabilityMessage?: string;
   family?: FormatFamily | null;
+  imageWidth?: number | null;
+  imageHeight?: number | null;
 }
 
 export interface WheelDragFilesPayload {

@@ -1431,6 +1431,21 @@ function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): 
           };
           return payload;
         }
+        case "execute_manual_crop": {
+          const paths = (args.paths as string[]) ?? [];
+          const results = paths.map((src) => ({
+            source: src,
+            format: "CROP_MANUAL",
+            outputs: [`${src}-cropped.jpg`],
+            error: null,
+          }));
+          const payload: ConversionCompletePayload = {
+            success: true,
+            results,
+            error: null,
+          };
+          return payload;
+        }
         case "execute_create_new":
           return {
             path: `/tmp/untitled.${args.kind || "txt"}`,
@@ -1679,6 +1694,29 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     expect(harness.calls.some((c) => c.cmd === "dismiss_wheel" && c.args.reason === "escape-key")).toBe(
       true,
     );
+    });
+  });
+
+  test("WheelView: pressing Cmd+, opens settings window and dismisses wheel with open-settings reason", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      const dispose = mountWheelView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      win.dispatchEvent(
+        new KeyboardEvent("keydown", { key: ",", code: "Comma", metaKey: true, bubbles: true }),
+      );
+      await flushMicrotasks();
+      expect(
+        harness.calls.some((c) => c.cmd === "open_window" && c.args.label === "settings"),
+      ).toBe(true);
+      expect(root.querySelector("#wheel-shell")?.classList.contains("is-closing")).toBe(true);
+      await new Promise<void>((r) => globalThis.setTimeout(r, 130));
+      await flushMicrotasks();
+      expect(
+        harness.calls.some((c) => c.cmd === "dismiss_wheel" && c.args.reason === "open-settings"),
+      ).toBe(true);
     });
   });
 
@@ -2008,6 +2046,257 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     win.dispatchEvent(new KeyboardEvent("keydown", { key: "t" }));
     await flushMicrotasks();
     expect(labels()).not.toContain("Redact");
+    });
+  });
+
+  test("WheelView: Tools face outer concentric sub-ring arc, live Scala dimension preview, and hub face pill", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      const dispose = mountWheelView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      const svgEl = root.querySelector("#wheel-svg") as unknown as ShimElement;
+      const outerArcLayer = root.querySelector<HTMLElement>("#wheel-outer-arc-layer")!;
+      expect(outerArcLayer).not.toBeNull();
+      expect(outerArcLayer.style.display).toBe("none");
+
+      // Emit image state with 4032x3024 dimensions
+      harness.emitEvent("wheel:state", {
+        mode: "convert",
+        files: ["/tmp/photo.heic"],
+        isDrag: false,
+        compatibleFormats: ["PNG", "JPG", "WEBP"],
+        batchActions: [],
+        toolActions: [...IMAGE_TOOL_TOKENS],
+        availabilityMessage: "",
+        family: "image",
+        targetFolder: "/tmp",
+        originX: 220,
+        originY: 220,
+        imageWidth: 4032,
+        imageHeight: 3024,
+      });
+      await flushMicrotasks();
+
+      // Hub integrated face pill renders and switches between Formats and Tools
+      const hubFacePill = root.querySelector<HTMLButtonElement>(".wheel-hub-face-pill[data-hub-face-toggle]")!;
+      expect(hubFacePill).not.toBeNull();
+      expect(hubFacePill.textContent).toContain(t("en", "wheel.faceFormats"));
+      expect(hubFacePill.textContent).toContain(t("en", "wheel.faceTools"));
+      expect(hubFacePill.querySelector('[data-hub-face="formats"]')?.classList.contains("is-active")).toBe(true);
+      expect(hubFacePill.querySelector('[data-hub-face="tools"]')?.classList.contains("is-active")).toBe(false);
+
+      hubFacePill.click();
+      await flushMicrotasks();
+      expect(hubFacePill.querySelector('[data-hub-face="tools"]')?.classList.contains("is-active")).toBe(true);
+      expect(root.querySelector("#wheel-face-toggle")?.getAttribute("aria-pressed")).toBe("true");
+
+      // Hover group:crop (slot 0 of 7 at 12 o'clock -> 220, 96) expands Crop outer sub-ring
+      svgEl.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 96 }));
+      await flushMicrotasks();
+      expect(outerArcLayer.style.display).toBe("block");
+      const cropTokens = Array.from(
+        outerArcLayer.querySelectorAll<HTMLElement>(".wheel-outer-sub-item[data-sub-token]"),
+      ).map((el) => el.dataset.subToken);
+      expect(cropTokens).toEqual(["CROP_MANUAL", "CROP_9_16", "CROP_4_5", "CROP_1_1", "CROP_16_9"]);
+
+      // Hover group:scale (slot 2 of 7 -> angle ~102.86 deg, r=124 -> ~340.9, 247.6) expands Scale outer sub-ring
+      const scaleAngleRad = ((2 * 360) / 7 - 90) * (Math.PI / 180);
+      const scaleX = 220 + 124 * Math.cos(scaleAngleRad);
+      const scaleY = 220 + 124 * Math.sin(scaleAngleRad);
+      svgEl.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, clientX: scaleX, clientY: scaleY }),
+      );
+      await flushMicrotasks();
+
+      const scaleTokens = Array.from(
+        outerArcLayer.querySelectorAll<HTMLElement>(".wheel-outer-sub-item[data-sub-token]"),
+      ).map((el) => el.dataset.subToken);
+      expect(scaleTokens).toEqual(["SCALE_50", "SCALE_25", "SCALE_1080P", "SCALE_720P", "SCALE_1MB"]);
+
+      // Hover SCALE_1080P outer sub-item -> highlights it and previews 4032×3024 → 1440×1080 in hub
+      const scale1080Btn = outerArcLayer.querySelector<HTMLElement>(
+        '.wheel-outer-sub-item[data-sub-token="SCALE_1080P"]',
+      )!;
+      expect(scale1080Btn).not.toBeNull();
+      scale1080Btn.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+      await flushMicrotasks();
+      expect(scale1080Btn.classList.contains("is-active")).toBe(true);
+      expect(root.querySelector(".wheel-hub-subtitle")?.textContent).toBe("4032×3024 → 1440×1080");
+
+      // Hover SCALE_1MB -> shows descriptive label instead of dimensions
+      const scale1mbBtn = outerArcLayer.querySelector<HTMLElement>(
+        '.wheel-outer-sub-item[data-sub-token="SCALE_1MB"]',
+      )!;
+      scale1mbBtn.dispatchEvent(new PointerEvent("pointermove", { bubbles: true }));
+      await flushMicrotasks();
+      expect(root.querySelector(".wheel-hub-subtitle")?.textContent).toBe(t("en", "wheel.tool.scale_1mb"));
+
+      // Clicking SCALE_1080P executes conversion with SCALE_1080P directly
+      scale1080Btn.click();
+      await flushMicrotasks();
+      const execCall = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+      expect(execCall?.args.paths).toEqual(["/tmp/photo.heic"]);
+      expect(execCall?.args.formats).toEqual(["SCALE_1080P"]);
+    });
+  });
+
+  test("WheelView: CROP_MANUAL in Ritaglia outer arc opens #wheel-crop-modal and applies execute_manual_crop", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      const dispose = mountWheelView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      const svgEl = root.querySelector("#wheel-svg") as unknown as ShimElement;
+      const outerArcLayer = root.querySelector<HTMLElement>("#wheel-outer-arc-layer")!;
+      const cropModal = root.querySelector<HTMLElement>("#wheel-crop-modal")!;
+      expect(cropModal).not.toBeNull();
+      expect(cropModal.style.display).toBe("none");
+
+      harness.emitEvent("wheel:state", {
+        mode: "convert",
+        files: ["/tmp/photo.heic"],
+        isDrag: false,
+        compatibleFormats: ["PNG", "JPG"],
+        batchActions: [],
+        toolActions: [...IMAGE_TOOL_TOKENS],
+        availabilityMessage: "",
+        family: "image",
+        targetFolder: "/tmp",
+        originX: 220,
+        originY: 220,
+        imageWidth: 4032,
+        imageHeight: 3024,
+      });
+      await flushMicrotasks();
+
+      // Switch to Tools face and hover Crop (slot 0 at 12 o'clock)
+      win.dispatchEvent(new KeyboardEvent("keydown", { key: "t" }));
+      await flushMicrotasks();
+      svgEl.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 96 }));
+      await flushMicrotasks();
+
+      const manualBtn = outerArcLayer.querySelector<HTMLElement>(
+        '.wheel-outer-sub-item[data-sub-token="CROP_MANUAL"]',
+      )!;
+      expect(manualBtn).not.toBeNull();
+      expect(manualBtn.textContent).toContain(t("en", "wheel.tool.crop_manual_short"));
+
+      // Clicking CROP_MANUAL opens #wheel-crop-modal with live pixel dims (0.8 * 4032 x 0.8 * 3024 = 3226x2419)
+      manualBtn.click();
+      await flushMicrotasks();
+      expect(cropModal.style.display).toBe("flex");
+      expect(root.querySelector("#wheel-crop-dims")?.textContent).toBe("3226×2419");
+
+      // Escape closes modal back to idle wheel without running crop
+      win.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      await flushMicrotasks();
+      expect(cropModal.style.display).toBe("none");
+      expect(harness.calls.some((c) => c.cmd === "execute_manual_crop")).toBe(false);
+
+      // Reopen and click #wheel-crop-apply -> invokes execute_manual_crop with normalized rect
+      svgEl.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 96 }));
+      await flushMicrotasks();
+      outerArcLayer.querySelector<HTMLElement>('.wheel-outer-sub-item[data-sub-token="CROP_MANUAL"]')!.click();
+      await flushMicrotasks();
+      expect(cropModal.style.display).toBe("flex");
+
+      const applyBtn = root.querySelector<HTMLButtonElement>("#wheel-crop-apply")!;
+      expect(applyBtn).not.toBeNull();
+      applyBtn.click();
+      await flushMicrotasks();
+
+      expect(cropModal.style.display).toBe("none");
+      const cropCall = harness.calls.filter((c) => c.cmd === "execute_manual_crop").pop();
+      expect(cropCall).toBeDefined();
+      expect(cropCall?.args.paths).toEqual(["/tmp/photo.heic"]);
+      expect(cropCall?.args.x).toBeCloseTo(0.1, 4);
+      expect(cropCall?.args.y).toBeCloseTo(0.1, 4);
+      expect(cropCall?.args.width).toBeCloseTo(0.8, 4);
+      expect(cropCall?.args.height).toBeCloseTo(0.8, 4);
+      expect(root.querySelector(".wheel-check-svg")).not.toBeNull();
+    });
+  });
+
+  test("WheelView: Space bar opens QuickLook preview when pointer is in center hub and still activates sectors when hovered", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      harness.setCommandOverride("get_thumbnail", async () => ({
+        ok: true,
+        pngBase64: "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==",
+        width: 512,
+        height: 384,
+        error: null,
+      }));
+      const dispose = mountWheelView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      const svgEl = root.querySelector("#wheel-svg") as unknown as ShimElement;
+      const spacePreview = root.querySelector<HTMLElement>("#wheel-space-preview")!;
+      expect(spacePreview).not.toBeNull();
+      expect(spacePreview.style.display).toBe("none");
+
+      harness.emitEvent("wheel:state", {
+        mode: "convert",
+        files: ["/tmp/photo.heic"],
+        isDrag: false,
+        compatibleFormats: ["PNG", "JPG"],
+        batchActions: [],
+        toolActions: [...IMAGE_TOOL_TOKENS],
+        availabilityMessage: "",
+        family: "image",
+        targetFolder: "/tmp",
+        originX: 220,
+        originY: 220,
+        imageWidth: 4032,
+        imageHeight: 3024,
+      });
+      await flushMicrotasks();
+
+      // Pointer in center hub (220, 220) + Space -> opens #wheel-space-preview
+      svgEl.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 220 }));
+      await flushMicrotasks();
+      win.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space" }));
+      await flushMicrotasks();
+      expect(spacePreview.style.display).toBe("flex");
+      expect(spacePreview.textContent).toContain("photo.heic");
+      expect(spacePreview.textContent).toContain("4032×3024");
+      expect(harness.calls.some((c) => c.cmd === "execute_conversion")).toBe(false);
+
+      // Pressing Space again closes preview without dismissing wheel
+      win.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space" }));
+      await flushMicrotasks();
+      expect(spacePreview.style.display).toBe("none");
+      expect(root.querySelector("#wheel-shell")?.classList.contains("is-closing")).toBe(false);
+
+      // Re-open via native wheel:space event while in center hub, then Escape closes preview without dismissing wheel
+      harness.emitEvent("wheel:space", {});
+      await flushMicrotasks();
+      expect(spacePreview.style.display).toBe("flex");
+      win.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      await flushMicrotasks();
+      expect(spacePreview.style.display).toBe("none");
+      expect(root.querySelector("#wheel-shell")?.classList.contains("is-closing")).toBe(false);
+
+      // Moving pointer outside center hub (r = 120 -> 340, 220) closes an open preview, and Space activates the sector
+      harness.emitEvent("wheel:space", {});
+      await flushMicrotasks();
+      expect(spacePreview.style.display).toBe("flex");
+      svgEl.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 340, clientY: 220 }));
+      await flushMicrotasks();
+      expect(spacePreview.style.display).toBe("none");
+
+      // Hover sector 0 (220, 96) and press Space -> activates conversion instead of QuickLook preview
+      svgEl.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 96 }));
+      await flushMicrotasks();
+      win.dispatchEvent(new KeyboardEvent("keydown", { key: " ", code: "Space" }));
+      await flushMicrotasks();
+      expect(spacePreview.style.display).toBe("none");
+      const convCall = harness.calls.filter((c) => c.cmd === "execute_conversion").pop();
+      expect(convCall?.args.formats).toEqual(["PNG"]);
     });
   });
 
@@ -2638,6 +2927,57 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
     langSelectIt.dispatchEvent(new Event("change", { bubbles: true }));
     await flushMicrotasks();
     expect(harness.prefs.language).toBe("en");
+
+    // Verify #seg-hapticIntensity defaults to "firm", clicking "strong" saves hapticIntensity: "strong" and plays alignment feedback, and toggling #pref-hapticsEnabled toggles button disabled state
+    const firmBtn = root.querySelector<HTMLButtonElement>('#seg-hapticIntensity button[data-val="firm"]')!;
+    const strongBtn = root.querySelector<HTMLButtonElement>('#seg-hapticIntensity button[data-val="strong"]')!;
+    expect(firmBtn).not.toBeNull();
+    expect(strongBtn).not.toBeNull();
+    expect(firmBtn.classList.contains("is-active")).toBe(true);
+    expect(firmBtn.getAttribute("aria-pressed")).toBe("true");
+    expect(strongBtn.classList.contains("is-active")).toBe(false);
+
+    strongBtn.click();
+    await flushMicrotasks();
+    const strongBtnAfter = root.querySelector<HTMLButtonElement>('#seg-hapticIntensity button[data-val="strong"]')!;
+    const firmBtnAfter = root.querySelector<HTMLButtonElement>('#seg-hapticIntensity button[data-val="firm"]')!;
+    expect(harness.prefs.hapticIntensity).toBe("strong");
+    expect(strongBtnAfter.classList.contains("is-active")).toBe(true);
+    expect(strongBtnAfter.getAttribute("aria-pressed")).toBe("true");
+    expect(firmBtnAfter.classList.contains("is-active")).toBe(false);
+    expect(
+      harness.calls.some(
+        (c) => c.cmd === "save_preferences" && c.args.prefs?.hapticIntensity === "strong",
+      ),
+    ).toBe(true);
+    expect(
+      harness.calls.some((c) => c.cmd === "play_wheel_feedback" && c.args.kind === "alignment"),
+    ).toBe(true);
+
+    root.querySelector<HTMLInputElement>("#pref-hapticsEnabled")!.click();
+    await flushMicrotasks();
+    expect(
+      root.querySelector<HTMLButtonElement>('#seg-hapticIntensity button[data-val="strong"]')!.disabled,
+    ).toBe(true);
+    root.querySelector<HTMLInputElement>("#pref-hapticsEnabled")!.click();
+    await flushMicrotasks();
+    expect(
+      root.querySelector<HTMLButtonElement>('#seg-hapticIntensity button[data-val="strong"]')!.disabled,
+    ).toBe(false);
+
+    // Verify #pref-auraEnabled defaults to checked and persists toggle changes
+    const auraChk = root.querySelector<HTMLInputElement>("#pref-auraEnabled")!;
+    expect(auraChk).not.toBeNull();
+    expect(auraChk.checked).toBe(true);
+    auraChk.click();
+    await flushMicrotasks();
+    expect(harness.prefs.auraEnabled).toBe(false);
+    expect(
+      harness.calls.some((c) => c.cmd === "save_preferences" && c.args.prefs?.auraEnabled === false),
+    ).toBe(true);
+    auraChk.click();
+    await flushMicrotasks();
+    expect(harness.prefs.auraEnabled).toBe(true);
 
     // Verify #btn-test-wheel-feedback strictly waits for in-flight save_preferences (saveQueue)
     let releaseSave!: (saved: AppPreferences) => void;

@@ -398,6 +398,31 @@ fn handle_monitor_event(app: &AppHandle, state: &Arc<HostState>, raw: &str) {
                 }
             }
         }
+        "wheel_space" => {
+            if state.is_converting.load(Ordering::Relaxed) {
+                return;
+            }
+            let is_open = state.wheel.lock().map(|g| g.is_open).unwrap_or(false);
+            if is_open {
+                if let Some(win) = app.get_webview_window("wheel") {
+                    let _ = win.emit("wheel:space", json!({}));
+                }
+            }
+        }
+        "open_settings" => {
+            if state.is_converting.load(Ordering::Relaxed) {
+                return;
+            }
+            let is_open = state.wheel.lock().map(|g| g.is_open).unwrap_or(false);
+            if !is_open {
+                return;
+            }
+            if let Some(win) = app.get_webview_window("wheel") {
+                let _ = win.emit("wheel:escape", json!({ "alreadyHidden": true }));
+            }
+            let _ = crate::host::show_standard_window(app, state, "settings");
+            hide_wheel(app, state, "open-settings");
+        }
         _ => {}
     }
 }
@@ -431,7 +456,11 @@ pub fn start_monitor_supervisor(app: AppHandle, state: Arc<HostState>) {
                         .mouse_trigger_button
                         .map(|b| b.to_string())
                         .unwrap_or_else(|| "-1".to_string()),
-                );
+                )
+                .arg("--haptic-intensity")
+                .arg(&prefs.haptic_intensity)
+                .arg("--aura-enabled")
+                .arg(if prefs.aura_enabled { "true" } else { "false" });
             if let Some(w) = wav {
                 cmd.arg("--wav").arg(w);
             }

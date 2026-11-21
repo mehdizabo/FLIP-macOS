@@ -309,6 +309,60 @@ pub fn spawn_completion_notification(
     });
 }
 
+fn finish_conversion_outcome(
+    app: &AppHandle,
+    state_arc: &Arc<HostState>,
+    prefs_for_notify: &AppPreferences,
+    outcome: Result<Vec<ConversionResult>, EngineError>,
+    elapsed: std::time::Duration,
+    from_batch: bool,
+    wheel_was_open: bool,
+) -> ConversionCompletePayload {
+    let was_cancelled = matches!(outcome, Err(EngineError::Cancelled));
+
+    let payload = match outcome {
+        Ok(results) => {
+            record_recent_conversion(app, state_arc, &results);
+
+            let first_err = results.iter().find_map(|r| r.error.clone());
+            let all_ok = first_err.is_none();
+            ConversionCompletePayload {
+                success: all_ok,
+                results,
+                error: first_err,
+            }
+        }
+        Err(EngineError::Cancelled) => ConversionCompletePayload {
+            success: false,
+            results: Vec::new(),
+            error: Some("Conversion cancelled".to_string()),
+        },
+        Err(err) => ConversionCompletePayload {
+            success: false,
+            results: Vec::new(),
+            error: Some(err.to_string()),
+        },
+    };
+
+    let _ = app.emit("conversion:complete", &payload);
+    if payload.success {
+        if prefs_for_notify.aura_enabled {
+            state_arc.send_monitor_command(json!({ "cmd": "aura", "state": "success" }));
+        }
+    } else {
+        state_arc.send_monitor_command(json!({ "cmd": "aura", "state": "off" }));
+    }
+    spawn_completion_notification(
+        prefs_for_notify,
+        &payload.results,
+        payload.error.as_deref(),
+        was_cancelled,
+        elapsed,
+        from_batch || !wheel_was_open,
+    );
+    payload
+}
+
 #[tauri::command]
 pub async fn execute_conversion(
     paths: Vec<String>,
@@ -379,43 +433,139 @@ pub async fn execute_conversion(
     .await
     .map_err(|e| e.to_string())?;
 
-    let elapsed = started.elapsed();
-    let was_cancelled = matches!(outcome, Err(EngineError::Cancelled));
+    Ok(finish_conversion_outcome(
+        &app,
+        &state_arc,
+        &prefs_for_notify,
+        outcome,
+        started.elapsed(),
+        from_batch,
+        wheel_was_open,
+    ))
+}
 
-    let payload = match outcome {
-        Ok(results) => {
-            record_recent_conversion(&app, &state_arc, &results);
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub async fn execute_manual_crop(
+    paths: Vec<String>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    state: State<'_, Arc<HostState>>,
+) -> Result<ConversionCompletePayload, String> {
+    if state
+        .is_converting
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("Another conversion is already in progress.".to_string());
+    }
 
-            let first_err = results.iter().find_map(|r| r.error.clone());
-            let all_ok = first_err.is_none();
-            ConversionCompletePayload {
-                success: all_ok,
-                results,
-                error: first_err,
+    let cancel = Arc::new(AtomicBool::new(false));
+    if let Ok(mut guard) = state.active_cancel.lock() {
+        *guard = Some(Arc::clone(&cancel));
+    }
+    let from_batch = window.label() == "batch";
+    let from_wheel = window.label() == "wheel";
+    let wheel_was_open = if let Ok(mut wheel_guard) = state.wheel.lock() {
+        if wheel_guard.is_open {
+            if from_wheel {
+                wheel_guard.acted_epoch = wheel_guard.open_epoch;
             }
+            true
+        } else {
+            false
         }
-        Err(EngineError::Cancelled) => ConversionCompletePayload {
-            success: false,
-            results: Vec::new(),
-            error: Some("Conversion cancelled".to_string()),
-        },
-        Err(err) => ConversionCompletePayload {
-            success: false,
-            results: Vec::new(),
-            error: Some(err.to_string()),
-        },
+    } else {
+        false
     };
 
-    let _ = app.emit("conversion:complete", &payload);
-    spawn_completion_notification(
+    let state_arc = Arc::clone(&*state);
+    let _busy_guard = ConversionBusyGuard {
+        state: Arc::clone(&state_arc),
+    };
+
+    let prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
+    let prefs_for_notify = prefs.clone();
+    let path_bufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+    let app_for_progress = app.clone();
+    let cancel_for_job = Arc::clone(&cancel);
+    let started = std::time::Instant::now();
+
+    let outcome = tokio::task::spawn_blocking(move || -> Result<Vec<ConversionResult>, EngineError> {
+        if cancel_for_job.load(Ordering::Relaxed) {
+            return Err(EngineError::Cancelled);
+        }
+        let validated = crate::core::policy::validate_input_files(&path_bufs)?;
+        let total = validated.len().max(1);
+        let mut results = Vec::with_capacity(validated.len());
+
+        for (idx, src) in validated.iter().enumerate() {
+            if cancel_for_job.load(Ordering::Relaxed) {
+                return Err(EngineError::Cancelled);
+            }
+            let name = src
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("image");
+            let pct = ((idx * 100) / total) as u8;
+            let _ = app_for_progress.emit(
+                "conversion:progress",
+                json!({
+                    "percent": pct,
+                    "label": format!("Cropping {name}"),
+                }),
+            );
+
+            match crate::engines::image_tools::apply_manual_crop(
+                src,
+                x,
+                y,
+                width,
+                height,
+                &prefs,
+                &cancel_for_job,
+            ) {
+                Ok(out_path) => results.push(ConversionResult {
+                    source: src.to_string_lossy().into_owned(),
+                    format: "CROP_MANUAL".to_string(),
+                    outputs: vec![out_path.to_string_lossy().into_owned()],
+                    error: None,
+                }),
+                Err(err) if err.is_cancelled() => return Err(EngineError::Cancelled),
+                Err(err) => results.push(ConversionResult {
+                    source: src.to_string_lossy().into_owned(),
+                    format: "CROP_MANUAL".to_string(),
+                    outputs: Vec::new(),
+                    error: Some(err.to_string()),
+                }),
+            }
+        }
+
+        let _ = app_for_progress.emit(
+            "conversion:progress",
+            json!({
+                "percent": 100u8,
+                "label": "Done",
+            }),
+        );
+        Ok(results)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    Ok(finish_conversion_outcome(
+        &app,
+        &state_arc,
         &prefs_for_notify,
-        &payload.results,
-        payload.error.as_deref(),
-        was_cancelled,
-        elapsed,
-        from_batch || !wheel_was_open,
-    );
-    Ok(payload)
+        outcome,
+        started.elapsed(),
+        from_batch,
+        wheel_was_open,
+    ))
 }
 
 #[tauri::command]
@@ -440,6 +590,7 @@ pub async fn execute_create_new(
     }
     let state_arc = Arc::clone(&*state);
     let prefs = state_arc.prefs.lock().map(|g| g.clone()).unwrap_or_default();
+    let aura_enabled = prefs.aura_enabled;
 
     let created = tokio::task::spawn_blocking(move || {
         let dir_opt = target_folder
@@ -452,6 +603,10 @@ pub async fn execute_create_new(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
+
+    if aura_enabled {
+        state_arc.send_monitor_command(json!({ "cmd": "aura", "state": "success" }));
+    }
 
     let (result, open_after) = created;
     if open_after && !Path::new(&result.path).is_dir() {
@@ -670,11 +825,11 @@ pub fn resolve_feedback_kind(
 
 #[tauri::command]
 pub fn play_wheel_feedback(kind: String, state: State<'_, Arc<HostState>>) -> Result<(), String> {
-    let (sound_on, haptics_on) = state
+    let (sound_on, haptics_on, haptic_intensity) = state
         .prefs
         .lock()
-        .map(|g| (g.sound_enabled, g.haptics_enabled))
-        .unwrap_or((true, true));
+        .map(|g| (g.sound_enabled, g.haptics_enabled, g.haptic_intensity.clone()))
+        .unwrap_or_else(|_| (true, true, "firm".to_string()));
 
     let Some(effective_kind) = resolve_feedback_kind(&kind, sound_on, haptics_on) else {
         return Ok(());
@@ -689,13 +844,18 @@ pub fn play_wheel_feedback(kind: String, state: State<'_, Arc<HostState>>) -> Re
         state.send_monitor_command(json!({
             "cmd": "feedback",
             "kind": effective_kind,
+            "intensity": haptic_intensity,
         }));
         return Ok(());
     }
 
     let wav = state.wav_path.lock().ok().and_then(|g| g.clone());
     std::thread::spawn(move || {
-        let _ = bridge::feedback(effective_kind, wav.as_deref());
+        let _ = bridge::feedback_with_intensity(
+            effective_kind,
+            wav.as_deref(),
+            Some(&haptic_intensity),
+        );
     });
     Ok(())
 }
@@ -738,7 +898,17 @@ pub async fn open_window(
         .await
         .map_err(|e| e.to_string())?
     } else {
-        show_standard_window(&app, &state_arc, &label)
+        let res = show_standard_window(&app, &state_arc, &label);
+        let wheel_open = state_arc.wheel.lock().map(|g| g.is_open).unwrap_or(false);
+        if wheel_open {
+            let reason = match label.as_str() {
+                "settings" => "open-settings",
+                "batch" => "open-batch",
+                _ => "open-window",
+            };
+            hide_wheel(&app, &state_arc, reason);
+        }
+        res
     }
 }
 

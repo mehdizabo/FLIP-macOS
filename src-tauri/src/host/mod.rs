@@ -172,6 +172,10 @@ pub struct WheelStatePayload {
     pub origin_y: f64,
     pub availability_message: String,
     pub family: Option<FormatFamily>,
+    #[serde(default)]
+    pub image_width: Option<u32>,
+    #[serde(default)]
+    pub image_height: Option<u32>,
 }
 
 impl WheelStatePayload {
@@ -184,6 +188,8 @@ impl WheelStatePayload {
         self.tool_actions = inspected.tool_actions;
         self.availability_message = inspected.availability_message;
         self.family = inspected.family;
+        self.image_width = inspected.image_width;
+        self.image_height = inspected.image_height;
     }
 }
 
@@ -198,6 +204,10 @@ pub struct InspectFilesResult {
     pub tool_actions: Vec<String>,
     pub availability_message: String,
     pub family: Option<FormatFamily>,
+    #[serde(default)]
+    pub image_width: Option<u32>,
+    #[serde(default)]
+    pub image_height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -253,6 +263,8 @@ impl HostState {
                     origin_y: (WHEEL_WINDOW_SIZE / 2) as f64,
                     availability_message: "Drop local files here".to_string(),
                     family: None,
+                    image_width: None,
+                    image_height: None,
                 },
                 is_open: false,
                 window_x: 0,
@@ -303,6 +315,8 @@ impl HostState {
             "mouseButton": prefs.mouse_trigger_button.map(|b| b as i64).unwrap_or(-1),
             "wavPath": wav,
             "wheelOpen": wheel_open,
+            "hapticIntensity": prefs.haptic_intensity,
+            "auraEnabled": prefs.aura_enabled,
         }));
     }
 
@@ -383,6 +397,8 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
             tool_actions: Vec::new(),
             availability_message: "Drop local files here".to_string(),
             family: None,
+            image_width: None,
+            image_height: None,
         };
     }
 
@@ -400,6 +416,15 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
                 .into_iter()
                 .map(String::from)
                 .collect();
+            let (image_width, image_height) =
+                if family == Some(FormatFamily::Image) && !valid.is_empty() {
+                    image::image_dimensions(&valid[0])
+                        .ok()
+                        .map(|(w, h)| (Some(w), Some(h)))
+                        .unwrap_or((None, None))
+                } else {
+                    (None, None)
+                };
             let msg = availability_message(&valid, &caps);
             InspectFilesResult {
                 files: valid
@@ -411,6 +436,8 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
                 tool_actions,
                 availability_message: msg,
                 family,
+                image_width,
+                image_height,
             }
         }
         Err(PolicyError::InvalidBatchCount) => InspectFilesResult {
@@ -420,6 +447,8 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
             tool_actions: Vec::new(),
             availability_message: PolicyError::InvalidBatchCount.to_string(),
             family: None,
+            image_width: None,
+            image_height: None,
         },
         Err(err) => InspectFilesResult {
             files: paths.to_vec(),
@@ -428,6 +457,8 @@ pub fn inspect_paths_with_prefs(paths: &[String], prefs: &AppPreferences) -> Ins
             tool_actions: Vec::new(),
             availability_message: err.to_string(),
             family: None,
+            image_width: None,
+            image_height: None,
         },
     }
 }
@@ -498,6 +529,29 @@ pub fn show_standard_window(
     let _ = win.unminimize();
     let _ = win.show();
     let _ = win.set_focus();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = win.with_webview(|webview| {
+            use objc2_app_kit::{NSApplication, NSWindow};
+            use objc2_foundation::MainThreadMarker;
+            if let Some(mtm) = MainThreadMarker::new() {
+                let ns_app = NSApplication::sharedApplication(mtm);
+                if ns_app.isHidden() {
+                    ns_app.unhideWithoutActivation();
+                }
+                #[allow(deprecated)]
+                ns_app.activateIgnoringOtherApps(true);
+            }
+            let ptr = webview.ns_window().cast::<NSWindow>();
+            if !ptr.is_null() {
+                // SAFETY: `with_webview` runs on the macOS main thread with a live NSWindow handle.
+                unsafe {
+                    let ns_win = &*ptr;
+                    ns_win.makeKeyAndOrderFront(None);
+                }
+            }
+        });
+    }
     Ok(())
 }
 
@@ -561,6 +615,8 @@ pub fn present_wheel_at(
             tool_actions: Vec::new(),
             availability_message: "Drop local files here".to_string(),
             family: None,
+            image_width: None,
+            image_height: None,
         }
     } else {
         inspect_paths_with_prefs(&files, &prefs)
@@ -595,6 +651,8 @@ pub fn present_wheel_at(
         origin_y,
         availability_message: inspected.availability_message,
         family: inspected.family,
+        image_width: inspected.image_width,
+        image_height: inspected.image_height,
     };
 
     let mut present_epoch = 0u64;
@@ -636,6 +694,12 @@ pub fn present_wheel_at(
         "cmd": "wheel_state",
         "open": true
     }));
+    if prefs.aura_enabled {
+        state.send_monitor_command(json!({
+            "cmd": "aura",
+            "state": "active"
+        }));
+    }
 
     log_event(
         "wheel.open",
@@ -667,6 +731,12 @@ pub fn hide_wheel(app: &AppHandle, state: &Arc<HostState>, reason: &str) {
         "cmd": "wheel_state",
         "open": false
     }));
+    if reason == "escape-key" || reason == "drag-ended" {
+        state.send_monitor_command(json!({
+            "cmd": "aura",
+            "state": "off"
+        }));
+    }
     if let Some(win) = app.get_webview_window("wheel") {
         let _ = win.hide();
         let _ = win.set_focusable(false);
@@ -677,7 +747,12 @@ pub fn hide_wheel(app: &AppHandle, state: &Arc<HostState>, reason: &str) {
                     .and_then(|w| w.is_visible().ok())
                     .unwrap_or(false)
             });
-            if !any_standard_visible && reason != "create-new-completed" {
+            if !any_standard_visible
+                && !matches!(
+                    reason,
+                    "create-new-completed" | "open-settings" | "open-batch"
+                )
+            {
                 let _ = win.with_webview(|_| {
                     use objc2_app_kit::NSApplication;
                     use objc2_foundation::MainThreadMarker;
@@ -755,7 +830,36 @@ mod tests {
             origin_y: 220.0,
             availability_message: "Drop local files here".to_string(),
             family: None,
+            image_width: None,
+            image_height: None,
         }
+    }
+
+    #[test]
+    fn inspect_paths_populates_image_dimensions_and_clears_for_non_images() {
+        let dir = tempdir().unwrap();
+        let prefs = AppPreferences::default();
+        let img_path = dir.path().join("photo.png");
+        let img = image::RgbaImage::new(48, 24);
+        img.save(&img_path).unwrap();
+
+        let doc_path = dir.path().join("notes.pdf");
+        fs::write(&doc_path, b"fake").unwrap();
+
+        let mut payload = empty_payload();
+        payload.apply_inspection(inspect_paths_with_prefs(
+            &[img_path.to_string_lossy().into_owned()],
+            &prefs,
+        ));
+        assert_eq!(payload.image_width, Some(48));
+        assert_eq!(payload.image_height, Some(24));
+
+        payload.apply_inspection(inspect_paths_with_prefs(
+            &[doc_path.to_string_lossy().into_owned()],
+            &prefs,
+        ));
+        assert_eq!(payload.image_width, None);
+        assert_eq!(payload.image_height, None);
     }
 
     #[test]

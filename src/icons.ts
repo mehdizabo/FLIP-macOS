@@ -268,6 +268,14 @@ export function getToolGroupMeta(id: ToolGroupId, lang = "en"): FormatMeta {
 
 export function getFormatMeta(format: string, lang = "en"): FormatMeta {
   const key = format.trim().toUpperCase();
+  if (key === "CROP_MANUAL") {
+    return {
+      shortLabel: t(lang, "wheel.tool.crop_manual_short"),
+      title: t(lang, "wheel.tool.crop_manual"),
+      accent: "#FF9F0A",
+      iconSvg: UI_ICONS.crop,
+    };
+  }
   if (isImageToolToken(key)) {
     const visual = TOOL_VISUALS[key];
     return {

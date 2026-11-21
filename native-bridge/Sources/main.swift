@@ -4,7 +4,7 @@ import AppKit
 func printUsage() {
     let usage = """
     flip-macos-bridge subcommands:
-      monitor [--drag-key Down] [--idle-shortcut Option+Shift+Space] [--mouse-button -1] [--wav <path>]
+      monitor [--drag-key Down] [--idle-shortcut Option+Shift+Space] [--mouse-button -1] [--wav <path>] [--haptic-intensity <light|medium|firm|strong>] [--aura-enabled <true|false>]
       finder-context
       finder-reveal [--rename] <path...>
       clipboard-inspect
@@ -25,7 +25,7 @@ func printUsage() {
       pdfa-inspect <pdf>
       convert-av <input> <format> <output>
       create-iwork <pages|numbers|key> <output>
-      feedback <tick|sound|alignment|level|generic|success|error> [wav-path]
+      feedback <tick|sound|alignment|level|generic|success|error> [wav-path] [--intensity <light|medium|firm|strong>]
       notify <title> <body> [reveal-path]
     """
     print(usage)
@@ -50,6 +50,8 @@ func runCLI() {
         var idleShortcut = "Option+Shift+Space"
         var mouseButton: Int? = nil
         var wavPath: String? = nil
+        var hapticIntensity: String? = nil
+        var auraEnabled = true
         var i = 1
         while i < args.count {
             switch args[i] {
@@ -61,12 +63,20 @@ func runCLI() {
                 if i + 1 < args.count { mouseButton = Int(args[i + 1]); i += 1 }
             case "--wav":
                 if i + 1 < args.count { wavPath = args[i + 1]; i += 1 }
+            case "--haptic-intensity":
+                if i + 1 < args.count { hapticIntensity = args[i + 1]; i += 1 }
+            case "--aura-enabled":
+                if i + 1 < args.count {
+                    let raw = args[i + 1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    auraEnabled = !(raw == "false" || raw == "0" || raw == "no")
+                    i += 1
+                }
             default:
                 break
             }
             i += 1
         }
-        MonitorController.shared.run(dragKey: dragKey, idleShortcutSpec: idleShortcut, mouseButton: mouseButton, wavPath: wavPath)
+        MonitorController.shared.run(dragKey: dragKey, idleShortcutSpec: idleShortcut, mouseButton: mouseButton, wavPath: wavPath, hapticIntensity: hapticIntensity, auraEnabled: auraEnabled)
 
     case "finder-context":
         writeJSON(FinderBridge.getFinderContext())
@@ -225,13 +235,26 @@ func runCLI() {
         }
 
     case "feedback":
-        guard args.count >= 2 else { failExit("feedback <kind> [wav-path]") }
+        guard args.count >= 2 else { failExit("feedback <kind> [wav-path] [--intensity <level>]") }
         let kind = args[1]
-        let wav = args.count >= 3 ? args[2] : nil
-        let player = FeedbackPlayer(wavPath: wav)
-        player.play(kind: kind)
+        var wav: String? = nil
+        var intensity: String? = nil
+        var i = 2
+        while i < args.count {
+            if args[i] == "--intensity" || args[i] == "--haptic-intensity" {
+                if i + 1 < args.count {
+                    intensity = args[i + 1]
+                    i += 1
+                }
+            } else if wav == nil {
+                wav = args[i]
+            }
+            i += 1
+        }
+        let player = FeedbackPlayer(wavPath: wav, intensity: intensity)
+        player.play(kind: kind, intensityOverride: intensity)
         let lowerKind = kind.lowercased()
-        if wav != nil || lowerKind == "tick" || lowerKind == "sound" {
+        if wav != nil || lowerKind == "tick" || lowerKind == "sound" || lowerKind == "alignment" || lowerKind == "level" || lowerKind == "generic" || lowerKind == "success" {
             RunLoop.current.run(until: Date().addingTimeInterval(0.15))
         }
         writeJSON(["ok": true])

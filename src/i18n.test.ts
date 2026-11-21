@@ -119,5 +119,22 @@ describe("EN/IT i18n dictionary and formatter", () => {
 
     expect(t("en", "wheel.actionAnimateGif")).toBe("Animate into GIF");
     expect(t("it", "wheel.actionAnimateGif")).toBe("Anima in GIF");
+
+    expect(t("en", "settings.general.hapticsLabel")).toBe("Trackpad & mouse haptics");
+    expect(t("it", "settings.general.hapticsLabel")).toBe("Feedback aptico trackpad e mouse");
+    expect(t("en", "settings.general.hapticIntensityLabel")).toBe("Haptic intensity");
+    expect(t("it", "settings.general.hapticIntensityLabel")).toBe("Intensità feedback aptico");
+    expect(t("en", "settings.general.hapticLight")).toBe("Light");
+    expect(t("en", "settings.general.hapticMedium")).toBe("Medium");
+    expect(t("en", "settings.general.hapticFirm")).toBe("Firm");
+    expect(t("en", "settings.general.hapticStrong")).toBe("Strong");
+    expect(t("it", "settings.general.hapticLight")).toBe("Leggero");
+    expect(t("it", "settings.general.hapticMedium")).toBe("Medio");
+    expect(t("it", "settings.general.hapticFirm")).toBe("Deciso");
+    expect(t("it", "settings.general.hapticStrong")).toBe("Forte");
+    expect(t("en", "settings.general.auraLabel")).toBe("Screen-edge Aura glow");
+    expect(t("it", "settings.general.auraLabel")).toBe("Bagliore Aura ai bordi dello schermo");
+    expect(t("en", "settings.general.auraDesc")).toContain("Breathing orange");
+    expect(t("it", "settings.general.auraDesc")).toContain("Respiro luminoso arancione");
   });
 });

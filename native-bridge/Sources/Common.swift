@@ -142,6 +142,7 @@ func keyCodeForName(_ raw: String) -> UInt16? {
     case "k": return 40
     case "n": return 45
     case "m": return 46
+    case ",", "comma": return 43
     case "1": return 18
     case "2": return 19
     case "3": return 20

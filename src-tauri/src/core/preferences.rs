@@ -22,6 +22,10 @@ pub struct AppPreferences {
     #[serde(alias = "SoundEnabled")]
     pub sound_enabled: bool,
     pub haptics_enabled: bool,
+    #[serde(default = "default_haptic_intensity")]
+    pub haptic_intensity: String,
+    #[serde(default = "default_aura_enabled")]
+    pub aura_enabled: bool,
     pub notifications_enabled: bool,
     #[serde(alias = "Trigger")]
     pub drag_trigger: String,
@@ -53,6 +57,8 @@ impl Default for AppPreferences {
             version: 1,
             sound_enabled: true,
             haptics_enabled: true,
+            haptic_intensity: default_haptic_intensity(),
+            aura_enabled: true,
             notifications_enabled: true,
             drag_trigger: "Down".to_string(),
             idle_shortcut: "Option+Shift+Space".to_string(),
@@ -76,6 +82,14 @@ impl Default for AppPreferences {
             language: "en".to_string(),
         }
     }
+}
+
+pub fn default_haptic_intensity() -> String {
+    "firm".to_string()
+}
+
+pub fn default_aura_enabled() -> bool {
+    true
 }
 
 pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
@@ -237,6 +251,13 @@ impl AppPreferences {
             "it".to_string()
         } else {
             "en".to_string()
+        };
+        self.haptic_intensity = match self.haptic_intensity.trim().to_ascii_lowercase().as_str() {
+            "light" | "1" | "subtle" => "light".to_string(),
+            "medium" | "2" => "medium".to_string(),
+            "firm" | "3" | "default" => "firm".to_string(),
+            "strong" | "4" | "5" | "max" => "strong".to_string(),
+            _ => "firm".to_string(),
         };
         if self.mouse_trigger_button.is_some_and(|b| !(2..=5).contains(&b)) {
             self.mouse_trigger_button = None;
@@ -423,5 +444,75 @@ mod tests {
         };
         empty_prefs.sanitize();
         assert_eq!(empty_prefs.language, "en");
+    }
+
+    #[test]
+    fn haptic_intensity_defaults_to_firm_roundtrips_and_sanitizes() {
+        let def = AppPreferences::default();
+        assert_eq!(def.haptic_intensity, "firm");
+
+        let legacy: AppPreferences = serde_json::from_str(r#"{"soundEnabled":true}"#).unwrap();
+        assert_eq!(legacy.haptic_intensity, "firm");
+
+        let cases = [
+            ("light", "light"),
+            ("1", "light"),
+            ("SUBTLE", "light"),
+            (" medium ", "medium"),
+            ("2", "medium"),
+            ("firm", "firm"),
+            ("3", "firm"),
+            ("default", "firm"),
+            ("STRONG", "strong"),
+            ("4", "strong"),
+            ("5", "strong"),
+            ("max", "strong"),
+            ("invalid", "firm"),
+            ("", "firm"),
+        ];
+        for (input, expected) in cases {
+            let mut prefs = AppPreferences {
+                haptic_intensity: input.to_string(),
+                ..Default::default()
+            };
+            prefs.sanitize();
+            assert_eq!(prefs.haptic_intensity, expected, "input: {input:?}");
+        }
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let saved = AppPreferences {
+            haptic_intensity: "strong".to_string(),
+            ..Default::default()
+        };
+        saved.save_to(&path).unwrap();
+        let loaded = AppPreferences::load_from(&path);
+        assert_eq!(loaded.haptic_intensity, "strong");
+    }
+
+    #[test]
+    fn aura_enabled_defaults_to_true_and_roundtrips_json() {
+        let def = AppPreferences::default();
+        assert!(def.aura_enabled);
+
+        let legacy: AppPreferences = serde_json::from_str(r#"{"soundEnabled":true}"#).unwrap();
+        assert!(legacy.aura_enabled);
+
+        let disabled: AppPreferences =
+            serde_json::from_str(r#"{"auraEnabled":false}"#).unwrap();
+        assert!(!disabled.aura_enabled);
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let saved = AppPreferences {
+            aura_enabled: false,
+            ..Default::default()
+        };
+        saved.save_to(&path).unwrap();
+        let loaded = AppPreferences::load_from(&path);
+        assert!(!loaded.aura_enabled);
+
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains(r#""auraEnabled": false"#));
     }
 }

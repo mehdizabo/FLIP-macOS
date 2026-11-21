@@ -116,6 +116,8 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
         origin_y: 220.0,
         availability_message: String::new(),
         family: Some(FormatFamily::IWork),
+        image_width: None,
+        image_height: None,
     };
     let wv = serde_json::to_value(&wheel_payload).unwrap();
     for key in [
@@ -551,7 +553,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
             }
         }
     }
-    assert_eq!(rust_cmds.len(), 28);
+    assert_eq!(rust_cmds.len(), 29);
 
     // Extract every invoke<...>("cmd_name") in src/ipc.ts
     let mut ts_cmds = BTreeSet::new();
@@ -580,6 +582,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         "wheel:escape",
         "wheel:toggle-raw",
         "wheel:toggle-face",
+        "wheel:space",
         "conversion:progress",
         "conversion:complete",
         "batch:files",
@@ -636,7 +639,7 @@ fn frontend_and_rust_command_and_event_names_match_exactly() {
         rust_param_map.insert(name, keys);
         rem = &after_fn[close_p..];
     }
-    assert_eq!(rust_param_map.len(), 28);
+    assert_eq!(rust_param_map.len(), 29);
 
     let mut ts_search = ipc_ts.as_str();
     while let Some(idx) = ts_search.find("invoke<") {
