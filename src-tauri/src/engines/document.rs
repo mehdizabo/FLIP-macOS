@@ -6366,6 +6366,7 @@ Intro before quote:
             keynote: false,
             whisper: None,
             whisper_model: None,
+            ghostscript: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
 

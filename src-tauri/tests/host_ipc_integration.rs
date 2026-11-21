@@ -146,6 +146,7 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
         whisper_model: Some(PathBuf::from(
             "/Users/test/Library/Application Support/FLIP/models/ggml-small.bin",
         )),
+        ghostscript: Some(PathBuf::from("/opt/homebrew/bin/gs")),
         native_frameworks: NativeFrameworksStatus {
             image_io: true,
             pdf_kit: true,
@@ -164,6 +165,12 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
         "/Users/test/Library/Application Support/FLIP/models/ggml-small.bin"
     );
     assert!(ev.get("whisper").is_some() && ev.get("whisperModel").is_some());
+    // PDF/A: the absolute path of gs, or an explicit null (the key never disappears).
+    assert_eq!(ev["ghostscript"], "/opt/homebrew/bin/gs");
+    let mut without_gs = engine_status.clone();
+    without_gs.ghostscript = None;
+    let ev_without = serde_json::to_value(&without_gs).unwrap();
+    assert!(ev_without.get("ghostscript").is_some_and(|v| v.is_null()));
 
     let new_kinds = NewFileKindsResponse {
         kinds: vec![NewFileKindInfo {

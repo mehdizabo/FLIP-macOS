@@ -63,6 +63,8 @@ pub struct EngineCapabilities {
     pub keynote: bool,
     /// Transcription is offered only when whisper binary, model and ffmpeg are all present.
     pub whisper: bool,
+    /// PDF/A is offered only when Ghostscript, the native bridge and Ghostscript's sRGB profile are all present.
+    pub ghostscript: bool,
 }
 
 impl EngineCapabilities {
@@ -78,6 +80,7 @@ impl EngineCapabilities {
             numbers: true,
             keynote: true,
             whisper: true,
+            ghostscript: true,
         }
     }
 }
@@ -198,23 +201,30 @@ fn targets_for_single_ext(ext: &str, caps: &EngineCapabilities) -> Vec<&'static 
                 vec![]
             }
         }
-        "pdf" => vec![
-            "PNG",
-            "JPG",
-            "WEBP",
-            "HEIC",
-            "TIFF",
-            "TXT",
-            "DOCX",
-            "MD",
-            "HTML",
-            "RTF",
-            "ODT",
-            "EPUB",
-            "FB2",
-            "RST",
-            "OPTIMIZE_PDF",
-        ],
+        "pdf" => {
+            let mut out = vec![
+                "PNG",
+                "JPG",
+                "WEBP",
+                "HEIC",
+                "TIFF",
+                "TXT",
+                "DOCX",
+                "MD",
+                "HTML",
+                "RTF",
+                "ODT",
+                "EPUB",
+                "FB2",
+                "RST",
+                "OPTIMIZE_PDF",
+            ];
+            // PDF/A needs Ghostscript, so it is offered only when the capability is complete.
+            if caps.ghostscript {
+                out.push("PDFA");
+            }
+            out
+        }
         e if DOC_NATIVE_EXTS.contains(&e) => vec![
             "PDF", "DOCX", "MD", "HTML", "TXT", "RTF", "ODT", "PNG", "JPG", "WEBP", "HEIC",
             "EPUB", "FB2", "RST",
@@ -367,6 +377,7 @@ pub fn order_formats(
             "DOCX",
             "PDF",
             "OPTIMIZE_PDF",
+            "PDFA",
             "HTML",
             "MD",
             "TXT",
@@ -956,6 +967,94 @@ mod tests {
         let mkv = ordered.iter().position(|f| f == "MKV").unwrap();
         assert_eq!(transcribe, aac + 1, "ordered={ordered:?}");
         assert!(transcribe < mkv, "ordered={ordered:?}");
+    }
+
+    #[test]
+    fn pdfa_is_offered_for_pdf_only_with_ghostscript() {
+        let without = EngineCapabilities::native_only();
+        let with = EngineCapabilities {
+            ghostscript: true,
+            ..Default::default()
+        };
+
+        let off = outputs(&["report.pdf"], &without);
+        let on = outputs(&["report.pdf"], &with);
+        assert!(
+            !off.contains(&"PDFA".to_string()),
+            "PDFA offered without Ghostscript: {off:?}"
+        );
+        assert!(on.contains(&"PDFA".to_string()), "PDFA missing with Ghostscript: {on:?}");
+        // It sits right after OPTIMIZE_PDF and changes nothing else.
+        let optimize = on.iter().position(|f| f == "OPTIMIZE_PDF").unwrap();
+        let pdfa = on.iter().position(|f| f == "PDFA").unwrap();
+        assert_eq!(pdfa, optimize + 1, "on={on:?}");
+        let mut base = on.clone();
+        base.retain(|f| f != "PDFA");
+        assert_eq!(base, off, "the other PDF targets changed");
+
+        // Every other kind of file never offers PDFA, whatever the capabilities.
+        for ext in [
+            "png", "jpg", "heic", "txt", "md", "docx", "json", "csv", "mp3", "m4a", "mp4", "mkv",
+            "zip", "epub", "rtf",
+        ] {
+            let file = format!("file.{ext}");
+            for caps in [&with, &EngineCapabilities::all()] {
+                assert!(
+                    !outputs(&[file.as_str()], caps).contains(&"PDFA".to_string()),
+                    "{file} must never offer PDFA"
+                );
+            }
+        }
+        assert!(outputs(&["slides.pdf"], &EngineCapabilities::all()).contains(&"PDFA".to_string()));
+    }
+
+    #[test]
+    fn pdfa_follows_optimize_pdf_in_multi_pdf_and_mixed_selections() {
+        let with = EngineCapabilities {
+            ghostscript: true,
+            ..Default::default()
+        };
+
+        // Several PDFs share the same targets as one PDF, so OPTIMIZE_PDF and PDFA stay together.
+        let two = outputs(&["a.pdf", "b.pdf"], &with);
+        assert!(two.contains(&"OPTIMIZE_PDF".to_string()), "{two:?}");
+        assert!(two.contains(&"PDFA".to_string()), "{two:?}");
+        let two_off = outputs(&["a.pdf", "b.pdf"], &EngineCapabilities::native_only());
+        assert!(two_off.contains(&"OPTIMIZE_PDF".to_string()), "{two_off:?}");
+        assert!(!two_off.contains(&"PDFA".to_string()), "{two_off:?}");
+
+        // A PDF and an image: the intersection drops every PDF-only token, PDFA included.
+        let mixed = outputs(&["a.pdf", "photo.jpg"], &with);
+        assert!(!mixed.contains(&"PDFA".to_string()), "mixed selection offered PDFA: {mixed:?}");
+        assert!(
+            !mixed.contains(&"OPTIMIZE_PDF".to_string()),
+            "mixed selection offered OPTIMIZE_PDF: {mixed:?}"
+        );
+        let mixed_all = outputs(&["a.pdf", "photo.jpg"], &EngineCapabilities::all());
+        assert!(!mixed_all.contains(&"PDFA".to_string()), "{mixed_all:?}");
+    }
+
+    #[test]
+    fn pdfa_sits_after_optimize_pdf_in_the_global_fallback_order() {
+        let available = vec![
+            "HTML".to_string(),
+            "PDFA".to_string(),
+            "OPTIMIZE_PDF".to_string(),
+            "PDF".to_string(),
+            "ZIP".to_string(),
+        ];
+        let ordered = order_formats(&available, None, None);
+        let optimize = ordered.iter().position(|f| f == "OPTIMIZE_PDF").unwrap();
+        let pdfa = ordered.iter().position(|f| f == "PDFA").unwrap();
+        let html = ordered.iter().position(|f| f == "HTML").unwrap();
+        assert_eq!(pdfa, optimize + 1, "ordered={ordered:?}");
+        assert!(pdfa < html, "ordered={ordered:?}");
+
+        // The PDF family list from the preferences gives the same relative order.
+        let from_family = order_formats(&available, Some(FormatFamily::Pdf), None);
+        let optimize = from_family.iter().position(|f| f == "OPTIMIZE_PDF").unwrap();
+        let pdfa = from_family.iter().position(|f| f == "PDFA").unwrap();
+        assert_eq!(pdfa, optimize + 1, "from_family={from_family:?}");
     }
 
     #[test]

@@ -81,6 +81,8 @@ pub struct DetectedTools {
     pub whisper: Option<PathBuf>,
     /// The multilingual `ggml-small.bin` model file, when present in the app support folder.
     pub whisper_model: Option<PathBuf>,
+    /// The Ghostscript command line binary (`gs`), when installed; PDF/A needs it.
+    pub ghostscript: Option<PathBuf>,
 }
 
 impl DetectedTools {
@@ -93,6 +95,13 @@ impl DetectedTools {
             keynote: self.keynote,
             // Transcription needs all three parts: the binary, the model and ffmpeg.
             whisper: self.whisper.is_some() && self.whisper_model.is_some() && self.ffmpeg.is_some(),
+            // PDF/A needs all three parts: Ghostscript, the native bridge (PDFKit pre-pass and
+            // inspection) and the sRGB profile that ships with this Ghostscript install.
+            ghostscript: self.bridge.is_some()
+                && self
+                    .ghostscript
+                    .as_deref()
+                    .is_some_and(|gs| pdfa::srgb_profile_for(gs).is_some()),
         }
     }
 }
@@ -169,6 +178,13 @@ pub fn detect_tools_with(
         }
     };
 
+    // `FLIP_DISABLE_GHOSTSCRIPT=1` hides Ghostscript, so PDF/A is not offered (same pattern as Whisper).
+    let ghostscript = if env_flag_enabled(get_env("FLIP_DISABLE_GHOSTSCRIPT").as_deref()) {
+        None
+    } else {
+        find_tool(None, "gs")
+    };
+
     DetectedTools {
         ffmpeg,
         ffprobe,
@@ -179,6 +195,7 @@ pub fn detect_tools_with(
         keynote: Path::new("/Applications/Keynote.app").exists(),
         whisper,
         whisper_model,
+        ghostscript,
     }
 }
 
@@ -281,7 +298,7 @@ pub fn validate_output_with_mode(
     }
 
     match fmt.as_str() {
-        "PDF" | "OPTIMIZE_PDF" => {
+        "PDF" | "OPTIMIZE_PDF" | "PDFA" => {
             use std::io::{Seek, SeekFrom};
             let mut f = File::open(path)?;
             let mut hdr = [0u8; 5];
@@ -1103,6 +1120,36 @@ fn convert_transcribe_unit(
     Ok(vec![out])
 }
 
+/// Converts one PDF to PDF/A-2b; both tools arrive from `DetectedTools`, nothing is searched.
+fn convert_pdfa_unit(
+    source: &Path,
+    staging: &JobStaging,
+    tools: &DetectedTools,
+    cancel: &Arc<AtomicBool>,
+    unit_progress: &dyn Fn(u8),
+) -> Result<Vec<PathBuf>, EngineError> {
+    let ghostscript = tools.ghostscript.as_deref().ok_or_else(|| {
+        EngineError::Unsupported(
+            "PDF/A needs Ghostscript (gs), which is not installed.".to_string(),
+        )
+    })?;
+    let bridge = tools.bridge.as_deref().ok_or_else(|| {
+        EngineError::Unsupported(
+            "PDF/A needs FLIP's native bridge to read and prepare the PDF, and it was not found."
+                .to_string(),
+        )
+    })?;
+
+    let out = staging.staged_path(&format!("output.{}", format_extension("PDFA")));
+    let engine_tools = pdfa::PdfaTools {
+        ghostscript,
+        bridge,
+    };
+    unit_progress(35);
+    pdfa::convert(source, &out, &engine_tools, staging.dir(), cancel)?;
+    Ok(vec![out])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn convert_standard_unit(
     source: &Path,
@@ -1145,6 +1192,11 @@ fn convert_standard_unit(
         media::convert(source, format, &out, tools, cancel, unit_progress)?;
         Ok(vec![out])
     } else if ext == "pdf" {
+        if format == "PDFA" {
+            // The whole job holds the global conversion gate, so a long PDF/A conversion blocks other
+            // conversions until it finishes. That is intentional: one external tool at a time.
+            return convert_pdfa_unit(source, staging, tools, cancel, unit_progress);
+        }
         pdf::convert(source, format, staging.dir(), prefs, tools, cancel, unit_progress)
     } else if ARCHIVE_EXTS.contains(&ext) {
         unit_progress(35);
@@ -1373,6 +1425,7 @@ mod tests {
             keynote: false,
             whisper: Some(PathBuf::from("/opt/homebrew/bin/whisper-cli")),
             whisper_model: Some(PathBuf::from("/tmp/ggml-small.bin")),
+            ghostscript: None,
         };
         assert!(base.capabilities().whisper);
 
@@ -1432,6 +1485,7 @@ mod tests {
             keynote: false,
             whisper: Some(whisper),
             whisper_model: Some(model),
+            ghostscript: None,
         };
         let caps = tools.capabilities();
         assert!(caps.whisper);
@@ -1503,6 +1557,244 @@ mod tests {
             invalid_err.to_string().contains("not valid UTF-8"),
             "{invalid_err}"
         );
+    }
+
+    #[test]
+    fn detect_tools_with_honors_ghostscript_disable_flag() {
+        let disabled = detect_tools_with(None, &|key| match key {
+            "FLIP_DISABLE_GHOSTSCRIPT" => Some("1".to_string()),
+            _ => None,
+        });
+        assert!(disabled.ghostscript.is_none());
+        assert!(!disabled.capabilities().ghostscript);
+
+        // `0` does not disable anything: the result mirrors what this machine actually has.
+        let expected = find_tool(None, "gs");
+        for value in [None, Some("0")] {
+            let enabled = detect_tools_with(None, &|key| match key {
+                "FLIP_DISABLE_GHOSTSCRIPT" => value.map(String::from),
+                _ => None,
+            });
+            assert_eq!(enabled.ghostscript, expected, "flag value {value:?}");
+        }
+    }
+
+    /// Builds `<root>/bin/gs` (a stub) and, when `with_profile` is true, the flat sRGB layout next to it.
+    fn fake_ghostscript_install(root: &Path, with_profile: bool) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::create_dir_all(root.join("bin")).unwrap();
+        let gs = root.join("bin").join("gs");
+        fs::write(&gs, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&gs, fs::Permissions::from_mode(0o755)).unwrap();
+        if with_profile {
+            let icc = root.join("share").join("ghostscript").join("iccprofiles");
+            fs::create_dir_all(&icc).unwrap();
+            fs::write(icc.join("srgb.icc"), b"fake icc").unwrap();
+        }
+        gs
+    }
+
+    fn pdfa_test_tools(gs: Option<PathBuf>, bridge: Option<PathBuf>) -> DetectedTools {
+        DetectedTools {
+            ffmpeg: None,
+            ffprobe: None,
+            pandoc: None,
+            bridge,
+            pages: false,
+            numbers: false,
+            keynote: false,
+            whisper: None,
+            whisper_model: None,
+            ghostscript: gs,
+        }
+    }
+
+    #[test]
+    fn ghostscript_capability_needs_gs_bridge_and_srgb_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let complete = fake_ghostscript_install(&dir.path().join("complete"), true);
+        let no_profile = fake_ghostscript_install(&dir.path().join("no-profile"), false);
+        let bridge = dir.path().join("flip-macos-bridge");
+        fs::write(&bridge, b"stub").unwrap();
+
+        let all_three = pdfa_test_tools(Some(complete.clone()), Some(bridge.clone()));
+        assert!(all_three.capabilities().ghostscript);
+        // Nothing else turns on with it.
+        assert!(!all_three.capabilities().whisper);
+        assert!(!all_three.capabilities().ffmpeg);
+
+        // gs present, bridge present, but the profile is missing: not offered.
+        let without_profile = pdfa_test_tools(Some(no_profile), Some(bridge.clone()));
+        assert!(!without_profile.capabilities().ghostscript);
+
+        // gs and profile present, but no bridge: not offered.
+        let without_bridge = pdfa_test_tools(Some(complete), None);
+        assert!(!without_bridge.capabilities().ghostscript);
+
+        // Bridge present, but no gs at all: not offered.
+        let without_gs = pdfa_test_tools(None, Some(bridge));
+        assert!(!without_gs.capabilities().ghostscript);
+
+        // A gs path that does not exist cannot produce a profile either.
+        let missing_gs = pdfa_test_tools(
+            Some(dir.path().join("nowhere").join("bin").join("gs")),
+            Some(dir.path().join("flip-macos-bridge")),
+        );
+        assert!(!missing_gs.capabilities().ghostscript);
+    }
+
+    #[test]
+    fn ghostscript_capability_follows_a_symlinked_gs_to_its_real_install() {
+        // Homebrew puts a symlink in /opt/homebrew/bin; the profile lives next to the real binary.
+        let dir = tempfile::tempdir().unwrap();
+        let real = fake_ghostscript_install(&dir.path().join("Cellar").join("ghostscript"), true);
+        let links = dir.path().join("bin");
+        fs::create_dir(&links).unwrap();
+        let link = links.join("gs");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let bridge = dir.path().join("flip-macos-bridge");
+        fs::write(&bridge, b"stub").unwrap();
+
+        assert!(pdfa_test_tools(Some(link), Some(bridge)).capabilities().ghostscript);
+    }
+
+    #[test]
+    fn validate_output_checks_pdfa_like_a_pdf() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let good = dir.path().join("good.pdf");
+        fs::write(&good, "%PDF-1.7\nbody\n%%EOF\n").unwrap();
+        assert!(validate_output(&good, "PDFA").is_ok());
+        assert!(validate_output(&good, "OPTIMIZE_PDF").is_ok());
+
+        let no_header = dir.path().join("no-header.pdf");
+        fs::write(&no_header, "hello world, not a pdf\n%%EOF\n").unwrap();
+        let err = validate_output(&no_header, "PDFA").unwrap_err();
+        assert!(err.to_string().contains("Missing %PDF- header"), "{err}");
+
+        let truncated = dir.path().join("truncated.pdf");
+        fs::write(&truncated, "%PDF-1.7\nbody without a trailer\n").unwrap();
+        let err = validate_output(&truncated, "PDFA").unwrap_err();
+        assert!(err.to_string().contains("missing %%EOF"), "{err}");
+
+        let empty = dir.path().join("empty.pdf");
+        fs::write(&empty, b"").unwrap();
+        assert!(validate_output(&empty, "PDFA").is_err());
+    }
+
+    #[test]
+    fn convert_single_unit_routes_pdfa_through_fake_tools() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir().unwrap();
+        let tool_dir = tempfile::tempdir().unwrap();
+
+        // Fake Ghostscript: writes a tiny PDF to the file named by `-sOutputFile=` (`%%` is a literal `%`).
+        let gs = fake_ghostscript_install(&tool_dir.path().join("gs-install"), true);
+        fs::write(
+            &gs,
+            r##"#!/bin/sh
+outfile=
+for a in "$@"; do
+  case "$a" in
+    -sOutputFile=*) outfile=${a#-sOutputFile=} ;;
+  esac
+done
+real=$(printf '%s' "$outfile" | sed 's/%%/%/g')
+printf '%%PDF-1.7 fake pdfa output\n%%%%EOF\n' > "$real"
+"##,
+        )
+        .unwrap();
+
+        // Fake bridge: the staged output reads as PDF/A-2b, the source does not; nothing to mark printable.
+        let bridge = tool_dir.path().join("flip-macos-bridge");
+        fs::write(
+            &bridge,
+            r##"#!/bin/sh
+case "$1" in
+  pdf-printable) echo '{"ok":true,"annotations":0,"changed":0,"written":false}' ;;
+  pdfa-inspect)
+    case "$2" in
+      */pdfa-out.pdf) echo '{"ok":true,"pages":2,"characters":900,"locked":false,"outputIntent":true,"part":2,"conformance":"B"}' ;;
+      *) echo '{"ok":true,"pages":2,"characters":1000,"locked":false,"outputIntent":false,"part":null,"conformance":null}' ;;
+    esac ;;
+  *) echo '{"ok":false,"error":"unknown command"}'; exit 1 ;;
+esac
+"##,
+        )
+        .unwrap();
+        fs::set_permissions(&bridge, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let source = home.path().join("report.pdf");
+        let original = b"%PDF-1.7 original bytes\n%%EOF\n";
+        fs::write(&source, original).unwrap();
+
+        let tools = pdfa_test_tools(Some(gs), Some(bridge));
+        let caps = tools.capabilities();
+        assert!(caps.ghostscript);
+        assert!(outputs(&[&source], &caps).contains(&"PDFA".to_string()));
+
+        let prefs = AppPreferences::default();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let outputs_vec = convert_single_unit(
+            &source,
+            "PDFA",
+            &prefs,
+            &tools,
+            &caps,
+            &cancel,
+            false,
+            &|_| {},
+        )
+        .unwrap();
+        assert_eq!(outputs_vec.len(), 1);
+        assert_eq!(
+            outputs_vec[0].file_name().and_then(|n| n.to_str()),
+            Some("report 2.pdf")
+        );
+        assert_eq!(outputs_vec[0].parent(), Some(home.path()));
+        assert_eq!(
+            fs::read_to_string(&outputs_vec[0]).unwrap(),
+            "%PDF-1.7 fake pdfa output\n%%EOF\n"
+        );
+        assert!(validate_output(&outputs_vec[0], "PDFA").is_ok());
+        // The original stays as it was, and no staging folder is left behind.
+        assert_eq!(fs::read(&source).unwrap(), original);
+        let mut names: Vec<String> = fs::read_dir(home.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["report 2.pdf".to_string(), "report.pdf".to_string()]);
+
+        // Without the capability the token is refused before any tool runs.
+        let off = pdfa_test_tools(None, None).capabilities();
+        let err = convert_single_unit(&source, "PDFA", &prefs, &tools, &off, &cancel, false, &|_| {})
+            .unwrap_err();
+        assert!(matches!(err, EngineError::Unsupported(_)), "{err}");
+
+        // A missing tool must be a clean Unsupported error, never a panic.
+        let staging = JobStaging::create(home.path()).unwrap();
+        for broken in [
+            pdfa_test_tools(None, tools.bridge.clone()),
+            pdfa_test_tools(tools.ghostscript.clone(), None),
+        ] {
+            let err = convert_standard_unit(
+                &source,
+                "pdf",
+                "PDFA",
+                &staging,
+                &prefs,
+                &broken,
+                &cancel,
+                &|_| {},
+            )
+            .unwrap_err();
+            assert!(matches!(err, EngineError::Unsupported(_)), "{err}");
+        }
+        staging.cleanup().unwrap();
     }
 
     #[test]

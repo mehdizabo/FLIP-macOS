@@ -22,7 +22,7 @@ pub fn format_extension(format: &str) -> String {
         "HEIF" => "heic".to_string(),
         "AIF" => "aiff".to_string(),
         "REMOVE_BG" => "png".to_string(),
-        "OPTIMIZE_PDF" => "pdf".to_string(),
+        "OPTIMIZE_PDF" | "PDFA" => "pdf".to_string(),
         "TRANSCRIBE" => "txt".to_string(),
         "ZIP" => "zip".to_string(),
         "UNZIP" => String::new(),
@@ -214,6 +214,25 @@ mod tests {
         fs::write(&p, b"first").unwrap();
         let p2 = next_available_conversion_path(dir.path(), &src, None, "TRANSCRIBE").unwrap();
         assert_eq!(p2.file_name().unwrap().to_str().unwrap(), "interview 2.txt");
+    }
+
+    #[test]
+    fn pdfa_outputs_are_named_like_optimize_pdf_results() {
+        assert_eq!(format_extension("PDFA"), "pdf");
+        assert_eq!(format_extension(" pdfa "), "pdf");
+        assert_eq!(format_extension("PDFA"), format_extension("OPTIMIZE_PDF"));
+
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("report.pdf");
+        fs::write(&src, b"%PDF-1.7").unwrap();
+        // The source already owns `report.pdf`, so the result is the next free numbered name.
+        let p = next_available_conversion_path(dir.path(), &src, None, "PDFA").unwrap();
+        assert_eq!(p.file_name().unwrap().to_str().unwrap(), "report 2.pdf");
+        let optimize = next_available_conversion_path(dir.path(), &src, None, "OPTIMIZE_PDF").unwrap();
+        assert_eq!(optimize, p, "PDFA and OPTIMIZE_PDF must name results the same way");
+        fs::write(&p, b"first").unwrap();
+        let p2 = next_available_conversion_path(dir.path(), &src, None, "PDFA").unwrap();
+        assert_eq!(p2.file_name().unwrap().to_str().unwrap(), "report 3.pdf");
     }
 
     #[test]
