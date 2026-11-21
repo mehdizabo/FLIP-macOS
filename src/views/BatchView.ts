@@ -37,6 +37,7 @@ type BatchStatusMode =
 
 export function mountBatchView(root: HTMLElement): () => void {
   document.documentElement.dataset.route = "batch";
+  document.documentElement.dataset.tauri = isTauriRuntime() ? "1" : "0";
 
   let disposed = false;
   let prefs: AppPreferences = defaultPreferences();
@@ -91,95 +92,97 @@ export function mountBatchView(root: HTMLElement): () => void {
 
   root.innerHTML = `
     <div class="batch-shell">
-      <div class="page-header">
+      <div class="batch-header" data-tauri-drag-region>
         <div>
           <h1 class="page-title" id="batch-title"></h1>
           <p class="card-subtitle" id="batch-subtitle"></p>
         </div>
-        <div style="display:flex;gap:8px">
+        <div class="batch-header-actions">
           <button type="button" class="btn btn-sm" id="batch-open-settings">${UI_ICONS.settings}<span id="batch-open-settings-label"></span></button>
         </div>
       </div>
 
       <section class="batch-dropzone" id="batch-dropzone">
-        <div style="color:var(--accent)">${UI_ICONS.drop}</div>
-        <div style="font-weight:600;font-size:14px" id="batch-drop-title"></div>
+        <div class="batch-drop-icon">${UI_ICONS.drop}</div>
+        <div class="batch-drop-title" id="batch-drop-title"></div>
         <div class="setting-desc" id="batch-drop-desc"></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:4px">
+        <div class="batch-drop-actions">
           <button type="button" class="btn btn-sm" id="batch-load-wheel"></button>
-          <label class="btn btn-sm" style="cursor:pointer">
+          <label class="btn btn-sm batch-file-picker-btn">
             <span id="batch-choose-files-label"></span>
-            <input type="file" id="batch-file-input" multiple style="display:none" />
+            <input type="file" id="batch-file-input" class="batch-hidden-input" multiple />
           </label>
           <button type="button" class="btn btn-sm" id="batch-clear-files"></button>
         </div>
-        <div style="display:flex;gap:6px;width:100%;max-width:520px;margin-top:6px">
-          <input type="text" class="mac-input" id="batch-path-input" style="flex:1" />
+        <div class="batch-path-bar">
+          <input type="text" class="mac-input" id="batch-path-input" />
           <button type="button" class="btn btn-sm" id="batch-add-path"></button>
         </div>
       </section>
 
-      <section class="glass-card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title" id="batch-selected-title"></h2>
-            <p class="card-subtitle" id="batch-selected-sub"></p>
-          </div>
+      <section class="settings-section">
+        <div class="settings-section-header">
+          <h2 class="settings-section-title" id="batch-selected-title"></h2>
           <button type="button" class="btn btn-sm" id="batch-open-source-folder" disabled>${UI_ICONS.finder}<span id="batch-open-source-label"></span></button>
         </div>
-        <div class="batch-file-list" id="batch-file-list"></div>
+        <div class="settings-group">
+          <div class="batch-file-list" id="batch-file-list"></div>
+        </div>
+        <p class="settings-group-footer" id="batch-selected-sub"></p>
       </section>
 
-      <section class="glass-card">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title" id="batch-output-title"></h2>
-            <p class="card-subtitle" id="batch-compat-subtitle"></p>
-          </div>
-          <div style="display:flex;gap:6px">
+      <section class="settings-section">
+        <div class="settings-section-header">
+          <h2 class="settings-section-title" id="batch-output-title"></h2>
+          <div class="setting-row-actions">
             <button type="button" class="btn btn-sm" id="batch-select-all"></button>
             <button type="button" class="btn btn-sm" id="batch-select-none"></button>
           </div>
         </div>
-        <div class="batch-format-grid" id="batch-format-grid"></div>
-        <div id="batch-actions-wrap" style="margin-top:12px;display:none">
-          <div class="setting-desc" style="margin-bottom:6px;font-weight:600" id="batch-actions-heading"></div>
-          <div class="batch-format-grid" id="batch-actions-grid"></div>
+        <div class="settings-group settings-group-pad">
+          <div class="batch-format-grid" id="batch-format-grid"></div>
+          <div id="batch-actions-wrap" class="batch-actions-wrap" style="display:none">
+            <div class="batch-actions-heading" id="batch-actions-heading"></div>
+            <div class="batch-format-grid" id="batch-actions-grid"></div>
+          </div>
+        </div>
+        <p class="settings-group-footer" id="batch-compat-subtitle"></p>
+      </section>
+
+      <section class="settings-section">
+        <div class="settings-group settings-group-pad">
+          <label class="batch-raw-toggle" for="batch-raw-mode-toggle">
+            <input type="checkbox" class="mac-checkbox" id="batch-raw-mode-toggle" />
+            <span class="batch-raw-toggle-text">
+              <span class="batch-raw-toggle-label" id="batch-raw-mode-label"></span>
+              <span class="setting-desc" id="batch-raw-mode-hint"></span>
+            </span>
+          </label>
+          <div class="batch-run-bar">
+            <div class="batch-run-buttons">
+              <button type="button" class="btn btn-primary" id="batch-run-btn" disabled></button>
+              <button type="button" class="btn btn-danger" id="batch-cancel-btn" disabled></button>
+              <button type="button" class="btn btn-sm" id="batch-progress-copy-diag" style="display:none"></button>
+            </div>
+            <div class="setting-desc tabular-nums" id="batch-progress-label"></div>
+          </div>
+          <div class="progress-bar-wrap">
+            <div class="progress-bar-fill" id="batch-progress-fill" style="width:0%"></div>
+          </div>
+          <div id="batch-progress-diag-fallback" class="batch-diag-fallback" style="display:none"></div>
         </div>
       </section>
 
-      <section class="glass-card">
-        <label class="batch-raw-toggle" for="batch-raw-mode-toggle">
-          <input type="checkbox" id="batch-raw-mode-toggle" />
-          <span class="batch-raw-toggle-text">
-            <span class="batch-raw-toggle-label" id="batch-raw-mode-label"></span>
-            <span class="setting-desc" id="batch-raw-mode-hint"></span>
-          </span>
-        </label>
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <div style="display:flex;gap:8px;align-items:center">
-            <button type="button" class="btn btn-primary" id="batch-run-btn" disabled></button>
-            <button type="button" class="btn btn-danger" id="batch-cancel-btn" disabled></button>
-            <button type="button" class="btn btn-sm" id="batch-progress-copy-diag" style="display:none"></button>
-          </div>
-          <div class="setting-desc" id="batch-progress-label"></div>
-        </div>
-        <div class="progress-bar-wrap" style="margin-top:12px">
-          <div class="progress-bar-fill" id="batch-progress-fill" style="width:0%"></div>
-        </div>
-        <div id="batch-progress-diag-fallback" style="display:none;margin-top:10px"></div>
-      </section>
-
-      <section class="glass-card" id="batch-results-card" style="display:none">
-        <div class="card-header">
-          <div>
-            <h2 class="card-title" id="batch-results-title"></h2>
-            <p class="card-subtitle" id="batch-results-summary"></p>
-          </div>
+      <section class="settings-section" id="batch-results-card" style="display:none">
+        <div class="settings-section-header">
+          <h2 class="settings-section-title" id="batch-results-title"></h2>
           <button type="button" class="btn btn-sm" id="batch-results-copy-diag" style="display:none"></button>
         </div>
-        <div id="batch-results-diag-fallback" style="display:none;margin-bottom:10px"></div>
-        <div class="batch-results-list" id="batch-results-list"></div>
+        <div class="settings-group">
+          <div id="batch-results-diag-fallback" class="batch-diag-fallback" style="display:none"></div>
+          <div class="batch-results-list" id="batch-results-list"></div>
+        </div>
+        <p class="settings-group-footer tabular-nums" id="batch-results-summary"></p>
       </section>
     </div>
   `;
@@ -239,16 +242,16 @@ export function mountBatchView(root: HTMLElement): () => void {
     openSourceBtn.disabled = files.length === 0;
 
     if (files.length === 0) {
-      fileListEl.innerHTML = `<div class="setting-desc">${escapeHtml(t(l, "batch.noFilesYet"))}</div>`;
+      fileListEl.innerHTML = `<div class="setting-desc batch-empty-pad">${escapeHtml(t(l, "batch.noFilesYet"))}</div>`;
     } else {
       fileListEl.innerHTML = files
         .map((f, idx) => {
           const ext = extLower(f).toUpperCase() || "FILE";
           return `
             <div class="batch-file-item">
-              <div style="min-width:0;flex:1">
-                <div style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(f)}">${escapeHtml(basename(f))}</div>
-                <div style="font-size:11px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(dirname(f))}</div>
+              <div class="batch-file-info">
+                <div class="batch-file-name" title="${escapeHtml(f)}">${escapeHtml(basename(f))}</div>
+                <div class="batch-file-dir">${escapeHtml(dirname(f))}</div>
               </div>
               <span class="code-chip">${escapeHtml(ext)}</span>
               <button type="button" class="btn btn-sm" data-remove-file="${idx}" ${busy ? "disabled" : ""} aria-label="${escapeHtml(t(l, "batch.removeFileAria"))}">${UI_ICONS.trash}</button>
@@ -293,7 +296,7 @@ export function mountBatchView(root: HTMLElement): () => void {
     } else if (allOptions.length === 0) {
       const msg = localizeAvailabilityMessage(l, inspection.availabilityMessage).replace(/\n/g, " · ");
       compatSubtitleEl.textContent = msg;
-      formatGridEl.innerHTML = `<div class="status-pill is-warn">${escapeHtml(msg)}</div>`;
+      formatGridEl.innerHTML = `<div class="status-inline is-warn"><span class="status-dot"></span>${escapeHtml(msg)}</div>`;
       actionsWrapEl.style.display = "none";
     } else {
       const noun = files.length === 1 ? t(l, "vo.fileSingular") : t(l, "vo.filePlural");
@@ -310,7 +313,7 @@ export function mountBatchView(root: HTMLElement): () => void {
                 const checked = selectedFormats.has(fmt);
                 return `
                   <label class="format-check-pill">
-                    <input type="checkbox" data-format-chk="${escapeHtml(fmt)}" ${checked ? "checked" : ""} ${busy ? "disabled" : ""} />
+                    <input type="checkbox" class="mac-checkbox" data-format-chk="${escapeHtml(fmt)}" ${checked ? "checked" : ""} ${busy ? "disabled" : ""} />
                     <span>${escapeHtml(formatDisplayLabel(fmt))}</span>
                   </label>
                 `;
@@ -324,7 +327,7 @@ export function mountBatchView(root: HTMLElement): () => void {
             const checked = selectedFormats.has(act);
             return `
               <label class="format-check-pill">
-                <input type="checkbox" data-format-chk="${escapeHtml(act)}" ${checked ? "checked" : ""} ${busy ? "disabled" : ""} />
+                <input type="checkbox" class="mac-checkbox" data-format-chk="${escapeHtml(act)}" ${checked ? "checked" : ""} ${busy ? "disabled" : ""} />
                 <span>${escapeHtml(formatDisplayLabel(act))}</span>
               </label>
             `;
@@ -350,7 +353,7 @@ export function mountBatchView(root: HTMLElement): () => void {
     progressCopyDiagBtn.textContent = diagBtnText;
     if (hasTopLevelErr && diagState === "manual" && diagFallbackText) {
       progressDiagFallbackEl.style.display = "block";
-      progressDiagFallbackEl.innerHTML = `<div class="setting-desc" style="margin-bottom:4px">${escapeHtml(t(l, "common.clipboardRestricted"))}</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
+      progressDiagFallbackEl.innerHTML = `<div class="setting-desc diag-fallback-label">${escapeHtml(t(l, "common.clipboardRestricted"))}</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
     } else {
       progressDiagFallbackEl.style.display = "none";
       progressDiagFallbackEl.innerHTML = "";
@@ -367,7 +370,7 @@ export function mountBatchView(root: HTMLElement): () => void {
       resultsCopyDiagBtn.textContent = diagBtnText;
       if (errCount > 0 && diagState === "manual" && diagFallbackText) {
         resultsDiagFallbackEl.style.display = "block";
-        resultsDiagFallbackEl.innerHTML = `<div class="setting-desc" style="margin-bottom:4px">${escapeHtml(t(l, "common.clipboardRestricted"))}</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
+        resultsDiagFallbackEl.innerHTML = `<div class="setting-desc diag-fallback-label batch-empty-pad">${escapeHtml(t(l, "common.clipboardRestricted"))}</div><textarea class="mac-input diag-textarea" readonly rows="6">${escapeHtml(diagFallbackText)}</textarea>`;
       } else {
         resultsDiagFallbackEl.style.display = "none";
         resultsDiagFallbackEl.innerHTML = "";
@@ -381,12 +384,12 @@ export function mountBatchView(root: HTMLElement): () => void {
           const fmtLabel = formatDisplayLabel(r.format);
           return `
             <div class="batch-result-row">
-              <div style="min-width:0;flex:1">
-                <div style="display:flex;align-items:center;gap:8px">
-                  <span class="status-pill ${hasErr ? "is-bad" : "is-ok"}">
+              <div class="batch-result-info">
+                <div class="batch-result-title-row">
+                  <span class="status-inline ${hasErr ? "is-bad" : "is-ok"}">
                     <span class="status-dot"></span>${escapeHtml(hasErr ? t(l, "batch.statusError") : t(l, "batch.statusDone"))}
                   </span>
-                  <strong>${escapeHtml(basename(r.source))} → ${escapeHtml(fmtLabel)}</strong>
+                  <span class="batch-result-title">${escapeHtml(basename(r.source))} → ${escapeHtml(fmtLabel)}</span>
                 </div>
                 <div class="setting-desc" title="${escapeHtml(hasErr ? r.error! : r.outputs.join("\n"))}">${escapeHtml(detail)}</div>
               </div>

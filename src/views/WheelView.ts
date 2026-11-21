@@ -108,6 +108,67 @@ const OUTER_ARC_RADIUS = 184;
 const OUTER_ARC_STEP_DEG = 22;
 const OUTER_ARC_INNER_R = 162;
 const OUTER_ARC_OUTER_R = 214;
+const OUTER_PILL_HEIGHT = 26;
+const OUTER_PILL_HIT_PAD = 6;
+
+export interface ContainedImageRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * Computes the rendered image rectangle for `object-fit: contain` inside a stage of size
+ * `stageW x stageH`. Falls back to the full stage rect if natural image dimensions are not
+ * loaded yet.
+ */
+export function computeContainedImageRect(
+  stageW: number,
+  stageH: number,
+  naturalW: number,
+  naturalH: number,
+): ContainedImageRect {
+  const safeW = Number.isFinite(stageW) && stageW > 0 ? stageW : 0;
+  const safeH = Number.isFinite(stageH) && stageH > 0 ? stageH : 0;
+  if (
+    !Number.isFinite(naturalW) ||
+    !Number.isFinite(naturalH) ||
+    naturalW <= 0 ||
+    naturalH <= 0 ||
+    safeW <= 0 ||
+    safeH <= 0
+  ) {
+    return { left: 0, top: 0, width: safeW, height: safeH };
+  }
+  const scale = Math.min(safeW / naturalW, safeH / naturalH);
+  const width = naturalW * scale;
+  const height = naturalH * scale;
+  return {
+    left: (safeW - width) / 2,
+    top: (safeH - height) / 2,
+    width,
+    height,
+  };
+}
+
+function estimateOuterPillWidth(label: string): number {
+  return Math.max(64, Math.ceil(37 + label.length * 6.2));
+}
+
+function outerCapsuleDistance(
+  px: number,
+  py: number,
+  item: { x: number; y: number; width: number; height: number },
+): number {
+  const dx = Math.abs(px - item.x);
+  const dy = Math.abs(py - item.y);
+  const hw = item.width / 2;
+  const hh = item.height / 2;
+  const coreHw = Math.max(0, hw - hh);
+  const qx = Math.max(0, dx - coreHw);
+  return Math.hypot(qx, dy) - hh;
+}
 
 interface OuterSubItem {
   token: string;
@@ -117,6 +178,8 @@ interface OuterSubItem {
   iconSvg: string;
   x: number;
   y: number;
+  width: number;
+  height: number;
   angleDeg: number;
 }
 
@@ -173,6 +236,8 @@ export function mountWheelView(root: HTMLElement): () => void {
   let autoCloseTimer: number | null = null;
   let dismissTimer: number | null = null;
   let diagResetTimer: number | null = null;
+  let pulseTimer: number | null = null;
+  let pulsingSlotId: string | null = null;
   let openedAtMs = 0;
 
   const lang = () => normalizeLanguage(prefs?.language);
@@ -219,6 +284,8 @@ export function mountWheelView(root: HTMLElement): () => void {
     clientY: number;
     rect: { x: number; y: number; width: number; height: number };
   } | null = null;
+  let cropCaptureTarget: HTMLElement | null = null;
+  let cropCapturePointerId: number | null = null;
   let renderedHubKey = "";
   let renderedSlotsSignature = "";
   const handledPointerEvents = new WeakSet<Event>();
@@ -389,6 +456,14 @@ export function mountWheelView(root: HTMLElement): () => void {
       window.clearTimeout(diagResetTimer);
       diagResetTimer = null;
     }
+  }
+
+  function clearPulseTimer(): void {
+    if (pulseTimer !== null) {
+      window.clearTimeout(pulseTimer);
+      pulseTimer = null;
+    }
+    pulsingSlotId = null;
   }
 
   function getPreferredListForState(): string[] | undefined {
@@ -907,6 +982,9 @@ export function mountWheelView(root: HTMLElement): () => void {
         const ariaLabel = formatSectorAriaLabel(slot, i, count, l);
         const isActive = activeIndex === i && enabled && phase === "idle";
         const isDimmed = phase === "converting" && activeActionLabel !== label;
+        const isPulsing = Boolean(
+          pulsingSlotId && slot.kind === "item" && slot.item.id === pulsingSlotId,
+        );
 
         const classes = [
           "wheel-sector-group",
@@ -914,6 +992,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           !enabled ? "is-disabled" : "",
           isActive ? "is-active" : "",
           isDimmed ? "is-dimmed" : "",
+          isPulsing ? "is-pulsing" : "",
         ]
           .filter(Boolean)
           .join(" ");
@@ -924,6 +1003,7 @@ export function mountWheelView(root: HTMLElement): () => void {
           !enabled ? "is-disabled" : "",
           isActive ? "is-active" : "",
           isDimmed ? "is-dimmed" : "",
+          isPulsing ? "is-pulsing" : "",
         ]
           .filter(Boolean)
           .join(" ");
@@ -978,13 +1058,18 @@ export function mountWheelView(root: HTMLElement): () => void {
       const enabled = isSlotActionable(slot);
       const isActive = idx === activeIndex && enabled && phase === "idle";
       const isDwelling = idx === dwellSlotIndex && dwellTimer !== null;
+      const isPulsing = Boolean(
+        pulsingSlotId && slot?.kind === "item" && slot.item.id === pulsingSlotId,
+      );
       group.classList.toggle("is-active", isActive);
       group.classList.toggle("is-dwelling", isDwelling);
+      group.classList.toggle("is-pulsing", isPulsing);
       group.setAttribute("aria-current", isActive ? "true" : "false");
       const puck = glassPucks[idx];
       if (puck) {
         puck.classList.toggle("is-active", isActive);
         puck.classList.toggle("is-dwelling", isDwelling);
+        puck.classList.toggle("is-pulsing", isPulsing);
       }
     });
   }
@@ -1061,10 +1146,16 @@ export function mountWheelView(root: HTMLElement): () => void {
     outerSubItems = tokens.map((token, i) => {
       const angleDeg = parentMidDeg + (i - (n - 1) / 2) * OUTER_ARC_STEP_DEG;
       const rawPt = polarToCartesian(OUTER_ARC_RADIUS, angleDeg);
-      const x = Math.max(36, Math.min(WHEEL_CANVAS_SIZE - 36, rawPt.x));
-      const minY = x >= 86 && x <= WHEEL_CANVAS_SIZE - 86 ? 46 : 24;
-      const y = Math.max(minY, Math.min(WHEEL_CANVAS_SIZE - 24, rawPt.y));
       const meta = getFormatMeta(token, l);
+      const width = estimateOuterPillWidth(meta.shortLabel);
+      const halfW = width / 2;
+      const marginX = Math.ceil(halfW * 1.08 + 6);
+      const x = Math.max(marginX, Math.min(WHEEL_CANVAS_SIZE - marginX, rawPt.x));
+      // Keep top-bar band (top: 6px, height: 26px -> bottom 32px) and inner ring (top ~63px) clear
+      // even under 1.08 hover scale.
+      const overlapsTopBar = x + halfW > 40 && x - halfW < WHEEL_CANVAS_SIZE - 40;
+      const minY = overlapsTopBar ? 48 : 22;
+      const y = Math.max(minY, Math.min(WHEEL_CANVAS_SIZE - 22, rawPt.y));
       return {
         token,
         label: meta.shortLabel,
@@ -1073,6 +1164,8 @@ export function mountWheelView(root: HTMLElement): () => void {
         iconSvg: meta.iconSvg,
         x,
         y,
+        width,
+        height: OUTER_PILL_HEIGHT,
         angleDeg,
       };
     });
@@ -1112,9 +1205,9 @@ export function mountWheelView(root: HTMLElement): () => void {
     let bestItem: OuterSubItem | null = null;
     let bestDist = Infinity;
     for (const item of outerSubItems) {
-      const d = Math.hypot(px - item.x, py - item.y);
-      if (d <= 28 && d < bestDist) {
-        bestDist = d;
+      const capsuleDist = outerCapsuleDistance(px, py, item);
+      if (capsuleDist <= OUTER_PILL_HIT_PAD && capsuleDist < bestDist) {
+        bestDist = capsuleDist;
         bestItem = item;
       }
     }
@@ -1137,7 +1230,7 @@ export function mountWheelView(root: HTMLElement): () => void {
   function isInOpenOuterCorridor(px: number, py: number): boolean {
     if (!openOuterGroupId || outerSubItems.length === 0) return false;
     for (const item of outerSubItems) {
-      if (Math.hypot(px - item.x, py - item.y) <= 36) return true;
+      if (outerCapsuleDistance(px, py, item) <= 12) return true;
     }
     const r = Math.hypot(px - WHEEL_CENTER, py - WHEEL_CENTER);
     if (r < OUTER_ARC_INNER_R || r > OUTER_ARC_OUTER_R) return false;
@@ -1164,8 +1257,13 @@ export function mountWheelView(root: HTMLElement): () => void {
 
   function renderHub(): void {
     const l = lang();
-    hubEl.classList.toggle("is-error-hub", phase === "error");
     const fileCount = state.files.length;
+    const toolsAvail = toolFaceAvailable();
+    hubEl.classList.toggle("is-error-hub", phase === "error");
+    hubEl.classList.toggle(
+      "has-face-pill",
+      phase === "idle" && state.mode === "convert" && fileCount > 0 && toolsAvail,
+    );
     const primaryName =
       fileCount === 0
         ? ""
@@ -1361,7 +1459,6 @@ export function mountWheelView(root: HTMLElement): () => void {
       return;
     }
 
-    const toolsAvail = toolFaceAvailable();
     const toolsActive = isToolsFaceActive();
     const activeOuterItem = activeOuterToken
       ? outerSubItems.find((item) => item.token === activeOuterToken)
@@ -1772,9 +1869,43 @@ export function mountWheelView(root: HTMLElement): () => void {
       .catch(() => {});
   }
 
+  function getCropImageLayout(): {
+    stageW: number;
+    stageH: number;
+    imgRect: ContainedImageRect;
+    img: HTMLImageElement | null;
+  } {
+    const stage = cropModalEl.querySelector<HTMLElement>(".wheel-crop-stage");
+    const img = cropModalEl.querySelector<HTMLImageElement>(".wheel-crop-img");
+    const stageRect = stage?.getBoundingClientRect();
+    const stageW =
+      typeof stage?.clientWidth === "number" && stage.clientWidth > 0
+        ? stage.clientWidth
+        : stageRect && stageRect.width > 0
+          ? stageRect.width
+          : 0;
+    const stageH =
+      typeof stage?.clientHeight === "number" && stage.clientHeight > 0
+        ? stage.clientHeight
+        : stageRect && stageRect.height > 0
+          ? stageRect.height
+          : 0;
+    const naturalW = img && typeof img.naturalWidth === "number" ? img.naturalWidth : 0;
+    const naturalH = img && typeof img.naturalHeight === "number" ? img.naturalHeight : 0;
+    return {
+      stageW,
+      stageH,
+      imgRect: computeContainedImageRect(stageW, stageH, naturalW, naturalH),
+      img,
+    };
+  }
+
   function formatCropDimsText(): string {
-    const baseW = state.imageWidth || 1000;
-    const baseH = state.imageHeight || 1000;
+    const img = cropModalEl.querySelector<HTMLImageElement>(".wheel-crop-img");
+    const naturalW = img && typeof img.naturalWidth === "number" && img.naturalWidth > 0 ? img.naturalWidth : 0;
+    const naturalH = img && typeof img.naturalHeight === "number" && img.naturalHeight > 0 ? img.naturalHeight : 0;
+    const baseW = state.imageWidth || naturalW || 1000;
+    const baseH = state.imageHeight || naturalH || 1000;
     const w = Math.max(1, Math.round(cropRect.width * baseW));
     const h = Math.max(1, Math.round(cropRect.height * baseH));
     return `${w}×${h}`;
@@ -1784,22 +1915,56 @@ export function mountWheelView(root: HTMLElement): () => void {
     const boxEl = cropModalEl.querySelector<HTMLElement>(".wheel-crop-box");
     const dimsEl = cropModalEl.querySelector<HTMLElement>("#wheel-crop-dims");
     if (boxEl) {
-      boxEl.style.left = `${(cropRect.x * 100).toFixed(2)}%`;
-      boxEl.style.top = `${(cropRect.y * 100).toFixed(2)}%`;
-      boxEl.style.width = `${(cropRect.width * 100).toFixed(2)}%`;
-      boxEl.style.height = `${(cropRect.height * 100).toFixed(2)}%`;
+      const { stageW, stageH, imgRect } = getCropImageLayout();
+      if (stageW > 0 && stageH > 0) {
+        const leftPct = ((imgRect.left + cropRect.x * imgRect.width) / stageW) * 100;
+        const topPct = ((imgRect.top + cropRect.y * imgRect.height) / stageH) * 100;
+        const widthPct = ((cropRect.width * imgRect.width) / stageW) * 100;
+        const heightPct = ((cropRect.height * imgRect.height) / stageH) * 100;
+        boxEl.style.left = `${leftPct.toFixed(2)}%`;
+        boxEl.style.top = `${topPct.toFixed(2)}%`;
+        boxEl.style.width = `${widthPct.toFixed(2)}%`;
+        boxEl.style.height = `${heightPct.toFixed(2)}%`;
+      } else {
+        boxEl.style.left = `${(cropRect.x * 100).toFixed(2)}%`;
+        boxEl.style.top = `${(cropRect.y * 100).toFixed(2)}%`;
+        boxEl.style.width = `${(cropRect.width * 100).toFixed(2)}%`;
+        boxEl.style.height = `${(cropRect.height * 100).toFixed(2)}%`;
+      }
     }
     if (dimsEl) {
       dimsEl.textContent = formatCropDimsText();
     }
   }
 
+  function releaseCropPointerCapture(): void {
+    if (cropCaptureTarget && cropCapturePointerId !== null) {
+      const capTarget = cropCaptureTarget as unknown as {
+        releasePointerCapture?: (id: number) => void;
+        hasPointerCapture?: (id: number) => boolean;
+      };
+      if (typeof capTarget.releasePointerCapture === "function") {
+        try {
+          if (
+            typeof capTarget.hasPointerCapture !== "function" ||
+            capTarget.hasPointerCapture(cropCapturePointerId)
+          ) {
+            capTarget.releasePointerCapture(cropCapturePointerId);
+          }
+        } catch {
+          // Ignore already-released synthetic pointers
+        }
+      }
+    }
+    cropCaptureTarget = null;
+    cropCapturePointerId = null;
+  }
+
   const onCropPointerMove = (ev: PointerEvent) => {
     if (!cropModalOpen || !cropDraggingMode || !cropDragStart) return;
-    const stage = cropModalEl.querySelector<HTMLElement>(".wheel-crop-stage");
-    const rect = stage?.getBoundingClientRect();
-    const w = rect && rect.width > 0 ? rect.width : 240;
-    const h = rect && rect.height > 0 ? rect.height : 180;
+    const { imgRect } = getCropImageLayout();
+    const w = imgRect.width > 0 ? imgRect.width : 240;
+    const h = imgRect.height > 0 ? imgRect.height : 180;
     const dx = (ev.clientX - cropDragStart.clientX) / w;
     const dy = (ev.clientY - cropDragStart.clientY) / h;
     const s = cropDragStart.rect;
@@ -1837,15 +2002,19 @@ export function mountWheelView(root: HTMLElement): () => void {
   const onCropPointerUp = () => {
     cropDraggingMode = null;
     cropDragStart = null;
+    releaseCropPointerCapture();
     window.removeEventListener("pointermove", onCropPointerMove);
     window.removeEventListener("pointerup", onCropPointerUp);
+    window.removeEventListener("pointercancel", onCropPointerUp);
   };
 
   function closeCropModal(): void {
     cropDraggingMode = null;
     cropDragStart = null;
+    releaseCropPointerCapture();
     window.removeEventListener("pointermove", onCropPointerMove);
     window.removeEventListener("pointerup", onCropPointerUp);
+    window.removeEventListener("pointercancel", onCropPointerUp);
     if (!cropModalOpen) return;
     cropModalOpen = false;
     cropModalEl.style.display = "none";
@@ -1914,6 +2083,16 @@ export function mountWheelView(root: HTMLElement): () => void {
     `;
     cropModalEl.style.display = "flex";
 
+    const imgEl = cropModalEl.querySelector<HTMLImageElement>(".wheel-crop-img");
+    if (imgEl) {
+      imgEl.addEventListener("load", () => {
+        if (!disposed && cropModalOpen) {
+          updateCropBoxDom();
+        }
+      });
+    }
+    updateCropBoxDom();
+
     cropModalEl.querySelector("#wheel-crop-cancel")?.addEventListener("click", (ev) => {
       ev.stopPropagation();
       closeCropModal();
@@ -1936,9 +2115,26 @@ export function mountWheelView(root: HTMLElement): () => void {
         clientY: ev.clientY,
         rect: { ...cropRect },
       };
+      if (typeof ev.pointerId === "number") {
+        const capTarget = boxEl as unknown as {
+          setPointerCapture?: (id: number) => void;
+        };
+        if (typeof capTarget.setPointerCapture === "function") {
+          try {
+            capTarget.setPointerCapture(ev.pointerId);
+            cropCaptureTarget = boxEl;
+            cropCapturePointerId = ev.pointerId;
+          } catch {
+            cropCaptureTarget = null;
+            cropCapturePointerId = null;
+          }
+        }
+      }
       window.addEventListener("pointermove", onCropPointerMove);
       window.addEventListener("pointerup", onCropPointerUp);
+      window.addEventListener("pointercancel", onCropPointerUp);
     });
+    boxEl?.addEventListener("lostpointercapture", onCropPointerUp);
   }
 
   function openCropModal(): void {
@@ -2139,6 +2335,18 @@ export function mountWheelView(root: HTMLElement): () => void {
 
     if (slot.kind !== "item" || !slot.item.enabled) return;
 
+    clearPulseTimer();
+    const pulsedId = slot.item.id;
+    pulsingSlotId = pulsedId;
+    pulseTimer = window.setTimeout(() => {
+      pulseTimer = null;
+      if (pulsingSlotId === pulsedId) {
+        pulsingSlotId = null;
+        for (const g of sectorGroups) g.classList.remove("is-pulsing");
+        for (const p of glassPucks) p.classList.remove("is-pulsing");
+      }
+    }, 260);
+
     const group = sectorGroups[idx];
     const body = sectorBodies[idx];
     const puck = glassPucks[idx];
@@ -2174,6 +2382,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearAutoClose();
     clearDismissTimer();
     clearDiagResetTimer();
+    clearPulseTimer();
     stopProgressLoop();
     stopPhysicsLoop();
     springField.setPointer(null, null, -1);
@@ -2203,12 +2412,13 @@ export function mountWheelView(root: HTMLElement): () => void {
     closing = true;
     resetTransientState();
     shellEl.classList.add("is-closing");
+    const dismissDelayMs = prefersReducedMotion() ? 0 : 120;
     dismissTimer = window.setTimeout(() => {
       dismissTimer = null;
       if (!disposed) {
         void dismissWheel(reason);
       }
-    }, 100);
+    }, dismissDelayMs);
   }
 
   function clientToCanvasPoint(clientX: number, clientY: number): { x: number; y: number } {
@@ -2275,6 +2485,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearOuterArc();
     clearAutoClose();
     clearDiagResetTimer();
+    clearPulseTimer();
     stopProgressLoop();
     progressLayer.style.display = "none";
 
@@ -3258,6 +3469,7 @@ export function mountWheelView(root: HTMLElement): () => void {
     clearAutoClose();
     clearDismissTimer();
     clearDiagResetTimer();
+    clearPulseTimer();
     stopProgressLoop();
     stopPhysicsLoop();
     hubTetherEl.style.opacity = "0";

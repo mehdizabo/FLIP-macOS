@@ -17,7 +17,7 @@ import type {
 import { mountBatchView } from "./views/BatchView";
 import { mountOnboardingView, ONBOARDING_COMPLETED_KEY } from "./views/OnboardingView";
 import { mountSettingsView } from "./views/SettingsView";
-import { mountWheelView } from "./views/WheelView";
+import { computeContainedImageRect, mountWheelView } from "./views/WheelView";
 
 // =========================================================================
 // Lightweight In-Memory DOM + SVG Shim (cleanly restores all globals)
@@ -3522,6 +3522,327 @@ describe("DOM E2E Suite for All 4 FLIP Views", () => {
         `failed: ${HOSTILE_NAME}`,
       );
       expect(findInjectedMarkup(root)).toEqual([]);
+    });
+  });
+
+  test("computeContainedImageRect: computes contain rect for landscape, portrait, square, and zero/unloaded fallback", () => {
+    // Landscape image in square stage
+    expect(computeContainedImageRect(300, 300, 1600, 800)).toEqual({
+      left: 0,
+      top: 75,
+      width: 300,
+      height: 150,
+    });
+
+    // Portrait image in square stage
+    expect(computeContainedImageRect(300, 300, 800, 1600)).toEqual({
+      left: 75,
+      top: 0,
+      width: 150,
+      height: 300,
+    });
+
+    // Portrait image in landscape stage
+    expect(computeContainedImageRect(400, 200, 800, 1600)).toEqual({
+      left: 150,
+      top: 0,
+      width: 100,
+      height: 200,
+    });
+
+    // Square image in square and rectangular stages
+    expect(computeContainedImageRect(300, 300, 500, 500)).toEqual({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 300,
+    });
+    expect(computeContainedImageRect(400, 200, 500, 500)).toEqual({
+      left: 100,
+      top: 0,
+      width: 200,
+      height: 200,
+    });
+
+    // Zero / unloaded / non-finite natural dimensions fall back to the full stage rect
+    expect(computeContainedImageRect(300, 240, 0, 0)).toEqual({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 240,
+    });
+    expect(computeContainedImageRect(300, 240, 100, 0)).toEqual({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 240,
+    });
+    expect(computeContainedImageRect(300, 240, -10, 200)).toEqual({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 240,
+    });
+    expect(computeContainedImageRect(300, 240, Number.NaN, 200)).toEqual({
+      left: 0,
+      top: 0,
+      width: 300,
+      height: 240,
+    });
+    expect(computeContainedImageRect(0, 240, 100, 100)).toEqual({
+      left: 0,
+      top: 0,
+      width: 0,
+      height: 240,
+    });
+  });
+
+  test("WheelView: .is-pulsing persists across immediate converting state re-render during activateSlot", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      let resolveConversion!: (res: ConversionCompletePayload) => void;
+      harness.setCommandOverride(
+        "execute_conversion",
+        () =>
+          new Promise<ConversionCompletePayload>((resolve) => {
+            resolveConversion = resolve;
+          }),
+      );
+
+      const dispose = mountWheelView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      const firstSector = root.querySelector(
+        '.wheel-sector-group[data-slot-index="0"]',
+      ) as unknown as ShimElement;
+      expect(firstSector).not.toBeNull();
+
+      firstSector.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 }),
+      );
+      await flushMicrotasks();
+
+      // startConversionVisual() synchronously set phase = "converting" and called renderSectors()
+      expect(root.querySelector<HTMLElement>("#wheel-progress-layer")?.style.display).toBe("block");
+
+      const pulsedSector = root.querySelector('.wheel-sector-group[data-slot-index="0"]')!;
+      const pulsedPuck = root.querySelector('.wheel-glass-puck[data-slot-index="0"]')!;
+      const otherSector = root.querySelector('.wheel-sector-group[data-slot-index="1"]')!;
+      const otherPuck = root.querySelector('.wheel-glass-puck[data-slot-index="1"]')!;
+
+      expect(pulsedSector.classList.contains("is-pulsing")).toBe(true);
+      expect(pulsedPuck.classList.contains("is-pulsing")).toBe(true);
+      expect(otherSector.classList.contains("is-pulsing")).toBe(false);
+      expect(otherPuck.classList.contains("is-pulsing")).toBe(false);
+      expect(otherSector.classList.contains("is-dimmed")).toBe(true);
+
+      resolveConversion({
+        success: true,
+        results: [{ source: "/tmp/spec.pdf", format: "DOCX", outputs: ["/tmp/spec.docx"], error: null }],
+        error: null,
+      });
+      await flushMicrotasks();
+    });
+  });
+
+  test("WheelView: outer sub-ring capsule hit-test succeeds at far-left and far-right pill edges and fails outside", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      const harness = installTauriHarness(win);
+      const dispose = mountWheelView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      const svgEl = root.querySelector("#wheel-svg") as unknown as ShimElement;
+      const outerArcLayer = root.querySelector<HTMLElement>("#wheel-outer-arc-layer")!;
+      const cropModal = root.querySelector<HTMLElement>("#wheel-crop-modal")!;
+
+      harness.emitEvent("wheel:state", {
+        mode: "convert",
+        files: ["/tmp/photo.heic"],
+        isDrag: false,
+        compatibleFormats: ["PNG", "JPG"],
+        batchActions: [],
+        toolActions: [...IMAGE_TOOL_TOKENS],
+        availabilityMessage: "",
+        family: "image",
+        targetFolder: "/tmp",
+        originX: 220,
+        originY: 220,
+        imageWidth: 4032,
+        imageHeight: 3024,
+      });
+      await flushMicrotasks();
+
+      // Switch to Tools face and hover Crop (slot 0 at 12 o'clock) to open outer arc
+      win.dispatchEvent(new KeyboardEvent("keydown", { key: "t" }));
+      await flushMicrotasks();
+      svgEl.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 96 }));
+      await flushMicrotasks();
+
+      const manualBtn = outerArcLayer.querySelector<HTMLElement>(
+        '.wheel-outer-sub-item[data-sub-token="CROP_MANUAL"]',
+      )!;
+      expect(manualBtn).not.toBeNull();
+      const pillX = Number.parseFloat(manualBtn.style.left);
+      const pillY = Number.parseFloat(manualBtn.style.top);
+      expect(Number.isFinite(pillX)).toBe(true);
+      expect(Number.isFinite(pillY)).toBe(true);
+
+      // Far-left edge inside the capsule (width >= 75 -> halfW >= 37.5, hit pad 6) succeeds
+      svgEl.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, clientX: pillX - 36, clientY: pillY }),
+      );
+      await flushMicrotasks();
+      expect(manualBtn.classList.contains("is-active")).toBe(true);
+      expect(manualBtn.getAttribute("aria-current")).toBe("true");
+
+      // Far-right edge inside the capsule (r < OUTER_ARC_INNER_R, only reachable via capsule distance) succeeds
+      svgEl.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, clientX: pillX + 36, clientY: pillY }),
+      );
+      await flushMicrotasks();
+      expect(manualBtn.classList.contains("is-active")).toBe(true);
+      expect(manualBtn.getAttribute("aria-current")).toBe("true");
+
+      // Moving outside far-left edge (beyond halfW + OUTER_PILL_HIT_PAD = 43.5, within 12px corridor) clears hit-test
+      svgEl.dispatchEvent(
+        new PointerEvent("pointermove", { bubbles: true, clientX: pillX - 46, clientY: pillY }),
+      );
+      await flushMicrotasks();
+      expect(manualBtn.classList.contains("is-active")).toBe(false);
+      expect(manualBtn.getAttribute("aria-current")).toBe("false");
+
+      // Clicking at far-right edge via svgEl hits capsule and opens CROP_MANUAL modal
+      svgEl.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, clientX: pillX + 36, clientY: pillY }),
+      );
+      await flushMicrotasks();
+      expect(cropModal.style.display).toBe("flex");
+
+      // Close modal, re-open Crop outer arc, then click outside far-left edge -> misses capsule & does not open modal
+      win.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      await flushMicrotasks();
+      expect(cropModal.style.display).toBe("none");
+
+      svgEl.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 220, clientY: 96 }));
+      await flushMicrotasks();
+      expect(outerArcLayer.style.display).toBe("block");
+
+      svgEl.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, clientX: pillX - 46, clientY: pillY }),
+      );
+      await flushMicrotasks();
+      expect(cropModal.style.display).toBe("none");
+      expect(harness.calls.some((c) => c.cmd === "execute_manual_crop")).toBe(false);
+    });
+  });
+
+  test("SettingsView: Cmd+1..Cmd+6 switches tabs with aria-current='page', PDF segmented buttons update aria-pressed, and #save-toast survives same-tab re-renders", async () => {
+    await withDomEnv(async ({ win, root, cleanups }) => {
+      installTauriHarness(win);
+      const dispose = mountSettingsView(root);
+      cleanups.push(dispose);
+      await flushMicrotasks();
+
+      const tabs = ["general", "shortcuts", "formats", "newfile", "engines", "about"] as const;
+      const assertActiveTab = (expectedTab: (typeof tabs)[number]) => {
+        for (const tab of tabs) {
+          const btn = root.querySelector<HTMLButtonElement>(`.nav-item[data-tab="${tab}"]`)!;
+          if (tab === expectedTab) {
+            expect(btn.classList.contains("is-active")).toBe(true);
+            expect(btn.getAttribute("aria-current")).toBe("page");
+          } else {
+            expect(btn.classList.contains("is-active")).toBe(false);
+            expect(btn.getAttribute("aria-current")).toBeNull();
+          }
+        }
+        expect(root.querySelector("#settings-page-title")?.textContent).toBe(
+          t("en", `settings.title.${expectedTab}`),
+        );
+      };
+
+      assertActiveTab("general");
+
+      // Cmd+2 .. Cmd+6 then Cmd+1 switch tabs cleanly
+      for (const idx of [1, 2, 3, 4, 5, 0]) {
+        win.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: String(idx + 1),
+            metaKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+        await flushMicrotasks();
+        assertActiveTab(tabs[idx]);
+      }
+
+      // Cmd+2 while target is a form control does not hijack tab focus
+      const langSelect = root.querySelector<HTMLSelectElement>("#pref-language")!;
+      langSelect.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "2",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await flushMicrotasks();
+      assertActiveTab("general");
+
+      // Switch to Formats via Cmd+3 and inspect #seg-pdfPageSize / #seg-pdfDpi aria-pressed + #save-toast
+      win.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "3",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await flushMicrotasks();
+      assertActiveTab("formats");
+
+      const toastBefore = root.querySelector<HTMLElement>("#save-toast")!;
+      expect(toastBefore).not.toBeNull();
+      expect(toastBefore.classList.contains("is-visible")).toBe(false);
+
+      const a4Before = root.querySelector<HTMLButtonElement>('#seg-pdfPageSize button[data-val="a4"]')!;
+      const letterBefore = root.querySelector<HTMLButtonElement>('#seg-pdfPageSize button[data-val="letter"]')!;
+      expect(a4Before.getAttribute("aria-pressed")).toBe("true");
+      expect(letterBefore.getAttribute("aria-pressed")).toBe("false");
+
+      letterBefore.click();
+      await flushMicrotasks();
+
+      const a4After = root.querySelector<HTMLButtonElement>('#seg-pdfPageSize button[data-val="a4"]')!;
+      const letterAfter = root.querySelector<HTMLButtonElement>('#seg-pdfPageSize button[data-val="letter"]')!;
+      expect(a4After.getAttribute("aria-pressed")).toBe("false");
+      expect(letterAfter.getAttribute("aria-pressed")).toBe("true");
+
+      // #save-toast lives in #settings-pane-header, outside #settings-pane-content, so same-tab re-render keeps it intact
+      const toastAfterSize = root.querySelector<HTMLElement>("#save-toast")!;
+      expect(toastAfterSize).toBe(toastBefore);
+      expect(toastAfterSize.classList.contains("is-visible")).toBe(true);
+      expect(toastAfterSize.textContent).toBe(t("en", "common.saved"));
+
+      const dpi144Before = root.querySelector<HTMLButtonElement>('#seg-pdfDpi button[data-val="144"]')!;
+      const dpi300Before = root.querySelector<HTMLButtonElement>('#seg-pdfDpi button[data-val="300"]')!;
+      expect(dpi144Before.getAttribute("aria-pressed")).toBe("true");
+      expect(dpi300Before.getAttribute("aria-pressed")).toBe("false");
+
+      dpi300Before.click();
+      await flushMicrotasks();
+
+      const dpi144After = root.querySelector<HTMLButtonElement>('#seg-pdfDpi button[data-val="144"]')!;
+      const dpi300After = root.querySelector<HTMLButtonElement>('#seg-pdfDpi button[data-val="300"]')!;
+      expect(dpi144After.getAttribute("aria-pressed")).toBe("false");
+      expect(dpi300After.getAttribute("aria-pressed")).toBe("true");
+
+      const toastAfterDpi = root.querySelector<HTMLElement>("#save-toast")!;
+      expect(toastAfterDpi).toBe(toastBefore);
+      expect(toastAfterDpi.classList.contains("is-visible")).toBe(true);
+      expect(toastAfterDpi.textContent).toBe(t("en", "common.saved"));
     });
   });
 });

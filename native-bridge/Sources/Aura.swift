@@ -10,15 +10,22 @@ final class AuraPassThroughWindow: NSWindow {
 
 final class AuraEdgeView: NSView {
     private let containerLayer = CALayer()
+    private let glowContainerLayer = CALayer()
+    private let glowCornerMask = CAShapeLayer()
     private let topGradient = CAGradientLayer()
     private let bottomGradient = CAGradientLayer()
     private let leftGradient = CAGradientLayer()
     private let rightGradient = CAGradientLayer()
+    private let topMiterMask = CAShapeLayer()
+    private let bottomMiterMask = CAShapeLayer()
+    private let leftMiterMask = CAShapeLayer()
+    private let rightMiterMask = CAShapeLayer()
     private let borderLayer = CAShapeLayer()
 
     private let glowDepth: CGFloat = 32.0
     private let borderInset: CGFloat = 3.0
     private let borderWidth: CGFloat = 3.0
+    private let cornerRadius: CGFloat = 12.0
 
     private var currentColor: NSColor = NSColor(srgbRed: 1.0, green: 0.48, blue: 0.10, alpha: 1.0)
 
@@ -44,6 +51,11 @@ final class AuraEdgeView: NSView {
         containerLayer.backgroundColor = NSColor.clear.cgColor
         containerLayer.opacity = 0.0
 
+        glowContainerLayer.backgroundColor = NSColor.clear.cgColor
+        glowCornerMask.fillColor = NSColor.white.cgColor
+        glowContainerLayer.mask = glowCornerMask
+        containerLayer.addSublayer(glowContainerLayer)
+
         // Non-flipped macOS CoreAnimation coordinates: (0,0) is bottom-left, (1,1) is top-right.
         topGradient.startPoint = CGPoint(x: 0.5, y: 1.0)
         topGradient.endPoint = CGPoint(x: 0.5, y: 0.0)
@@ -58,9 +70,18 @@ final class AuraEdgeView: NSView {
         rightGradient.endPoint = CGPoint(x: 0.0, y: 0.5)
 
         let locations: [NSNumber] = [0.0, 0.35, 1.0]
-        for gradient in [topGradient, bottomGradient, leftGradient, rightGradient] {
+        let edgePairs: [(CAGradientLayer, CAShapeLayer)] = [
+            (topGradient, topMiterMask),
+            (bottomGradient, bottomMiterMask),
+            (leftGradient, leftMiterMask),
+            (rightGradient, rightMiterMask),
+        ]
+        for (gradient, miterMask) in edgePairs {
             gradient.locations = locations
-            containerLayer.addSublayer(gradient)
+            miterMask.fillColor = NSColor.white.cgColor
+            miterMask.allowsEdgeAntialiasing = false
+            gradient.mask = miterMask
+            glowContainerLayer.addSublayer(gradient)
         }
 
         borderLayer.fillColor = nil
@@ -72,24 +93,82 @@ final class AuraEdgeView: NSView {
         updateTransparencyMode()
     }
 
+    private func makeQuadPath(_ p0: CGPoint, _ p1: CGPoint, _ p2: CGPoint, _ p3: CGPoint) -> CGPath {
+        let path = CGMutablePath()
+        path.move(to: p0)
+        path.addLine(to: p1)
+        path.addLine(to: p2)
+        path.addLine(to: p3)
+        path.closeSubpath()
+        return path
+    }
+
     override func layout() {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
 
         containerLayer.frame = bounds
+        glowContainerLayer.frame = bounds
+        glowCornerMask.frame = bounds
+        let glowClipRect = bounds.insetBy(dx: borderInset * 0.5, dy: borderInset * 0.5)
+        let clampedGlowRadius = min(cornerRadius, min(glowClipRect.width, glowClipRect.height) * 0.5)
+        glowCornerMask.path = CGPath(
+            roundedRect: glowClipRect,
+            cornerWidth: max(0, clampedGlowRadius),
+            cornerHeight: max(0, clampedGlowRadius),
+            transform: nil
+        )
+
         let w = bounds.width
         let h = bounds.height
         let d = min(glowDepth, min(w, h) * 0.5)
 
         topGradient.frame = CGRect(x: 0, y: h - d, width: w, height: d)
+        topMiterMask.frame = topGradient.bounds
+        topMiterMask.path = makeQuadPath(
+            CGPoint(x: 0, y: d),
+            CGPoint(x: d, y: 0),
+            CGPoint(x: w - d, y: 0),
+            CGPoint(x: w, y: d)
+        )
+
         bottomGradient.frame = CGRect(x: 0, y: 0, width: w, height: d)
+        bottomMiterMask.frame = bottomGradient.bounds
+        bottomMiterMask.path = makeQuadPath(
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: d, y: d),
+            CGPoint(x: w - d, y: d),
+            CGPoint(x: w, y: 0)
+        )
+
         leftGradient.frame = CGRect(x: 0, y: 0, width: d, height: h)
+        leftMiterMask.frame = leftGradient.bounds
+        leftMiterMask.path = makeQuadPath(
+            CGPoint(x: 0, y: 0),
+            CGPoint(x: d, y: d),
+            CGPoint(x: d, y: h - d),
+            CGPoint(x: 0, y: h)
+        )
+
         rightGradient.frame = CGRect(x: w - d, y: 0, width: d, height: h)
+        rightMiterMask.frame = rightGradient.bounds
+        rightMiterMask.path = makeQuadPath(
+            CGPoint(x: d, y: 0),
+            CGPoint(x: 0, y: d),
+            CGPoint(x: 0, y: h - d),
+            CGPoint(x: d, y: h)
+        )
 
         borderLayer.frame = bounds
         let strokeRect = bounds.insetBy(dx: borderInset, dy: borderInset)
-        borderLayer.path = CGPath(rect: strokeRect, transform: nil)
+        let clampedBorderRadius = min(cornerRadius, min(strokeRect.width, strokeRect.height) * 0.5)
+        borderLayer.path = CGPath(
+            roundedRect: strokeRect,
+            cornerWidth: max(0, clampedBorderRadius),
+            cornerHeight: max(0, clampedBorderRadius),
+            transform: nil
+        )
 
         updateTransparencyMode()
         CATransaction.commit()
@@ -97,6 +176,7 @@ final class AuraEdgeView: NSView {
 
     func updateTransparencyMode() {
         let reduceTransparency = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        glowContainerLayer.isHidden = reduceTransparency
         for gradient in [topGradient, bottomGradient, leftGradient, rightGradient] {
             gradient.isHidden = reduceTransparency
         }

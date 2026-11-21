@@ -16,6 +16,23 @@ function svg(body: string, size = 20): string {
 }
 
 export const UI_ICONS = {
+  flipMark: `<svg class="flip-mark-svg" viewBox="0 0 28 28" width="24" height="24" aria-hidden="true">
+    <circle cx="14" cy="14" r="11" fill="none" stroke="currentColor" stroke-opacity="0.16" stroke-width="1.5"/>
+    <path d="M14 3A11 11 0 0 1 24.46 10.6" fill="none" stroke="var(--accent, #007aff)" stroke-width="2" stroke-linecap="round"/>
+    <path d="M24.46 17.4A11 11 0 0 1 14 25" fill="none" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.75" stroke-linecap="round"/>
+    <path d="M7.64 22.9A11 11 0 0 1 3 14" fill="none" stroke="currentColor" stroke-opacity="0.55" stroke-width="1.75" stroke-linecap="round"/>
+    <path d="M4.47 8.5A11 11 0 0 1 10.6 3.54" fill="none" stroke="currentColor" stroke-opacity="0.32" stroke-width="1.75" stroke-linecap="round"/>
+    <circle cx="14" cy="14" r="3.4" fill="none" stroke="currentColor" stroke-width="1.65"/>
+    <circle cx="14" cy="14" r="1.2" fill="var(--accent, #007aff)"/>
+  </svg>`,
+  chevronLeft: svg(
+    `<g ${STROKE_ATTRS}><path d="M15 6l-6 6 6 6"/></g>`,
+    12,
+  ),
+  chevronRight: svg(
+    `<g ${STROKE_ATTRS}><path d="M9 6l6 6-6 6"/></g>`,
+    12,
+  ),
   more: svg(
     `<g ${STROKE_ATTRS}><circle cx="6" cy="12" r="1.2" fill="currentColor"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/><circle cx="18" cy="12" r="1.2" fill="currentColor"/></g>`,
     20,

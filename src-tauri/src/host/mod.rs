@@ -54,18 +54,35 @@ pub fn configure_wheel_overlay(win: &WebviewWindow, cfg: WheelOverlayConfig) {
     configure_wheel_overlay_with_sync(win, cfg, None);
 }
 
-#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 pub fn configure_wheel_overlay_with_sync(
     win: &WebviewWindow,
     cfg: WheelOverlayConfig,
     sync_target: Option<(Arc<HostState>, u64)>,
+) {
+    configure_wheel_overlay_internal(win, cfg, sync_target, None);
+}
+
+struct WheelInitialEmit {
+    cursor_x: f64,
+    cursor_y: f64,
+    fallback_payload: WheelStatePayload,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn configure_wheel_overlay_internal(
+    win: &WebviewWindow,
+    cfg: WheelOverlayConfig,
+    sync_target: Option<(Arc<HostState>, u64)>,
+    initial_emit: Option<WheelInitialEmit>,
 ) {
     let _ = win.set_visible_on_all_workspaces(cfg.can_join_all_spaces);
     let _ = win.set_focusable(cfg.focusable);
 
     #[cfg(target_os = "macos")]
     {
-        let _ = win.with_webview(move |webview| {
+        let fallback_for_err = initial_emit.as_ref().map(|i| i.fallback_payload.clone());
+        let win_for_emit = win.clone();
+        let res = win.with_webview(move |webview| {
             use objc2_app_kit::{
                 NSApplication, NSColor, NSPopUpMenuWindowLevel, NSScreen, NSWindow,
                 NSWindowAnimationBehavior, NSWindowCollectionBehavior,
@@ -73,6 +90,16 @@ pub fn configure_wheel_overlay_with_sync(
             use objc2_foundation::{MainThreadMarker, NSPoint, NSSize};
             let ptr = webview.ns_window().cast::<NSWindow>();
             if ptr.is_null() {
+                if let Some(init) = initial_emit {
+                    let _ = win_for_emit.emit("wheel:state", &init.fallback_payload);
+                    let _ = win_for_emit.emit(
+                        "wheel:pointer-move",
+                        json!({
+                            "localX": init.fallback_payload.origin_x,
+                            "localY": init.fallback_payload.origin_y,
+                        }),
+                    );
+                }
                 return;
             }
             // SAFETY: `with_webview` runs on the macOS main thread with a live NSWindow handle.
@@ -120,6 +147,10 @@ pub fn configure_wheel_overlay_with_sync(
                                 if guard.is_open && guard.open_epoch == expected_epoch {
                                     guard.window_x = actual_x;
                                     guard.window_y = actual_y;
+                                    if let Some(ref init) = initial_emit {
+                                        guard.payload.origin_x = init.cursor_x - actual_x as f64;
+                                        guard.payload.origin_y = init.cursor_y - actual_y as f64;
+                                    }
                                 }
                             }
                         }
@@ -145,13 +176,59 @@ pub fn configure_wheel_overlay_with_sync(
                     }
                 }
             }
+
+            if let Some(init) = initial_emit {
+                let synced_payload = if let Some((ref host_state, expected_epoch)) = sync_target {
+                    host_state.wheel.lock().ok().and_then(|guard| {
+                        if guard.is_open && guard.open_epoch == expected_epoch {
+                            Some(guard.payload.clone())
+                        } else {
+                            None
+                        }
+                    })
+                } else {
+                    Some(init.fallback_payload)
+                };
+                if let Some(payload_to_emit) = synced_payload {
+                    let _ = win_for_emit.emit("wheel:state", &payload_to_emit);
+                    let _ = win_for_emit.emit(
+                        "wheel:pointer-move",
+                        json!({
+                            "localX": payload_to_emit.origin_x,
+                            "localY": payload_to_emit.origin_y,
+                        }),
+                    );
+                }
+            }
         });
+        if res.is_err() {
+            if let Some(payload) = fallback_for_err {
+                let _ = win.emit("wheel:state", &payload);
+                let _ = win.emit(
+                    "wheel:pointer-move",
+                    json!({
+                        "localX": payload.origin_x,
+                        "localY": payload.origin_y,
+                    }),
+                );
+            }
+        }
     }
 
     #[cfg(not(target_os = "macos"))]
     {
         if cfg.order_front {
             let _ = win.show();
+        }
+        if let Some(init) = initial_emit {
+            let _ = win.emit("wheel:state", &init.fallback_payload);
+            let _ = win.emit(
+                "wheel:pointer-move",
+                json!({
+                    "localX": init.fallback_payload.origin_x,
+                    "localY": init.fallback_payload.origin_y,
+                }),
+            );
         }
     }
 }
@@ -680,11 +757,15 @@ pub fn present_wheel_at(
         WHEEL_WINDOW_SIZE as f64,
         WHEEL_WINDOW_SIZE as f64,
     ));
-    let _ = win.emit("wheel:state", &payload);
-    configure_wheel_overlay_with_sync(&win, overlay_cfg, Some((Arc::clone(state), present_epoch)));
-    let _ = win.emit(
-        "wheel:pointer-move",
-        json!({ "localX": origin_x, "localY": origin_y }),
+    configure_wheel_overlay_internal(
+        &win,
+        overlay_cfg,
+        Some((Arc::clone(state), present_epoch)),
+        Some(WheelInitialEmit {
+            cursor_x: cx,
+            cursor_y: cy,
+            fallback_payload: payload.clone(),
+        }),
     );
     if !is_drag {
         let _ = win.set_focus();
