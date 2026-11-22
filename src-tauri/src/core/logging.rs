@@ -658,6 +658,7 @@ mod tests {
             keynote: false,
             whisper: Some(PathBuf::from("/opt/homebrew/bin/whisper-cli")),
             whisper_model: Some(PathBuf::from("/opt/homebrew/var/models/ggml-small.bin")),
+            ghostscript: Some(PathBuf::from("/opt/homebrew/bin/gs")),
         };
         let perms = PermissionsStatus {
             accessibility: true,

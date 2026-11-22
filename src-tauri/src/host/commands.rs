@@ -57,6 +57,8 @@ pub struct EngineStatusPayload {
     pub whisper: Option<PathBuf>,
     /// The `ggml-small.bin` model file, or null when it is missing.
     pub whisper_model: Option<PathBuf>,
+    /// The Ghostscript binary used for PDF/A, or null when it is not installed.
+    pub ghostscript: Option<PathBuf>,
     pub native_frameworks: NativeFrameworksStatus,
 }
 
@@ -750,6 +752,7 @@ pub async fn get_engine_status(state: State<'_, Arc<HostState>>) -> Result<Engin
         keynote: tools.keynote,
         whisper: tools.whisper,
         whisper_model: tools.whisper_model,
+        ghostscript: tools.ghostscript,
         native_frameworks: NativeFrameworksStatus {
             image_io: true,
             pdf_kit: true,

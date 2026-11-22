@@ -95,10 +95,13 @@ IMAGE TOOLS (pass to --to; the result keeps the image's format and gets a suffix
   STRIP_EXIF                                   Remove EXIF/GPS and other metadata\n\n\
 MEDIA TOOLS (pass to --to):\n  \
   TRANSCRIBE                                   Transcribe an audio or video file to a .txt file, on device\n                                               (needs whisper.cpp and the ggml-small.bin model)\n\n\
+PDF TOOLS (pass to --to):\n  \
+  PDFA                                         Convert a PDF to PDF/A-2b, checked afterwards (colours become RGB)\n                                               (needs Ghostscript: brew install ghostscript)\n\n\
 EXAMPLES:\n  \
   flip convert photo.heic --to PNG,JPG\n  \
   flip convert photo.jpg --to CROP_1_1,SCALE_1080P\n  \
   flip convert song.m4a --to TRANSCRIBE\n  \
+  flip convert report.pdf --to PDFA\n  \
   flip new md --in ~/Desktop\n  \
   flip new folder --in ~/Documents --no-rename\n  \
   flip wheel --mode convert photo.heic\n  \
@@ -1028,6 +1031,7 @@ fn preview_format_short_label(fmt: &str) -> &str {
         "REMOVE_BG" => "No BG",
         "OPTIMIZE_PDF" => "Optimize",
         "TRANSCRIBE" => "To text",
+        "PDFA" => "PDF/A",
         "COMBINE_PDF" => "Combine",
         "ANIMATE_GIF" => "GIF+",
         "MERGE_PDF" => "Merge PDF",
@@ -1563,6 +1567,18 @@ mod tests {
         );
         assert!(help_text().contains("TRANSCRIBE"));
         assert_eq!(preview_format_short_label("TRANSCRIBE"), "To text");
+        // PDF/A is a plain token for `--to` as well, and the help names it with an example.
+        assert_eq!(
+            parse_cli_args(["flip", "convert", "report.pdf", "--to", "PDFA"]).unwrap(),
+            CliCommand::Convert {
+                files: vec![PathBuf::from("report.pdf")],
+                formats: vec!["PDFA".to_string()],
+                raw: false,
+            }
+        );
+        assert!(help_text().contains("flip convert report.pdf --to PDFA"));
+        assert!(help_text().contains("Ghostscript"));
+        assert_eq!(preview_format_short_label("PDFA"), "PDF/A");
         assert_eq!(
             parse_cli_args(["flip", "convert", "a.png", "-t", ".jpg", "--to", "webp,jpg"])
                 .unwrap(),

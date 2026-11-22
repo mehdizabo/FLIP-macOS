@@ -107,8 +107,8 @@ pub fn default_preferred_formats() -> HashMap<String, Vec<String>> {
     map.insert(
         "pdf".to_string(),
         vec![
-            "PNG", "JPG", "TXT", "DOCX", "OPTIMIZE_PDF", "MD", "HTML", "RTF", "WEBP", "HEIC",
-            "TIFF", "ODT", "EPUB", "FB2", "RST",
+            "PNG", "JPG", "TXT", "DOCX", "OPTIMIZE_PDF", "PDFA", "MD", "HTML", "RTF", "WEBP",
+            "HEIC", "TIFF", "ODT", "EPUB", "FB2", "RST",
         ]
         .into_iter()
         .map(String::from)
@@ -400,6 +400,68 @@ mod tests {
         assert_eq!(map["video"][3], "TRANSCRIBE");
         assert_eq!(&map["audio"][0..3], &["MP3", "M4A", "WAV"]);
         assert_eq!(&map["video"][0..3], &["MP4", "MOV", "GIF"]);
+    }
+
+    #[test]
+    fn pdfa_follows_optimize_pdf_in_the_pdf_preferred_list() {
+        let pdf = &default_preferred_formats()["pdf"];
+        let optimize = pdf.iter().position(|f| f == "OPTIMIZE_PDF").unwrap();
+        let pdfa = pdf.iter().position(|f| f == "PDFA").unwrap();
+        assert_eq!(pdfa, optimize + 1, "pdf={pdf:?}");
+        assert_eq!(pdf.iter().filter(|f| f.as_str() == "PDFA").count(), 1);
+        // No other family lists it.
+        for (family, list) in default_preferred_formats() {
+            if family != "pdf" {
+                assert!(!list.contains(&"PDFA".to_string()), "{family} lists PDFA");
+            }
+        }
+    }
+
+    #[test]
+    fn saved_preferences_get_pdfa_appended_after_the_saved_pdf_order() {
+        // No migration: a list saved before PDFA existed keeps its order and gets the token backfilled.
+        let mut prefs = AppPreferences::default();
+        prefs.preferred_formats.insert(
+            "pdf".to_string(),
+            vec!["TXT".into(), "PNG".into(), "OPTIMIZE_PDF".into()],
+        );
+        prefs.sanitize();
+        let pdf = &prefs.preferred_formats["pdf"];
+        assert_eq!(&pdf[0..3], &["TXT", "PNG", "OPTIMIZE_PDF"]);
+        let pdfa = pdf.iter().position(|f| f == "PDFA").unwrap();
+        assert!(pdfa >= 3, "PDFA must come after the saved order: {pdf:?}");
+        assert_eq!(pdf.iter().filter(|f| f.as_str() == "PDFA").count(), 1);
+
+        // Running sanitize again adds nothing.
+        let before = pdf.clone();
+        prefs.sanitize();
+        assert_eq!(prefs.preferred_formats["pdf"], before);
+
+        // The full list as it was saved before PDF/A existed: the token lands last, after RST (no migration).
+        let mut old_full = AppPreferences::default();
+        old_full.preferred_formats.insert(
+            "pdf".to_string(),
+            [
+                "PNG", "JPG", "TXT", "DOCX", "OPTIMIZE_PDF", "MD", "HTML", "RTF", "WEBP", "HEIC",
+                "TIFF", "ODT", "EPUB", "FB2", "RST",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        );
+        old_full.sanitize();
+        let old_pdf = &old_full.preferred_formats["pdf"];
+        assert_eq!(old_pdf.last().map(String::as_str), Some("PDFA"), "{old_pdf:?}");
+        assert_eq!(old_pdf.len(), 16, "{old_pdf:?}");
+
+        // A list that already has the token keeps it where the user put it.
+        let mut custom = AppPreferences::default();
+        custom.preferred_formats.insert(
+            "pdf".to_string(),
+            vec!["PDFA".into(), "OPTIMIZE_PDF".into()],
+        );
+        custom.sanitize();
+        assert_eq!(&custom.preferred_formats["pdf"][0..2], &["PDFA", "OPTIMIZE_PDF"]);
     }
 
     #[test]
