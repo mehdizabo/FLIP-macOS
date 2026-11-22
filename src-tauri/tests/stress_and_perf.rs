@@ -334,7 +334,7 @@ fn stress_20_plus_10_staging_cleanup_policy_latency_and_cli_startup_perf() {
     let txt_src = dir.path().join("note.txt");
     let png_src = dir.path().join("pixel.png");
 
-    fs::write(&json_src, r#"{"app":"FLIP","version":"0.1.0","items":[1,2,3]}"#).unwrap();
+    fs::write(&json_src, r#"{"app":"FLIP","version":"0.6.1","items":[1,2,3]}"#).unwrap();
     fs::write(&md_src, "# Perf Check\n\nFast native conversion.\n").unwrap();
     fs::write(&txt_src, "Plain text benchmark payload.\n").unwrap();
     {
@@ -549,7 +549,7 @@ fn stress_20_plus_10_staging_cleanup_policy_latency_and_cli_startup_perf() {
     assert!(cold_out.status.success(), "cold flip --version failed: {cold_out:?}");
     let cold_stdout = String::from_utf8_lossy(&cold_out.stdout);
     assert!(
-        cold_stdout.starts_with("flip 0.1.0"),
+        cold_stdout.starts_with("flip 0.6.1"),
         "unexpected --version output: {cold_stdout:?}"
     );
 
@@ -563,7 +563,7 @@ fn stress_20_plus_10_staging_cleanup_policy_latency_and_cli_startup_perf() {
         let elapsed = start.elapsed();
         assert!(out.status.success(), "flip --version failed: {out:?}");
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.starts_with("flip 0.1.0"), "unexpected --version output: {stdout:?}");
+        assert!(stdout.starts_with("flip 0.6.1"), "unexpected --version output: {stdout:?}");
         warm_samples.push(elapsed);
     }
     let min_cli = *warm_samples.iter().min().unwrap();

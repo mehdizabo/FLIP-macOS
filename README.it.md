@@ -122,7 +122,7 @@ Output firmati:
 
 ```text
 src-tauri/target/release/bundle/macos/FLIP.app
-src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg
+src-tauri/target/release/bundle/dmg/FLIP-0.6.1-macOS-arm64.dmg
 ```
 
 Per installare o disinstallare localmente `FLIP.app` (copia in `/Applications` o `~/Applications`, rimozione `com.apple.quarantine`, installazione/rimozione Azioni Rapide e symlink `~/.local/bin/flip`), aggiornare lo SHA-256 della Homebrew Cask (`packaging/homebrew/flip.rb`), eseguire l'audit privacy o esportare i sorgenti:
@@ -161,6 +161,18 @@ cd src-tauri && cargo clippy --all-targets -- -D warnings && cargo test
 ```
 
 I risultati completi di test unitari, integrazione, stress a 50 cicli, benchmark di latenza e verifica `.app`/`.dmg` sono documentati in [`TEST_RESULTS.md`](TEST_RESULTS.md). Vedi anche [`ARCHITECTURE.md`](ARCHITECTURE.md), [`PUBLIC_RELEASE_REVIEW.md`](PUBLIC_RELEASE_REVIEW.md), [`ROADMAP.md`](ROADMAP.md) e gli script Raycast in `integrations/raycast/`.
+
+---
+
+## Problemi noti e limitazioni
+
+1. **Firma ad-hoc**: `FLIP.app` e il `.dmg` usano una firma ad-hoc e non sono notarizzati da Apple (al primo avvio compare l'avviso di Gatekeeper; `./scripts/install-local.sh` rimuove la quarantena). Poiché il `cdhash` della firma ad-hoc cambia quando `FLIP.app` viene sostituito durante un aggiornamento, macOS azzera i permessi di Accessibilità e Monitoraggio Input: rimuovi la vecchia voce `FLIP` con `–` in Impostazioni di Sistema e aggiungila di nuovo.
+2. **Solo Apple Silicon & macOS 15+**: compilato esclusivamente per `arm64` su macOS 15 Sequoia o successivo (nessuna build Intel `x86_64`).
+3. **Serializzazione globale `CONVERSION_GATE`**: le conversioni concorrenti da ruota o batch restano in attesa mentre è in corso un job lungo `TRANSCRIBE` o `PDFA` (annullabile con `Esc`).
+4. **Limiti PDF/A-2b**: validato con `veraPDF` (non è una certificazione ISO formale); converte i colori CMYK in sRGB, elimina le impostazioni di sovrastampa (overprint), altera le immagini con `/Interpolate true` e rifiuta i PDF protetti da password e quelli in cui il testo selezionabile non può essere preservato.
+5. **Limiti Transcribe**: richiede `whisper-cli`, `ggml-small.bin` e `FFmpeg` esterni; l'audio silenzioso (`<= -50 dB`) viene rifiutato, ma rumore di fondo non parlato sopra `-50 dB` può causare allucinazioni di Whisper.
+6. **Permessi parziali & Logitech HID++**: senza Accessibilità, `Option+Shift+Space` funziona tramite Carbon hotkey (`RegisterEventHotKey`), ma i tasti di drag e le scorciatoie della ruota non possono essere intercettati/soppressi e la rinomina inline del Finder (`Invio`) non scatta; il feedback aptico del mouse è rivolto ai Logitech MX Master (HID++) e richiede il permesso Monitoraggio Input.
+7. **Limiti minori UI/overlay**: il bagliore ai bordi Aura viene renderizzato sul display attivo sotto il cursore; l'overlay della ruota `440×440` non è focalizzabile (le viste `Manual Crop` e anteprima `Space` vengono renderizzate al suo interno).
 
 ---
 

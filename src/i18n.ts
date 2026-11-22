@@ -323,7 +323,7 @@ export const EN_STRINGS = {
 
   // Settings — About Tab
   "settings.about.appTitle": "FLIP for macOS",
-  "settings.about.appSub": "Version 0.1.0 · macOS 15+ · MIT License",
+  "settings.about.appSub": "Version 0.6.1 · macOS 15+ · MIT License",
   "settings.about.appDesc": "Local radial file converter and New File utility for Finder. Files never leave your Mac, originals are never overwritten, and conversions run on native macOS frameworks.",
   "settings.about.developerLabel": "Developer",
   "settings.about.versionLabel": "Version",
@@ -334,7 +334,7 @@ export const EN_STRINGS = {
   "settings.about.updatesSub": "Optional GitHub Release check and privacy-safe troubleshooting bundle",
   "settings.about.checkUpdates": "Check for Updates…",
   "settings.about.checking": "Checking…",
-  "settings.about.updatesHint": "Current version: <code>0.1.0</code>. Click <strong>Check for Updates…</strong> to query GitHub Releases, or <strong>Copy Diagnostics</strong> to export a redacted Markdown report (home paths replaced with <code>~</code>).",
+  "settings.about.updatesHint": "Current version: <code>0.6.1</code>. Click <strong>Check for Updates…</strong> to query GitHub Releases, or <strong>Copy Diagnostics</strong> to export a redacted Markdown report (home paths replaced with <code>~</code>).",
   "settings.about.checkingDesc": "Querying GitHub Releases (8s timeout)…",
   "settings.about.checkFailed": "Check Failed",
   "settings.about.updateAvailable": "Update Available: {tag}",
@@ -790,7 +790,7 @@ export const IT_STRINGS: Record<TranslationKey, string> = {
 
   // Settings — About Tab
   "settings.about.appTitle": "FLIP per macOS",
-  "settings.about.appSub": "Versione 0.1.0 · macOS 15+ · Licenza MIT",
+  "settings.about.appSub": "Versione 0.6.1 · macOS 15+ · Licenza MIT",
   "settings.about.appDesc": "Convertitore radiale locale e utilità Nuovo File per il Finder. I file restano sul tuo Mac, gli originali non vengono mai sovrascritti e le conversioni usano i framework nativi di macOS.",
   "settings.about.developerLabel": "Sviluppatore",
   "settings.about.versionLabel": "Versione",
@@ -801,7 +801,7 @@ export const IT_STRINGS: Record<TranslationKey, string> = {
   "settings.about.updatesSub": "Controllo opzionale release GitHub e report diagnostico sicuro per la privacy",
   "settings.about.checkUpdates": "Verifica Aggiornamenti…",
   "settings.about.checking": "Verifica in corso…",
-  "settings.about.updatesHint": "Versione corrente: <code>0.1.0</code>. Clicca <strong>Verifica Aggiornamenti…</strong> per controllare GitHub Releases, oppure <strong>Copia Diagnostica</strong> per esportare un report Markdown oscurato (percorsi home sostituiti con <code>~</code>).",
+  "settings.about.updatesHint": "Versione corrente: <code>0.6.1</code>. Clicca <strong>Verifica Aggiornamenti…</strong> per controllare GitHub Releases, oppure <strong>Copia Diagnostica</strong> per esportare un report Markdown oscurato (percorsi home sostituiti con <code>~</code>).",
   "settings.about.checkingDesc": "Interrogazione GitHub Releases (timeout 8s)…",
   "settings.about.checkFailed": "Verifica Fallita",
   "settings.about.updateAvailable": "Aggiornamento Disponibile: {tag}",

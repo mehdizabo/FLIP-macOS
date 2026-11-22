@@ -666,7 +666,7 @@ mod tests {
             input_monitoring: true,
         };
         let md = format_diagnostics_markdown(&DiagnosticsReportInput {
-            app_version: "0.1.0",
+            app_version: "0.6.1",
             macos_version: "macOS 27.2.1 (26B131)",
             tools: &tools,
             permissions: Ok(&perms),
@@ -686,7 +686,7 @@ mod tests {
         // Encoded /private/var/folders and embedded quadruple backticks in log lines stay safe
         let sneaky = vec![r#"{"msg":"````\n/private/var/folders/99/zz11/T/x"}"#.to_string()];
         let sneaky_md = format_diagnostics_markdown(&DiagnosticsReportInput {
-            app_version: "0.1.0",
+            app_version: "0.6.1",
             macos_version: "macOS 27.2.1 (26B131)",
             tools: &tools,
             permissions: Ok(&perms),

@@ -122,7 +122,7 @@ Signed outputs are written to:
 
 ```text
 src-tauri/target/release/bundle/macos/FLIP.app
-src-tauri/target/release/bundle/dmg/FLIP-0.1.0-macOS-arm64.dmg
+src-tauri/target/release/bundle/dmg/FLIP-0.6.1-macOS-arm64.dmg
 ```
 
 You can also install or uninstall `FLIP.app` locally (copies to `/Applications` or `~/Applications`, clears `com.apple.quarantine`, installs/removes Finder Quick Actions, and manages `~/.local/bin/flip`), package/update the Homebrew Cask SHA-256 (`packaging/homebrew/flip.rb`), audit repository privacy, export a clean source archive, or re-sign with `./scripts/sign-local.sh`:
@@ -176,6 +176,18 @@ See [`TEST_RESULTS.md`](TEST_RESULTS.md) for verified unit, integration, 50-cycl
 - `docs/PORTING-NOTES.md` — Module-by-module mapping from `FLIP-windows/src/Flip/*.cs` and macOS deltas.
 - `ACCEPTANCE.md` — Physical desktop GUI QA checklist for macOS releases.
 - `TEST_RESULTS.md` — Recorded toolchain versions, stress/latency metrics, and `.app`/`.dmg`/CLI verification results.
+
+---
+
+## Known Issues & Limitations
+
+1. **Ad-hoc code signing**: `FLIP.app` and the `.dmg` are ad-hoc signed rather than Apple-notarized (expect a Gatekeeper first-launch prompt, or clear quarantine via `./scripts/install-local.sh`). Because ad-hoc signatures change their `cdhash` when `FLIP.app` is replaced on updates, macOS resets Accessibility and Input Monitoring trust—remove the old `FLIP` entry with `–` in System Settings and re-add it.
+2. **Apple Silicon & macOS 15+ only**: built exclusively for `arm64` on macOS 15 Sequoia or later (no Intel `x86_64` builds).
+3. **Global `CONVERSION_GATE` serialization**: concurrent wheel or batch conversions wait while a long `TRANSCRIBE` or `PDFA` job is running (active jobs can be cancelled with `Esc`).
+4. **PDF/A-2b caveats**: validated with `veraPDF` (not a formal ISO certification); converts CMYK colors to sRGB, drops overprint settings, alters `/Interpolate true` images, and refuses password-protected PDFs as well as PDFs where selectable text cannot be preserved.
+5. **Transcribe caveats**: requires external `whisper-cli`, `ggml-small.bin`, and `FFmpeg`; silent audio (`<= -50 dB`) is refused, though non-speech background noise above `-50 dB` can still cause Whisper hallucinations.
+6. **Partial permissions & Logitech HID++**: without Accessibility, `Option+Shift+Space` still works via Carbon hotkey (`RegisterEventHotKey`), but drag trigger keys/wheel shortcuts cannot be suppressed and Finder inline rename (`Return`) does not trigger; mouse haptics target Logitech MX Master devices (HID++) and require Input Monitoring.
+7. **Minor UI/overlay limits**: Aura edge glow renders on the active display under the cursor; the `440×440` wheel overlay is non-focusable (`Manual Crop` and `Space` preview render inside it).
 
 ---
 

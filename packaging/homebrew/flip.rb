@@ -2,10 +2,10 @@
 # frozen_string_literal: true
 
 cask "flip" do
-  version "0.1.0"
+  version "0.6.1"
   sha256 "1ba78ab86fefb291078c3df6702d6b343a60d847ad926c7ff3fb1f67dd24b7ae"
 
-  url "https://github.com/thetinyfoundry/FLIP/releases/download/v#{version}/FLIP-#{version}-macOS-arm64.dmg"
+  url "https://github.com/mehdizabo/FLIP-macOS/releases/download/v#{version}-macos/FLIP-#{version}-macOS-arm64.dmg"
   name "FLIP"
   desc "100% local Liquid Glass radial file converter and Create New File utility"
   homepage "https://github.com/thetinyfoundry/FLIP"

@@ -1,6 +1,6 @@
 [package]
 name = "flip"
-version = "0.1.0"
+version = "0.6.1"
 description = "FLIP for macOS — Liquid Glass radial file converter & Create New utility"
 authors = ["The Tiny Foundry"]
 license = "MIT"

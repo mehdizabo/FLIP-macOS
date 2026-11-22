@@ -6,8 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-22
+
 ### Added
 
+- **Aura screen-edge overlay & wheel enhancements**:
+  - **Aura** (`Aura.swift`): subtle screen-edge glow on the active display under the cursor during drag/wheel sessions.
+  - **Concentric outer tool sub-rings**, interactive **Manual Crop** modal (`CROP_MANUAL`), **Space-bar QuickLook preview**, and **`Cmd+,`** shortcut to open Settings.
+  - **PDF/A-2b** (`PDFA`) fully wired into Rust runtime (`engines/mod.rs`, `policy.rs`, `naming.rs`), `flip` CLI, `get_engine_status`, and Settings → Engines detection (`ghostscript`, `FLIP_DISABLE_GHOSTSCRIPT=1`).
+- **Custom stereo 48 kHz audio feedback pack** (`flip-tick.wav`, `flip-error.wav`, `flip-success.wav`) played via a 4-voice polyphonic `AVAudioEngine` + FX voices with intensity-matched gain.
+- **Zero-permission Carbon hotkey & Logitech HID++ haptics**:
+  - Carbon `RegisterEventHotKey` fallback for `Option+Shift+Space` (works without Accessibility), `.listenOnly`/`.defaultTap` event tap modes, and `NSInputMonitoringUsageDescription` in `Info.plist`.
+  - **Logitech MX Master HID++ haptic live recovery** (`LogitechHapticDriver.reopenManager()` + `ActivePointerDetector.refreshClient()`) after runtime TCC Input Monitoring grant.
 - **Smart vs Raw / Keep-Code conversion mode** toggle in the Wheel, Batch window and CLI; the `R` key toggles it globally, also during a Finder drag and in idle mode.
 - **Image Tools** (the original FLIP 0.6 "Aura" tools, adapted to the port), available from the CLI (`--to CROP_9_16`, …) and from a new **Tools face** of the Wheel for any selection of images:
   - **Crop** to `9:16` (Reel), `4:5`, `1:1` or `16:9` (centred, exact ratio), **Rotate** 90° left/right and 180°, **Flip** horizontally/vertically, **Scale** to 50 %, 25 %, 1080p, 720p (never upscales) or **under 1 MB**, **Colour palette** (a strip of the dominant colours, as PNG) and **Remove EXIF & location** (lossless for JPEG and PNG; the camera orientation is baked into the pixels first).
@@ -21,6 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Native macOS Sequoia Settings redesign**: `titleBarStyle: "Overlay"`, `windowEffects` (`sidebar` / `underWindowBackground`) translucency, grouped inset sections, `Cmd+1..6` tab shortcuts, and visual harmonization across Onboarding and Batch Converter.
 - **Wheel redesigned as a Logi Options+-style actions ring** of circular bubbles on Apple Liquid Glass optics, with 120 fps magnetic spring physics (`wheelPhysics.ts`) and a circular icon-well hub. This supersedes the chamfered sectors and `68 px` QuickLook hub described under `0.1.0`.
 
 ### Fixed

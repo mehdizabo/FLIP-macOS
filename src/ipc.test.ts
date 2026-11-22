@@ -259,7 +259,7 @@ describe("Frontend IPC surface & contract alignment", () => {
       uTmpl();
 
       const upd = await checkForUpdates();
-      expect(upd.currentVersion).toBe("0.1.0");
+      expect(upd.currentVersion).toBe("0.6.1");
       expect(upd.latestTag.startsWith("v")).toBe(true);
       expect(upd.htmlUrl.startsWith("https://github.com/")).toBe(true);
       expect(typeof upd.updateAvailable).toBe("boolean");

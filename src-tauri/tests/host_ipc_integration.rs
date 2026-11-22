@@ -320,7 +320,7 @@ fn ipc_payloads_serialize_with_exact_typescript_camel_case_keys() {
     assert!(prv["recentConversions"][0].get("timestampUtc").is_some());
 
     let upd = UpdateCheckResult {
-        current_version: "0.1.0".into(),
+        current_version: "0.6.1".into(),
         latest_tag: "v0.5.1".into(),
         release_name: "FLIP v0.5.1".into(),
         html_url: "https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1".into(),

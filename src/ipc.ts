@@ -1121,9 +1121,9 @@ export async function uninstallFinderQuickActions(
 export async function checkForUpdates(repoUrl?: string): Promise<UpdateCheckResult> {
   if (!isTauriRuntime()) {
     return {
-      currentVersion: "0.1.0",
-      latestTag: "v0.1.0",
-      releaseName: "FLIP 0.1.0",
+      currentVersion: "0.6.1",
+      latestTag: "v0.6.1",
+      releaseName: "FLIP 0.6.1",
       htmlUrl: "https://github.com/thetinyfoundry/FLIP/releases",
       publishedAt: new Date().toISOString(),
       body: "Browser preview mock release check (you are up to date).",
@@ -1163,7 +1163,7 @@ export async function getDiagnosticsReport(): Promise<string> {
       `Generated (UTC): ${new Date().toISOString()}`,
       "",
       "## App & System",
-      "- **FLIP Version**: 0.1.0 (`com.thetinyfoundry.flip.mac`, arm64)",
+      "- **FLIP Version**: 0.6.1 (`com.thetinyfoundry.flip.mac`, arm64)",
       "- **macOS**: macOS 27.2.1 (26B131) [Browser Preview]",
       "",
       "## Engines & Frameworks",

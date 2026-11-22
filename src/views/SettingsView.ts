@@ -131,7 +131,7 @@ export function mountSettingsView(root: HTMLElement): () => void {
           <span class="brand-mark-svg">${UI_ICONS.flipMark}</span>
           <div>
             <div class="brand-title">FLIP</div>
-            <div class="brand-sub">v0.1.0</div>
+            <div class="brand-sub">v0.6.1</div>
           </div>
         </div>
         <nav class="nav-list" id="settings-nav">

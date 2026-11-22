@@ -1475,9 +1475,9 @@ function installTauriHarness(win: any, initialPrefs?: Partial<AppPreferences>): 
           };
         case "check_for_updates": {
           const update: UpdateCheckResult = {
-            currentVersion: "0.1.0",
-            latestTag: "v0.1.0",
-            releaseName: "v0.1.0",
+            currentVersion: "0.6.1",
+            latestTag: "v0.6.1",
+            releaseName: "v0.6.1",
             htmlUrl: "https://github.com/example/flip",
             publishedAt: null,
             body: "",
