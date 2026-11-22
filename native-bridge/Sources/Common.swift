@@ -157,7 +157,7 @@ func keyCodeForName(_ raw: String) -> UInt16? {
     }
 }
 
-struct ParsedShortcut {
+struct ParsedShortcut: Equatable {
     let keyCode: UInt16
     let command: Bool
     let option: Bool

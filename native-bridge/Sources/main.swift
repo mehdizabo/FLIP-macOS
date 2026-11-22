@@ -25,7 +25,7 @@ func printUsage() {
       pdfa-inspect <pdf>
       convert-av <input> <format> <output>
       create-iwork <pages|numbers|key> <output>
-      feedback <tick|sound|alignment|level|generic|success|error> [wav-path] [--intensity <light|medium|firm|strong>]
+      feedback <tick|sound|alignment|level|generic|success|success_sound|success_haptic|error> [wav-path] [--intensity <light|medium|firm|strong>]
       notify <title> <body> [reveal-path]
     """
     print(usage)
@@ -252,10 +252,26 @@ func runCLI() {
             i += 1
         }
         let player = FeedbackPlayer(wavPath: wav, intensity: intensity)
-        player.play(kind: kind, intensityOverride: intensity)
         let lowerKind = kind.lowercased()
-        if wav != nil || lowerKind == "tick" || lowerKind == "sound" || lowerKind == "alignment" || lowerKind == "level" || lowerKind == "generic" || lowerKind == "success" {
-            RunLoop.current.run(until: Date().addingTimeInterval(0.15))
+        if ["tick", "sound", "success", "success_sound", "error"].contains(lowerKind) {
+            player.warmUp()
+        }
+        player.play(kind: kind, intensityOverride: intensity)
+        let waitSeconds: TimeInterval
+        switch lowerKind {
+        case "success", "success_sound":
+            waitSeconds = 0.65
+        case "error":
+            waitSeconds = 0.85
+        case "tick", "sound":
+            waitSeconds = 0.15
+        case "alignment", "level", "generic", "success_haptic":
+            waitSeconds = 0.12
+        default:
+            waitSeconds = wav != nil ? 0.15 : 0.0
+        }
+        if waitSeconds > 0 {
+            RunLoop.current.run(until: Date().addingTimeInterval(waitSeconds))
         }
         writeJSON(["ok": true])
 

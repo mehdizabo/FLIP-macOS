@@ -13,7 +13,7 @@ use crate::engines::convert_files;
 use crate::engines::create_new::{create_new_item, ensure_templates_dir_initialized};
 use host::{
     attach_window_close_guard,
-    commands::{record_recent_conversion, spawn_completion_notification},
+    commands::{dispatch_feedback, record_recent_conversion, spawn_completion_notification},
     configure_wheel_overlay, monitor, present_wheel_at, query_finder_context_or_fallback,
     resolve_wav_path, show_standard_window, tray, wheel_overlay_config, HostState,
     WheelStatePayload,
@@ -192,7 +192,7 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
                                 "url.create_new.error",
                                 Some(json!({ "kind": kind_id, "error": format!("Target folder does not exist: {f}") })),
                             );
-                            let _ = bridge::feedback("error", None);
+                            dispatch_feedback(&state_arc, "error");
                             return;
                         }
                     }
@@ -203,6 +203,7 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
                     let dir_opt = folder.as_deref().map(Path::new);
                     match create_new_item(&kind_id, dir_opt, &prefs, true) {
                         Ok(res) => {
+                            dispatch_feedback(&state_arc, "success");
                             if prefs.open_after_creating && !Path::new(&res.path).is_dir() {
                                 let _ = std::process::Command::new("/usr/bin/open")
                                     .arg(&res.path)
@@ -214,7 +215,7 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
                                 "url.create_new.error",
                                 Some(json!({ "kind": kind_id, "error": err.to_string() })),
                             );
-                            let _ = bridge::feedback("error", None);
+                            dispatch_feedback(&state_arc, "error");
                         }
                     }
                 } else {
@@ -246,7 +247,7 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_err()
             {
-                let _ = bridge::feedback("error", None);
+                dispatch_feedback(state, "error");
                 return;
             }
             let cancel = Arc::new(AtomicBool::new(false));
@@ -266,7 +267,10 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
                     Ok(results) => {
                         record_recent_conversion(&app_h, &state_arc, &results);
                         let first_err = results.iter().find_map(|r| r.error.as_deref());
-                        let _ = bridge::feedback(if first_err.is_some() { "error" } else { "success" }, None);
+                        dispatch_feedback(
+                            &state_arc,
+                            if first_err.is_some() { "error" } else { "success" },
+                        );
                         spawn_completion_notification(
                             &prefs,
                             &results,
@@ -282,7 +286,7 @@ fn handle_flip_url_action(app: &AppHandle, state: &Arc<HostState>, action: FlipU
                             "url.convert.error",
                             Some(json!({ "error": msg })),
                         );
-                        let _ = bridge::feedback("error", None);
+                        dispatch_feedback(&state_arc, "error");
                         spawn_completion_notification(
                             &prefs,
                             &[],
@@ -665,7 +669,7 @@ pub fn run_with_options(initial_url: Option<String>, is_login_item: bool) {
                         .unwrap_or(true);
                     let missing_perms = tokio::task::spawn_blocking(|| {
                         bridge::permissions(false, false, false)
-                            .map(|p| !p.accessibility && p.automation_finder != "granted")
+                            .map(|p| !p.accessibility || p.automation_finder != "granted")
                             .unwrap_or(false)
                     })
                     .await

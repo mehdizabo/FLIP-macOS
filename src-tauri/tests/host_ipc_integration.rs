@@ -57,6 +57,14 @@ fn tauri_config_and_capabilities_match_window_labels_and_resources() {
         Some("resources/flip-tick.wav")
     );
     assert_eq!(
+        resources.get("resources/flip-error.wav").and_then(|v| v.as_str()),
+        Some("resources/flip-error.wav")
+    );
+    assert_eq!(
+        resources.get("resources/flip-success.wav").and_then(|v| v.as_str()),
+        Some("resources/flip-success.wav")
+    );
+    assert_eq!(
         resources
             .get("../native-bridge/bin/flip-macos-bridge")
             .and_then(|v| v.as_str()),

@@ -6,6 +6,8 @@
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>FLIP uses Finder Automation to inspect selected files, determine your active Finder folder for New File creation, and trigger inline rename.</string>
+	<key>NSInputMonitoringUsageDescription</key>
+	<string>FLIP uses Input Monitoring to detect your configured drag trigger key and mouse button while dragging files from Finder.</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

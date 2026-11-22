@@ -32,6 +32,7 @@ SDK_PATH="$(xcrun --show-sdk-path)"
   -framework ImageIO \
   -framework AudioToolbox \
   -framework IOKit \
+  -framework Carbon \
   "$ROOT_DIR/Sources/Common.swift" \
   "$ROOT_DIR/Sources/Aura.swift" \
   "$ROOT_DIR/Sources/FinderBridge.swift" \

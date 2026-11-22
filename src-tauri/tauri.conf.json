@@ -98,6 +98,8 @@
     ],
     "resources": {
       "resources/flip-tick.wav": "resources/flip-tick.wav",
+      "resources/flip-error.wav": "resources/flip-error.wav",
+      "resources/flip-success.wav": "resources/flip-success.wav",
       "../native-bridge/bin/flip-macos-bridge": "flip-macos-bridge"
     },
     "macOS": {

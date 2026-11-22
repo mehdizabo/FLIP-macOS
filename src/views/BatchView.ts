@@ -17,6 +17,7 @@ import {
   inspectFiles,
   isTauriRuntime,
   openWindow,
+  playWheelFeedback,
   revealInFinder,
   subscribeNativeDragDrop,
 } from "../ipc";
@@ -607,11 +608,13 @@ export function mountBatchView(root: HTMLElement): () => void {
     busy = false;
     const createdCount = results.flatMap((r) => r.outputs).length;
     const firstErr = res.error || results.find((r) => Boolean(r.error))?.error || null;
-    lastBatchError = !res.success || firstErr ? firstErr || t(lang(), "batch.conversionFailedDefault") : null;
+    const ok = res.success && !firstErr;
+    lastBatchError = !ok ? firstErr || t(lang(), "batch.conversionFailedDefault") : null;
     progressPct = res.error && createdCount === 0 ? 0 : 100;
     statusMode = res.error
       ? { kind: "finishedErr", err: res.error }
       : { kind: "completed", count: createdCount };
+    void playWheelFeedback(ok ? "success" : "error").catch(() => undefined);
     render();
   }
 
@@ -641,6 +644,7 @@ export function mountBatchView(root: HTMLElement): () => void {
       lastBatchError = errMsg;
       progressPct = 0;
       statusMode = { kind: "failed", msg: errMsg };
+      void playWheelFeedback("error").catch(() => undefined);
       render();
     }
   });

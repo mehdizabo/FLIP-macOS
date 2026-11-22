@@ -1,8 +1,22 @@
 import Foundation
 import AppKit
+import AVFoundation
 import CoreGraphics
+import QuartzCore
 import AudioToolbox
 import IOKit.hid
+import Carbon.HIToolbox
+
+private extension ParsedShortcut {
+    var carbonModifiers: UInt32 {
+        var mods: UInt32 = 0
+        if command { mods |= UInt32(cmdKey) }
+        if option { mods |= UInt32(optionKey) }
+        if control { mods |= UInt32(controlKey) }
+        if shift { mods |= UInt32(shiftKey) }
+        return mods
+    }
+}
 
 enum HapticIntensity: String {
     case light = "light"
@@ -45,6 +59,24 @@ enum HapticIntensity: String {
         case .strong: return 100
         }
     }
+
+    var audioTickGain: Float {
+        switch self {
+        case .light: return 0.58
+        case .medium: return 0.78
+        case .firm: return 0.94
+        case .strong: return 1.00
+        }
+    }
+
+    var audioFxGain: Float {
+        switch self {
+        case .light: return 0.78
+        case .medium: return 0.88
+        case .firm: return 0.96
+        case .strong: return 1.00
+        }
+    }
 }
 
 enum ActivePointerSource {
@@ -62,8 +94,16 @@ final class ActivePointerDetector {
     private typealias CopyServicesFn = @convention(c) (CFTypeRef) -> CFArray?
     private typealias CopyPropertyFn = @convention(c) (CFTypeRef, CFString) -> CFTypeRef?
 
+    private static let matchList: [[String: Any]] = [
+        ["DeviceUsagePage": 1, "DeviceUsage": 2],   // Mouse / pointer
+        ["DeviceUsagePage": 13, "DeviceUsage": 12], // Apple Force Touch trackpad
+        ["DeviceUsagePage": 13, "DeviceUsage": 5],  // Touchpad
+    ]
+
     private let iokitHandle: UnsafeMutableRawPointer?
-    private let client: CFTypeRef?
+    private var client: CFTypeRef?
+    private let createClient: CreateClientFn?
+    private let setMatchingMultiple: SetMatchingMultipleFn?
     private let copyServices: CopyServicesFn?
     private let copyProperty: CopyPropertyFn?
 
@@ -75,28 +115,31 @@ final class ActivePointerDetector {
               let setMatchSym = dlsym(handle, "IOHIDEventSystemClientSetMatchingMultiple"),
               let copyServicesSym = dlsym(handle, "IOHIDEventSystemClientCopyServices"),
               let copyPropertySym = dlsym(handle, "IOHIDServiceClientCopyProperty") else {
-            self.client = nil
+            self.createClient = nil
+            self.setMatchingMultiple = nil
             self.copyServices = nil
             self.copyProperty = nil
+            self.client = nil
             return
         }
 
-        let createClient = unsafeBitCast(createSym, to: CreateClientFn.self)
-        let setMatchingMultiple = unsafeBitCast(setMatchSym, to: SetMatchingMultipleFn.self)
+        self.createClient = unsafeBitCast(createSym, to: CreateClientFn.self)
+        self.setMatchingMultiple = unsafeBitCast(setMatchSym, to: SetMatchingMultipleFn.self)
         self.copyServices = unsafeBitCast(copyServicesSym, to: CopyServicesFn.self)
         self.copyProperty = unsafeBitCast(copyPropertySym, to: CopyPropertyFn.self)
 
-        guard let client = createClient(kCFAllocatorDefault) else {
+        refreshClient()
+    }
+
+    func refreshClient() {
+        guard let createClient = createClient,
+              let setMatchingMultiple = setMatchingMultiple,
+              let newClient = createClient(kCFAllocatorDefault) else {
             self.client = nil
             return
         }
-        let matchList: [[String: Any]] = [
-            ["DeviceUsagePage": 1, "DeviceUsage": 2],   // Mouse / pointer
-            ["DeviceUsagePage": 13, "DeviceUsage": 12], // Apple Force Touch trackpad
-            ["DeviceUsagePage": 13, "DeviceUsage": 5],  // Touchpad
-        ]
-        setMatchingMultiple(client, matchList as CFArray)
-        self.client = client
+        setMatchingMultiple(newClient, Self.matchList as CFArray)
+        self.client = newClient
     }
 
     func currentSource(logitechDirectReportTimestamp: UInt64 = 0) -> ActivePointerSource {
@@ -160,6 +203,7 @@ private final class LogitechHIDContext {
     var lastConfiguredLevel: [UInt8: UInt8] = [:]
     var isContinuousLevel: Bool
     var supportsWhisperCollision: Bool
+    var isOpen: Bool = false
     var powerSaveFlagsByDev: [UInt8: UInt8] = [:]
     var deferredPlayWorkItem: [UInt8: DispatchWorkItem] = [:]
 
@@ -196,9 +240,46 @@ final class LogitechHapticDriver {
     private(set) var lastMouseReportTimestamp: UInt64 = 0
     private var lastTickPlayUptime: TimeInterval = 0
     private let tickCooldownSeconds: TimeInterval = 0.045
+    private var lastReopenAttemptUptime: TimeInterval = 0
+    private let reopenCooldownSeconds: TimeInterval = 2.0
 
     private init() {
         setupManager()
+    }
+
+    func reopenManager() {
+        lastReopenAttemptUptime = ProcessInfo.processInfo.systemUptime
+        for ctx in contexts.values {
+            closeContext(ctx)
+        }
+        contexts.removeAll()
+        if let oldMgr = manager {
+            IOHIDManagerRegisterDeviceMatchingCallback(oldMgr, nil, nil)
+            IOHIDManagerRegisterDeviceRemovalCallback(oldMgr, nil, nil)
+            IOHIDManagerUnscheduleFromRunLoop(oldMgr, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+            _ = IOHIDManagerClose(oldMgr, IOOptionBits(kIOHIDOptionsTypeNone))
+            manager = nil
+        }
+        setupManager()
+    }
+
+    private func closeContext(_ ctx: LogitechHIDContext) {
+        for item in ctx.deferredPlayWorkItem.values {
+            item.cancel()
+        }
+        ctx.deferredPlayWorkItem.removeAll()
+        if ctx.isOpen {
+            IOHIDDeviceRegisterInputReportCallback(
+                ctx.device,
+                ctx.reportBuffer,
+                ctx.reportBufferCapacity,
+                nil,
+                nil
+            )
+            IOHIDDeviceUnscheduleFromRunLoop(ctx.device, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+            _ = IOHIDDeviceClose(ctx.device, IOOptionBits(kIOHIDOptionsTypeNone))
+            ctx.isOpen = false
+        }
     }
 
     private func setupManager() {
@@ -273,7 +354,12 @@ final class LogitechHapticDriver {
         let ctx = LogitechHIDContext(driver: self, device: device, productID: pid)
         contexts[key] = ctx
 
-        _ = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        let openRes = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        ctx.isOpen = (openRes == kIOReturnSuccess)
+        guard ctx.isOpen else {
+            return
+        }
+
         IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
 
         let ctxPtr = Unmanaged.passUnretained(ctx).toOpaque()
@@ -305,19 +391,7 @@ final class LogitechHapticDriver {
     private func handleDeviceRemoved(_ device: IOHIDDevice) {
         let key = ObjectIdentifier(device)
         guard let ctx = contexts.removeValue(forKey: key) else { return }
-        for item in ctx.deferredPlayWorkItem.values {
-            item.cancel()
-        }
-        ctx.deferredPlayWorkItem.removeAll()
-        IOHIDDeviceRegisterInputReportCallback(
-            device,
-            ctx.reportBuffer,
-            ctx.reportBufferCapacity,
-            nil,
-            nil
-        )
-        IOHIDDeviceUnscheduleFromRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
-        _ = IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        closeContext(ctx)
     }
 
     private func handleInputReport(
@@ -427,13 +501,15 @@ final class LogitechHapticDriver {
             lastTickPlayUptime = now
         }
 
-        if contexts.isEmpty, let mgr = manager, let devSet = IOHIDManagerCopyDevices(mgr) as? Set<IOHIDDevice> {
-            for dev in devSet {
-                handleDeviceMatched(dev)
+        if contexts.isEmpty || contexts.values.allSatisfy({ !$0.isOpen || $0.featureIndices.isEmpty }) {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastReopenAttemptUptime >= reopenCooldownSeconds {
+                reopenManager()
             }
         }
 
         for ctx in contexts.values {
+            guard ctx.isOpen else { continue }
             if ctx.featureIndices.isEmpty {
                 let candidateIndices: [UInt8] = (ctx.productID == 0xb042) ? [0xFF] : [0xFF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]
                 for devIdx in candidateIndices {
@@ -493,25 +569,70 @@ final class LogitechHapticDriver {
 }
 
 final class FeedbackPlayer {
-    private var tickSound: NSSound?
+    private static let variantRatios: [Double] = [0.986, 1.000, 1.012, 1.022]
+    private static let variantGainDb: [Float] = [-0.35, 0.05, 0.35, -0.20]
+    private static let voiceCount = 4
+    private static let fxVoiceCount = 2
+    private static let nsSoundFallbackVoices = 3
+    private static let idleTimeoutSeconds: TimeInterval = 3.0
+    private static let minAcousticIntervalSeconds: CFTimeInterval = 0.022
+    private static let rapidScrubSoftenSeconds: CFTimeInterval = 0.060
+    private static let rapidScrubGainMultiplier: Float = 0.78
+
+    private let engine = AVAudioEngine()
+    private var playerNodes: [AVAudioPlayerNode] = []
+    private var fxPlayerNodes: [AVAudioPlayerNode] = []
+    private var fxNodeFormats: [AVAudioFormat?] = []
+    private var variantBuffers: [AVAudioPCMBuffer] = []
+    private var errorBuffer: AVAudioPCMBuffer?
+    private var successBuffer: AVAudioPCMBuffer?
+    private var bufferFormat: AVAudioFormat?
+    private var engineGraphBuilt = false
+    private var engineNeedsRebuild = false
+    private var configObserver: NSObjectProtocol?
+    private var idleStopWorkItem: DispatchWorkItem?
+    private var nextVoiceIndex = 0
+    private var nextFxVoiceIndex = 0
+    private var lastBufferIndex = -1
+    private var lastTickTimestamp: CFTimeInterval = 0
+
+    private var nsSoundPool: [NSSound] = []
+    private var errorFallbackSound: NSSound?
+    private var successFallbackSound: NSSound?
+    private var nextNSSoundIndex = 0
     private var loadedWavPath: String?
     private var intensity: HapticIntensity = .firm
 
     init(wavPath: String? = nil, intensity: String? = nil) {
-        if let wavPath = wavPath, FileManager.default.fileExists(atPath: wavPath) {
-            tickSound = NSSound(contentsOfFile: wavPath, byReference: true)
-            loadedWavPath = wavPath
-        }
         if let intensity = intensity {
             self.intensity = HapticIntensity.parse(intensity)
+        }
+        installEngineConfigurationObserver()
+        if let wavPath = wavPath, FileManager.default.fileExists(atPath: wavPath) {
+            loadAudioAssets(from: wavPath)
         }
         _ = LogitechHapticDriver.shared
     }
 
+    deinit {
+        idleStopWorkItem?.cancel()
+        if let observer = configObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        for node in playerNodes {
+            node.stop()
+        }
+        for node in fxPlayerNodes {
+            node.stop()
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
+    }
+
     func updateWavPath(_ path: String?) {
         guard let path = path, path != loadedWavPath, FileManager.default.fileExists(atPath: path) else { return }
-        tickSound = NSSound(contentsOfFile: path, byReference: true)
-        loadedWavPath = path
+        loadAudioAssets(from: path)
     }
 
     func updateIntensity(_ raw: String?) {
@@ -519,11 +640,367 @@ final class FeedbackPlayer {
         intensity = HapticIntensity.parse(raw)
     }
 
-    private func playSoundTick() {
-        if let s = tickSound {
-            s.stop()
-            s.currentTime = 0
-            s.play()
+    func warmUp() {
+        guard !variantBuffers.isEmpty || errorBuffer != nil || successBuffer != nil else { return }
+        _ = ensureEngineRunning()
+    }
+
+    private func installEngineConfigurationObserver() {
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.idleStopWorkItem?.cancel()
+            self.idleStopWorkItem = nil
+            self.engineNeedsRebuild = true
+        }
+    }
+
+    private func loadAudioAssets(from path: String) {
+        loadedWavPath = path
+
+        var fallbackPool: [NSSound] = []
+        fallbackPool.reserveCapacity(Self.nsSoundFallbackVoices)
+        for _ in 0..<Self.nsSoundFallbackVoices {
+            if let s = NSSound(contentsOfFile: path, byReference: false) {
+                fallbackPool.append(s)
+            }
+        }
+        nsSoundPool = fallbackPool
+        nextNSSoundIndex = 0
+
+        let baseDir = URL(fileURLWithPath: path).deletingLastPathComponent()
+        let errorPath = baseDir.appendingPathComponent("flip-error.wav").path
+        let successPath = baseDir.appendingPathComponent("flip-success.wav").path
+
+        if FileManager.default.fileExists(atPath: errorPath) {
+            errorBuffer = decodeFloat32Buffer(from: errorPath)
+            errorFallbackSound = NSSound(contentsOfFile: errorPath, byReference: false)
+        } else {
+            errorBuffer = nil
+            errorFallbackSound = nil
+        }
+
+        if FileManager.default.fileExists(atPath: successPath) {
+            successBuffer = decodeFloat32Buffer(from: successPath)
+            successFallbackSound = NSSound(contentsOfFile: successPath, byReference: false)
+        } else {
+            successBuffer = nil
+            successFallbackSound = nil
+        }
+
+        if let sourceBuffer = decodeFloat32Buffer(from: path) {
+            var buffers: [AVAudioPCMBuffer] = []
+            buffers.reserveCapacity(Self.variantRatios.count)
+            for (ratio, db) in zip(Self.variantRatios, Self.variantGainDb) {
+                if let buf = resampleTickBuffer(
+                    sourceBuffer,
+                    speedRatio: ratio,
+                    gainDb: db
+                ) {
+                    buffers.append(buf)
+                }
+            }
+            variantBuffers = buffers
+            bufferFormat = sourceBuffer.format
+        } else {
+            variantBuffers = []
+            bufferFormat = nil
+        }
+
+        lastBufferIndex = -1
+        nextVoiceIndex = 0
+        nextFxVoiceIndex = 0
+        engineNeedsRebuild = true
+    }
+
+    private func decodeFloat32Buffer(from path: String) -> AVAudioPCMBuffer? {
+        let url = URL(fileURLWithPath: path)
+        guard let audioFile = try? AVAudioFile(forReading: url) else { return nil }
+        let fileFormat = audioFile.processingFormat
+        let frameCount = AVAudioFrameCount(audioFile.length)
+        guard frameCount > 0,
+              let readBuffer = AVAudioPCMBuffer(pcmFormat: fileFormat, frameCapacity: frameCount) else {
+            return nil
+        }
+        do {
+            try audioFile.read(into: readBuffer)
+        } catch {
+            return nil
+        }
+
+        let n = Int(readBuffer.frameLength)
+        let channels = Int(fileFormat.channelCount)
+        guard n > 0, channels > 0, let srcData = readBuffer.floatChannelData else { return nil }
+
+        guard let outFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: fileFormat.sampleRate,
+            channels: fileFormat.channelCount,
+            interleaved: false
+        ),
+        let outBuffer = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: AVAudioFrameCount(n)),
+        let dstData = outBuffer.floatChannelData else {
+            return nil
+        }
+        outBuffer.frameLength = AVAudioFrameCount(n)
+
+        let byteCount = n * MemoryLayout<Float>.size
+        for ch in 0..<channels {
+            memcpy(dstData[ch], srcData[ch], byteCount)
+        }
+        return outBuffer
+    }
+
+    private func resampleTickBuffer(
+        _ source: AVAudioPCMBuffer,
+        speedRatio: Double,
+        gainDb: Float
+    ) -> AVAudioPCMBuffer? {
+        let srcCount = Int(source.frameLength)
+        let channels = Int(source.format.channelCount)
+        guard srcCount > 1, channels > 0, let srcData = source.floatChannelData else { return nil }
+        let outCount = max(2, Int((Double(srcCount) / speedRatio).rounded()))
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: source.format,
+            frameCapacity: AVAudioFrameCount(outCount)
+        ) else {
+            return nil
+        }
+        buffer.frameLength = AVAudioFrameCount(outCount)
+        guard let dstData = buffer.floatChannelData else { return nil }
+
+        let linearGain = powf(10.0, gainDb / 20.0)
+        for ch in 0..<channels {
+            let src = srcData[ch]
+            let dst = dstData[ch]
+            @inline(__always)
+            func sampleAt(_ idx: Int) -> Float {
+                (idx >= 0 && idx < srcCount) ? src[idx] : 0.0
+            }
+
+            for i in 0..<outCount {
+                if i == 0 || i == outCount - 1 {
+                    dst[i] = 0.0
+                    continue
+                }
+                let pos = Double(i) * speedRatio
+                let idx = Int(floor(pos))
+                let t = Float(pos - Double(idx))
+                let y0 = sampleAt(idx - 1)
+                let y1 = sampleAt(idx)
+                let y2 = sampleAt(idx + 1)
+                let y3 = sampleAt(idx + 2)
+
+                let c0 = y1
+                let c1 = 0.5 * (y2 - y0)
+                let c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3
+                let c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2)
+                let interp = ((c3 * t + c2) * t + c1) * t + c0
+                dst[i] = max(-1.0, min(1.0, interp * linearGain))
+            }
+        }
+        return buffer
+    }
+
+    private func tearDownEngineGraph() {
+        for node in playerNodes {
+            node.stop()
+            engine.detach(node)
+        }
+        playerNodes.removeAll()
+        for node in fxPlayerNodes {
+            node.stop()
+            engine.detach(node)
+        }
+        fxPlayerNodes.removeAll()
+        fxNodeFormats.removeAll()
+        if engine.isRunning {
+            engine.stop()
+        }
+        engine.reset()
+        engineGraphBuilt = false
+    }
+
+    private func ensureEngineRunning() -> Bool {
+        let defaultFxFormat = errorBuffer?.format ?? successBuffer?.format ?? bufferFormat
+        guard bufferFormat != nil || defaultFxFormat != nil else { return false }
+
+        if engineNeedsRebuild || !engineGraphBuilt {
+            tearDownEngineGraph()
+            if !variantBuffers.isEmpty, let tickFormat = bufferFormat {
+                var nodes: [AVAudioPlayerNode] = []
+                nodes.reserveCapacity(Self.voiceCount)
+                for _ in 0..<Self.voiceCount {
+                    let node = AVAudioPlayerNode()
+                    engine.attach(node)
+                    engine.connect(node, to: engine.mainMixerNode, format: tickFormat)
+                    nodes.append(node)
+                }
+                playerNodes = nodes
+            }
+            if let fxFormat = defaultFxFormat {
+                var fxNodes: [AVAudioPlayerNode] = []
+                fxNodes.reserveCapacity(Self.fxVoiceCount)
+                for _ in 0..<Self.fxVoiceCount {
+                    let node = AVAudioPlayerNode()
+                    engine.attach(node)
+                    engine.connect(node, to: engine.mainMixerNode, format: fxFormat)
+                    fxNodes.append(node)
+                }
+                fxPlayerNodes = fxNodes
+                fxNodeFormats = Array(repeating: fxFormat, count: Self.fxVoiceCount)
+            }
+            nextVoiceIndex = 0
+            nextFxVoiceIndex = 0
+            engineGraphBuilt = true
+            engineNeedsRebuild = false
+        }
+
+        if !engine.isRunning {
+            engine.prepare()
+            do {
+                try engine.start()
+            } catch {
+                engineNeedsRebuild = true
+                return false
+            }
+        }
+
+        scheduleIdleShutdown()
+        return true
+    }
+
+    private func scheduleIdleShutdown() {
+        idleStopWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.stopEngineForIdle()
+        }
+        idleStopWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleTimeoutSeconds, execute: item)
+    }
+
+    private func stopEngineForIdle() {
+        idleStopWorkItem = nil
+        for node in playerNodes {
+            node.stop()
+        }
+        for node in fxPlayerNodes {
+            node.stop()
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
+    }
+
+    private func nextVariantBuffer() -> AVAudioPCMBuffer? {
+        let count = variantBuffers.count
+        guard count > 0 else { return nil }
+        let idx: Int
+        if count == 1 {
+            idx = 0
+        } else if lastBufferIndex < 0 {
+            idx = Int.random(in: 0..<count)
+        } else {
+            let step = Int.random(in: 1..<count)
+            idx = (lastBufferIndex + step) % count
+        }
+        lastBufferIndex = idx
+        return variantBuffers[idx]
+    }
+
+    private func playFxBuffer(_ buffer: AVAudioPCMBuffer, gain: Float) -> Bool {
+        guard ensureEngineRunning(), !fxPlayerNodes.isEmpty else { return false }
+        let idx = nextFxVoiceIndex
+        nextFxVoiceIndex = (nextFxVoiceIndex + 1) % fxPlayerNodes.count
+        let node = fxPlayerNodes[idx]
+        if fxNodeFormats[idx] != buffer.format {
+            node.stop()
+            engine.disconnectNodeOutput(node)
+            engine.connect(node, to: engine.mainMixerNode, format: buffer.format)
+            fxNodeFormats[idx] = buffer.format
+        }
+        node.volume = gain
+        node.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+        if !node.isPlaying {
+            node.play()
+        }
+        scheduleIdleShutdown()
+        return true
+    }
+
+    private func playSoundSuccess(intensity: HapticIntensity) {
+        let gain = intensity.audioFxGain
+        if let buffer = successBuffer, playFxBuffer(buffer, gain: gain) {
+            return
+        }
+        if let sound = successFallbackSound {
+            if sound.isPlaying {
+                sound.stop()
+            }
+            sound.volume = gain
+            sound.currentTime = 0
+            sound.play()
+        }
+    }
+
+    private func playSoundError(intensity: HapticIntensity) {
+        let gain = intensity.audioFxGain
+        if let buffer = errorBuffer, playFxBuffer(buffer, gain: gain) {
+            return
+        }
+        if let sound = errorFallbackSound {
+            if sound.isPlaying {
+                sound.stop()
+            }
+            sound.volume = gain
+            sound.currentTime = 0
+            sound.play()
+        } else {
+            NSSound.beep()
+        }
+    }
+
+    private func playSoundTick(intensity: HapticIntensity) {
+        let now = CACurrentMediaTime()
+        if lastTickTimestamp > 0 {
+            let elapsed = now - lastTickTimestamp
+            if elapsed < Self.minAcousticIntervalSeconds {
+                return
+            }
+        }
+
+        var gain = intensity.audioTickGain
+        if lastTickTimestamp > 0 && (now - lastTickTimestamp) < Self.rapidScrubSoftenSeconds {
+            gain *= Self.rapidScrubGainMultiplier
+        }
+        lastTickTimestamp = now
+
+        if !variantBuffers.isEmpty && ensureEngineRunning(),
+           let buffer = nextVariantBuffer(),
+           !playerNodes.isEmpty {
+            let node = playerNodes[nextVoiceIndex]
+            nextVoiceIndex = (nextVoiceIndex + 1) % playerNodes.count
+            node.volume = gain
+            node.scheduleBuffer(buffer, at: nil, options: [], completionHandler: nil)
+            if !node.isPlaying {
+                node.play()
+            }
+            scheduleIdleShutdown()
+            return
+        }
+
+        if !nsSoundPool.isEmpty {
+            let sound = nsSoundPool[nextNSSoundIndex]
+            nextNSSoundIndex = (nextNSSoundIndex + 1) % nsSoundPool.count
+            if sound.isPlaying {
+                sound.stop()
+            }
+            sound.volume = gain
+            sound.currentTime = 0
+            sound.play()
         } else {
             AudioServicesPlaySystemSound(1104)
         }
@@ -631,14 +1108,21 @@ final class FeedbackPlayer {
         let normalizedKind = kind.lowercased()
         switch normalizedKind {
         case "tick":
-            playSoundTick()
+            playSoundTick(intensity: effIntensity)
             performActiveDeviceHaptic(kind: "tick", intensity: effIntensity)
         case "sound":
-            playSoundTick()
-        case "alignment", "level", "generic", "success":
-            performActiveDeviceHaptic(kind: normalizedKind, intensity: effIntensity)
+            playSoundTick(intensity: effIntensity)
+        case "success":
+            playSoundSuccess(intensity: effIntensity)
+            performActiveDeviceHaptic(kind: "success", intensity: effIntensity)
+        case "success_sound":
+            playSoundSuccess(intensity: effIntensity)
+        case "success_haptic":
+            performActiveDeviceHaptic(kind: "success", intensity: effIntensity)
         case "error":
-            NSSound.beep()
+            playSoundError(intensity: effIntensity)
+        case "alignment", "level", "generic":
+            performActiveDeviceHaptic(kind: normalizedKind, intensity: effIntensity)
         default:
             break
         }
@@ -672,15 +1156,30 @@ final class MonitorController {
     private var lastEmittedX: Double = -9999
     private var lastEmittedY: Double = -9999
 
+    private enum EventTapMode: String {
+        case none = "none"
+        case listenOnly = "listen_only"
+        case defaultTap = "default_tap"
+    }
+
+    private static let carbonHotKeySignature: OSType = 0x464C4950 // 'FLIP'
+    private static let carbonHotKeyID: UInt32 = 1
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var fallbackMonitor: Any?
+    private var activeTapMode: EventTapMode = .none
     private var currentAxTrusted = false
+    private var currentListenTrusted = false
+    private var carbonHotKeyHandlerRef: EventHandlerRef?
+    private var carbonHotKeyRef: EventHotKeyRef?
+    private var monitorsInitialized = false
     private var axPollTick = 0
     private var dragTimer: Timer?
     private var feedback = FeedbackPlayer()
 
     func configure(dragKey: String?, idleShortcutSpec: String?, mouseButton: Int?, wavPath: String?, isWheelOpen: Bool?, hapticIntensity: String? = nil, auraEnabled: Bool? = nil) {
+        let previousIdleShortcut = idleShortcut
         if let dk = dragKey {
             dragKeyHeld = false
             dragKeyConsumed = false
@@ -718,6 +1217,9 @@ final class MonitorController {
         if let open = isWheelOpen {
             wheelOpen = open
         }
+        if monitorsInitialized && idleShortcut != previousIdleShortcut {
+            syncCarbonHotKey()
+        }
     }
 
     func run(dragKey: String, idleShortcutSpec: String, mouseButton: Int?, wavPath: String?, hapticIntensity: String? = nil, auraEnabled: Bool? = nil) -> Never {
@@ -728,13 +1230,16 @@ final class MonitorController {
         lastChangeCount = dragPasteboard.changeCount
 
         let axTrusted = AXIsProcessTrusted()
-        setupInputMonitors(axTrusted: axTrusted)
+        let listenTrusted = CGPreflightListenEventAccess()
+        setupInputMonitors(axTrusted: axTrusted, listenTrusted: listenTrusted)
         setupDragPolling()
         setupStdinReader()
 
         writeJSON([
             "event": "ready",
-            "axTrusted": axTrusted,
+            "axTrusted": currentAxTrusted,
+            "listenTrusted": currentListenTrusted,
+            "tapMode": activeTapMode.rawValue,
             "dragKeyCode": Int(dragKeyCode)
         ])
 
@@ -784,6 +1289,7 @@ final class MonitorController {
                             self.lastEmittedY = -9999
                             AuraOverlayController.shared.hide(force: false)
                         } else {
+                            self.feedback.warmUp()
                             self.emitMouseMoveIfChanged(force: true)
                             if AuraOverlayController.shared.isEnabled {
                                 AuraOverlayController.shared.showActive()
@@ -793,6 +1299,7 @@ final class MonitorController {
                         let state = (json["state"] as? String) ?? "off"
                         switch state {
                         case "active":
+                            self.feedback.warmUp()
                             AuraOverlayController.shared.showActive()
                         case "success":
                             AuraOverlayController.shared.showSuccess()
@@ -833,6 +1340,7 @@ final class MonitorController {
         guard !dragWheelTriggeredForDrag, !files.isEmpty else { return }
         dragWheelTriggeredForDrag = true
         wheelOpen = true
+        feedback.warmUp()
         AuraOverlayController.shared.showActive()
         let pos = currentCursorAndScreen()
         lastEmittedX = pos.x
@@ -1035,6 +1543,8 @@ final class MonitorController {
         spaceToggleKeyConsumed = false
         settingsShortcutConsumed = false
         mouseTriggerHeld = false
+        unregisterCarbonHotKey()
+        activeTapMode = .none
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
             runLoopSource = nil
@@ -1050,56 +1560,162 @@ final class MonitorController {
         }
     }
 
-    private func refreshAccessibilityMonitor(emitChange: Bool) {
-        let nowTrusted = AXIsProcessTrusted()
-        if nowTrusted == currentAxTrusted {
+    private func ensureCarbonHotKeyHandlerInstalled() {
+        guard carbonHotKeyHandlerRef == nil else { return }
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+        let callback: EventHandlerUPP = { _, eventRef, _ -> OSStatus in
+            guard let eventRef = eventRef else { return OSStatus(eventNotHandledErr) }
+            var hotKeyID = EventHotKeyID()
+            let status = GetEventParameter(
+                eventRef,
+                EventParamName(kEventParamDirectObject),
+                EventParamType(typeEventHotKeyID),
+                nil,
+                MemoryLayout<EventHotKeyID>.size,
+                nil,
+                &hotKeyID
+            )
+            guard status == noErr,
+                  hotKeyID.signature == MonitorController.carbonHotKeySignature,
+                  hotKeyID.id == MonitorController.carbonHotKeyID else {
+                return OSStatus(eventNotHandledErr)
+            }
+            MonitorController.shared.handleCarbonHotKeyPressed()
+            return noErr
+        }
+        InstallEventHandler(
+            GetEventDispatcherTarget(),
+            callback,
+            1,
+            &eventType,
+            nil,
+            &carbonHotKeyHandlerRef
+        )
+    }
+
+    private func unregisterCarbonHotKey() {
+        if let hotKeyRef = carbonHotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            carbonHotKeyRef = nil
+        }
+    }
+
+    private func syncCarbonHotKey() {
+        unregisterCarbonHotKey()
+        guard eventTap == nil, activeTapMode == .none, let idle = idleShortcut else {
             return
         }
-        setupInputMonitors(axTrusted: nowTrusted)
+        ensureCarbonHotKeyHandlerInstalled()
+        var newRef: EventHotKeyRef?
+        let hotKeyID = EventHotKeyID(
+            signature: Self.carbonHotKeySignature,
+            id: Self.carbonHotKeyID
+        )
+        let status = RegisterEventHotKey(
+            UInt32(idle.keyCode),
+            idle.carbonModifiers,
+            hotKeyID,
+            GetEventDispatcherTarget(),
+            0,
+            &newRef
+        )
+        if status == noErr, let ref = newRef {
+            carbonHotKeyRef = ref
+        }
+    }
+
+    private func handleCarbonHotKeyPressed() {
+        guard !dragActive else { return }
+        feedback.warmUp()
+        let pos = currentCursorAndScreen()
+        writeJSON([
+            "event": "trigger_idle_wheel",
+            "x": pos.x,
+            "y": pos.y,
+            "screen": pos.screen.toDict()
+        ])
+    }
+
+    private func refreshAccessibilityMonitor(emitChange: Bool) {
+        let nowAxTrusted = AXIsProcessTrusted()
+        let nowListenTrusted = CGPreflightListenEventAccess()
+        if nowAxTrusted == currentAxTrusted && nowListenTrusted == currentListenTrusted {
+            return
+        }
+        let gainedAx = !currentAxTrusted && nowAxTrusted
+        let gainedListen = !currentListenTrusted && nowListenTrusted
+        setupInputMonitors(axTrusted: nowAxTrusted, listenTrusted: nowListenTrusted)
+        if gainedAx || gainedListen {
+            ActivePointerDetector.shared.refreshClient()
+            LogitechHapticDriver.shared.reopenManager()
+        }
         if emitChange {
             writeJSON([
                 "event": "ax_status",
-                "axTrusted": currentAxTrusted
+                "axTrusted": currentAxTrusted,
+                "listenTrusted": currentListenTrusted,
+                "tapMode": activeTapMode.rawValue
             ])
         }
     }
 
-    private func setupInputMonitors(axTrusted: Bool) {
+    private func attachEventTap(options: CGEventTapOptions, mask: Int, callback: CGEventTapCallBack) -> Bool {
+        guard let tap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: options,
+            eventsOfInterest: CGEventMask(mask),
+            callback: callback,
+            userInfo: nil
+        ) else {
+            return false
+        }
+        self.eventTap = tap
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        self.runLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+        CGEvent.tapEnable(tap: tap, enable: true)
+        return true
+    }
+
+    private func setupInputMonitors(axTrusted: Bool, listenTrusted: Bool) {
         tearDownMonitors()
+        monitorsInitialized = true
+        currentListenTrusted = listenTrusted
+
+        let mask = (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.keyUp.rawValue)
+            | (1 << CGEventType.flagsChanged.rawValue)
+            | (1 << CGEventType.otherMouseDown.rawValue)
+            | (1 << CGEventType.otherMouseUp.rawValue)
+
+        let callback: CGEventTapCallBack = { _, type, event, _ in
+            return MonitorController.shared.handleCGEvent(type: type, event: event)
+        }
+
         if axTrusted {
-            let mask = (1 << CGEventType.keyDown.rawValue)
-                | (1 << CGEventType.keyUp.rawValue)
-                | (1 << CGEventType.flagsChanged.rawValue)
-                | (1 << CGEventType.otherMouseDown.rawValue)
-                | (1 << CGEventType.otherMouseUp.rawValue)
-
-            let callback: CGEventTapCallBack = { _, type, event, _ in
-                return MonitorController.shared.handleCGEvent(type: type, event: event)
-            }
-
-            if let tap = CGEvent.tapCreate(
-                tap: .cgSessionEventTap,
-                place: .headInsertEventTap,
-                options: .defaultTap,
-                eventsOfInterest: CGEventMask(mask),
-                callback: callback,
-                userInfo: nil
-            ) {
-                self.eventTap = tap
-                let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-                self.runLoopSource = source
-                CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-                CGEvent.tapEnable(tap: tap, enable: true)
-                self.currentAxTrusted = true
+            if attachEventTap(options: .defaultTap, mask: mask, callback: callback) {
+                activeTapMode = .defaultTap
+                currentAxTrusted = true
                 return
             }
         }
 
-        self.currentAxTrusted = false
-        // Zero-permission fallback monitor (observes events without consuming drag key)
+        currentAxTrusted = false
+        if listenTrusted && attachEventTap(options: .listenOnly, mask: mask, callback: callback) {
+            activeTapMode = .listenOnly
+            return
+        }
+
+        activeTapMode = .none
+        // Zero-permission fallback monitor (observes mouse/modifier events when CGEventTap is unavailable)
         self.fallbackMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged, .otherMouseDown, .otherMouseUp]) { [weak self] event in
             self?.handleFallbackNSEvent(event)
         }
+        syncCarbonHotKey()
     }
 
     private func handleCGEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -1116,6 +1732,7 @@ final class MonitorController {
                 let pos = currentCursorAndScreen()
                 if type == .otherMouseDown {
                     mouseTriggerHeld = true
+                    feedback.warmUp()
                     writeJSON([
                         "event": "trigger_mouse_wheel",
                         "button": Int(btn),
@@ -1231,6 +1848,7 @@ final class MonitorController {
 
         // 1) Idle Global Shortcut
         if type == .keyDown && !isRepeat && !dragActive, let idle = idleShortcut, idle.matches(keyCode: keyCode, flags: flags) {
+            feedback.warmUp()
             let pos = currentCursorAndScreen()
             writeJSON([
                 "event": "trigger_idle_wheel",
@@ -1298,6 +1916,7 @@ final class MonitorController {
                 let pos = currentCursorAndScreen()
                 if event.type == .otherMouseDown {
                     mouseTriggerHeld = true
+                    feedback.warmUp()
                     writeJSON([
                         "event": "trigger_mouse_wheel",
                         "button": Int(btn),
@@ -1358,7 +1977,8 @@ final class MonitorController {
             }
         }
 
-        if event.type == .keyDown && !event.isARepeat && !dragActive, let idle = idleShortcut, idle.matches(event: event) {
+        if carbonHotKeyRef == nil, event.type == .keyDown && !event.isARepeat && !dragActive, let idle = idleShortcut, idle.matches(event: event) {
+            feedback.warmUp()
             let pos = currentCursorAndScreen()
             writeJSON([
                 "event": "trigger_idle_wheel",

@@ -818,21 +818,25 @@ pub fn resolve_feedback_kind(
         "alignment" => haptics_on.then_some("alignment"),
         "level" => haptics_on.then_some("level"),
         "generic" => haptics_on.then_some("generic"),
-        "success" => haptics_on.then_some("success"),
+        "success" => match (sound_on, haptics_on) {
+            (true, true) => Some("success"),
+            (true, false) => Some("success_sound"),
+            (false, true) => Some("success_haptic"),
+            (false, false) => None,
+        },
         _ => None,
     }
 }
 
-#[tauri::command]
-pub fn play_wheel_feedback(kind: String, state: State<'_, Arc<HostState>>) -> Result<(), String> {
+pub fn dispatch_feedback(state: &HostState, kind: &str) {
     let (sound_on, haptics_on, haptic_intensity) = state
         .prefs
         .lock()
         .map(|g| (g.sound_enabled, g.haptics_enabled, g.haptic_intensity.clone()))
         .unwrap_or_else(|_| (true, true, "firm".to_string()));
 
-    let Some(effective_kind) = resolve_feedback_kind(&kind, sound_on, haptics_on) else {
-        return Ok(());
+    let Some(effective_kind) = resolve_feedback_kind(kind, sound_on, haptics_on) else {
+        return;
     };
 
     let has_monitor = state
@@ -846,10 +850,13 @@ pub fn play_wheel_feedback(kind: String, state: State<'_, Arc<HostState>>) -> Re
             "kind": effective_kind,
             "intensity": haptic_intensity,
         }));
-        return Ok(());
+        return;
     }
 
-    let wav = state.wav_path.lock().ok().and_then(|g| g.clone());
+    let wav = state.wav_path.lock().ok().and_then(|g| g.clone()).or_else(|| {
+        let current_exe = std::env::current_exe().ok();
+        crate::host::resolve_wav_path_from(&[], current_exe.as_deref(), bridge::dev_checkout_dir())
+    });
     std::thread::spawn(move || {
         let _ = bridge::feedback_with_intensity(
             effective_kind,
@@ -857,6 +864,11 @@ pub fn play_wheel_feedback(kind: String, state: State<'_, Arc<HostState>>) -> Re
             Some(&haptic_intensity),
         );
     });
+}
+
+#[tauri::command]
+pub fn play_wheel_feedback(kind: String, state: State<'_, Arc<HostState>>) -> Result<(), String> {
+    dispatch_feedback(&state, &kind);
     Ok(())
 }
 
@@ -1151,16 +1163,26 @@ mod tests {
         assert_eq!(resolve_feedback_kind("tick", false, true), Some("alignment"));
         assert_eq!(resolve_feedback_kind("tick", false, false), None);
 
+        assert_eq!(resolve_feedback_kind("sound", true, true), Some("sound"));
         assert_eq!(resolve_feedback_kind("sound", true, false), Some("sound"));
         assert_eq!(resolve_feedback_kind("sound", false, true), None);
+        assert_eq!(resolve_feedback_kind("sound", false, false), None);
 
+        assert_eq!(resolve_feedback_kind("error", true, true), Some("error"));
         assert_eq!(resolve_feedback_kind("error", true, false), Some("error"));
         assert_eq!(resolve_feedback_kind("error", false, true), None);
+        assert_eq!(resolve_feedback_kind("error", false, false), None);
 
         assert_eq!(resolve_feedback_kind("level", true, true), Some("level"));
+        assert_eq!(resolve_feedback_kind("level", false, true), Some("level"));
         assert_eq!(resolve_feedback_kind("level", true, false), None);
-        assert_eq!(resolve_feedback_kind("success", false, true), Some("success"));
-        assert_eq!(resolve_feedback_kind("success", true, false), None);
+        assert_eq!(resolve_feedback_kind("level", false, false), None);
+
+        assert_eq!(resolve_feedback_kind("success", true, true), Some("success"));
+        assert_eq!(resolve_feedback_kind("success", true, false), Some("success_sound"));
+        assert_eq!(resolve_feedback_kind("success", false, true), Some("success_haptic"));
+        assert_eq!(resolve_feedback_kind("success", false, false), None);
+
         assert_eq!(resolve_feedback_kind("unknown", true, true), None);
     }
 }

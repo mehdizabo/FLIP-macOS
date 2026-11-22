@@ -5,8 +5,8 @@ use crate::engines::create_new::{
     create_new_item, ensure_templates_dir_initialized, scan_user_templates, UserTemplateInfo,
 };
 use crate::host::{
-    present_wheel_at, query_finder_context_or_fallback, show_standard_window, HostState,
-    SettingsNavigatePayload,
+    commands::dispatch_feedback, present_wheel_at, query_finder_context_or_fallback,
+    show_standard_window, HostState, SettingsNavigatePayload,
 };
 use serde_json::json;
 use std::fs;
@@ -422,6 +422,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                     let prefs = state.prefs.lock().map(|g| g.clone()).unwrap_or_default();
                     match create_new_item(&kind, None, &prefs, true) {
                         Ok(res) => {
+                            dispatch_feedback(&state, "success");
                             if prefs.open_after_creating && !Path::new(&res.path).is_dir() {
                                 let _ = Command::new("/usr/bin/open").arg(&res.path).spawn();
                             }
@@ -431,7 +432,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                                 "tray.create_new.error",
                                 Some(json!({ "kind": kind, "error": err.to_string() })),
                             );
-                            let _ = bridge::feedback("error", None);
+                            dispatch_feedback(&state, "error");
                             if kind.starts_with("template:") {
                                 sync_tray_and_windows(
                                     &app_h,
@@ -448,6 +449,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
 
             if let Some(path_str) = id.strip_prefix("recent_path:") {
                 let path_str = path_str.to_string();
+                let state = Arc::clone(&state);
                 std::thread::spawn(move || {
                     let p = Path::new(&path_str);
                     if p.exists() || fs::symlink_metadata(p).is_ok() {
@@ -462,7 +464,7 @@ pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
                         let _ = Command::new("/usr/bin/open").arg(parent).spawn();
                     } else {
                         log_event("tray.recent.missing", Some(json!({ "path": path_str })));
-                        let _ = bridge::feedback("error", None);
+                        dispatch_feedback(&state, "error");
                     }
                 });
                 return;
