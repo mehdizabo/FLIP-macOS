@@ -3,7 +3,7 @@
 
 cask "flip" do
   version "0.6.1"
-  sha256 "1ba78ab86fefb291078c3df6702d6b343a60d847ad926c7ff3fb1f67dd24b7ae"
+  sha256 "75c72ba3dd8586ce53082cd268d8dbc49d62eccc81bbac3ad440e4a7e292e821"
 
   url "https://github.com/mehdizabo/FLIP-macOS/releases/download/v#{version}-macos/FLIP-#{version}-macOS-arm64.dmg"
   name "FLIP"
