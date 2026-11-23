@@ -7,7 +7,7 @@ assignees: ''
 ---
 Describe the problem and what you expected.
 
-Include Windows version, Flip version, input/output formats, whether mouse buttons are swapped, and whether Ctrl was pressed before or during the drag.
+Include macOS version, Apple Silicon model, FLIP macOS version, input/output formats and the exact installation method.
 
-List the steps to reproduce. Check how many files were selected in Explorer.
+List the steps to reproduce. State whether Finder, Accessibility or Input Monitoring permissions were enabled, and whether the issue occurs with a built-in engine or an optional tool such as FFmpeg.
 Remove personal filenames, paths and document content from screenshots and logs before sharing them.
