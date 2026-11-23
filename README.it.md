@@ -8,6 +8,18 @@ FLIP porta una ruota radiale veloce centrata sul cursore (ispirata all'Actions R
 
 ---
 
+## Schermate
+
+| Ruota Converti | Ruota Nuovo File |
+|---|---|
+| <img src="./docs/assets/screenshots/wheel-convert.png" alt="Ruota Converti di FLIP" width="440"> | <img src="./docs/assets/screenshots/wheel-new-file.png" alt="Ruota Nuovo File di FLIP" width="440"> |
+
+| Impostazioni generali | Convertitore batch |
+|---|---|
+| <img src="./docs/assets/screenshots/settings-general.png" alt="Impostazioni generali di FLIP" width="780"> | <img src="./docs/assets/screenshots/batch.png" alt="Convertitore batch e multi-formato di FLIP" width="660"> |
+
+---
+
 ## Funzionalità principali
 
 - **Ruota Radiale Liquid Glass**: settori in vetro traslucido stratificato, riflessi speculari direzionali, animazioni a molla, anteprima QuickLook nell'hub centrale, selettore modalità `Convert` / `New File` (`Tab`), arco radiale di avanzamento con percentuale, **annunci VoiceOver live**, **selettore lingua English / Italiano (`EN` / `IT`)**, feedback acustico (`flip-tick.wav`), aptico sul trackpad e pulsante **Prova suono e feedback aptico ruota**.

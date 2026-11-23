@@ -8,6 +8,18 @@ FLIP brings a fast, cursor-centered radial actions wheel (inspired by Logi Optio
 
 ---
 
+## Screens
+
+| Convert wheel | New File wheel |
+|---|---|
+| <img src="./docs/assets/screenshots/wheel-convert.png" alt="FLIP Convert wheel" width="440"> | <img src="./docs/assets/screenshots/wheel-new-file.png" alt="FLIP New File wheel" width="440"> |
+
+| General settings | Batch converter |
+|---|---|
+| <img src="./docs/assets/screenshots/settings-general.png" alt="FLIP General settings" width="780"> | <img src="./docs/assets/screenshots/batch.png" alt="FLIP Batch and Multi-Format Converter" width="660"> |
+
+---
+
 ## Features
 
 - **Enhanced Liquid Glass Radial Wheel**: Translucent layered glass sectors, directional specular rim highlights, spring transitions, QuickLook center hub thumbnail, `Convert` / `New File` mode pill (`Tab`), radial progress arc with percentage readout, **VoiceOver live announcer**, **English / Italiano (`EN` / `IT`) UI switcher** (`Settings → General`), acoustic tick (`flip-tick.wav`), Force Touch trackpad haptics, and a live **Test Wheel Sound & Haptics** preview button.
