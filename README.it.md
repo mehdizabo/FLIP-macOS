@@ -13,6 +13,20 @@ FLIP per macOS è un porting indipendente e comunitario di FLIP per Apple Silico
 - Build ad-hoc, senza Apple Developer ID
 - Nessun build Intel al momento
 
+## Schermate
+
+| Ruota Converti | Ruota Nuovo File |
+|---|---|
+| <img src="./docs/assets/screenshots/wheel-convert.png" alt="Ruota Converti di FLIP" width="440"> | <img src="./docs/assets/screenshots/wheel-new-file.png" alt="Ruota Nuovo File di FLIP" width="440"> |
+
+| Impostazioni generali | Convertitore batch |
+|---|---|
+| <img src="./docs/assets/screenshots/settings-general.png" alt="Impostazioni generali di FLIP" width="780"> | <img src="./docs/assets/screenshots/batch.png" alt="Convertitore batch e multi-formato di FLIP" width="660"> |
+
+---
+
+## Funzionalità principali
+
 La DMG non è notarizzata da Apple: al primo avvio macOS potrebbe mostrare un avviso di Gatekeeper.
 
 ## Installazione

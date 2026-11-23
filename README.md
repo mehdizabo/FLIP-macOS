@@ -28,6 +28,18 @@ For a terminal-based fallback, users who understand the risk can remove quaranti
 xattr -dr com.apple.quarantine /Applications/FLIP.app
 ```
 
+## Screens
+
+| Convert wheel | New File wheel |
+|---|---|
+| <img src="./docs/assets/screenshots/wheel-convert.png" alt="FLIP Convert wheel" width="440"> | <img src="./docs/assets/screenshots/wheel-new-file.png" alt="FLIP New File wheel" width="440"> |
+
+| General settings | Batch converter |
+|---|---|
+| <img src="./docs/assets/screenshots/settings-general.png" alt="FLIP General settings" width="780"> | <img src="./docs/assets/screenshots/batch.png" alt="FLIP Batch and Multi-Format Converter" width="660"> |
+
+---
+
 ## Features
 
 - Native macOS radial conversion wheel
