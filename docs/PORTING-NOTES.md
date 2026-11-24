@@ -1,5 +1,12 @@
 # FLIP Windows -> macOS Porting Notes
 
+> **Scope note:** this mapping was written against the earlier Windows
+> implementation. The current upstream `v0.6.1` adds capabilities that are
+> not all represented here. See
+> [CROSS-PLATFORM-COLLABORATION.md](CROSS-PLATFORM-COLLABORATION.md) for the
+> dated compatibility audit, explicit gaps, licensing boundary, and proposed
+> collaboration path.
+
 This document maps every module in the original Windows (`C#` / `.NET` / WinForms / GDI+) implementation (`FLIP-windows/src/Flip/*.cs`) to its counterpart in `FLIP-macOS-port` (`Tauri v2` + `Rust` + `Swift` Cocoa/Apple frameworks + `TypeScript/Vite`), and records intentional platform deltas and enhancements.
 
 ---
